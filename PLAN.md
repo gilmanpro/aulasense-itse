@@ -392,11 +392,13 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
   (grep `WIFI_MODE_` en runtime = solo STA); el captive portal "ESPectre Fallback" es del frontend
   **ESPHome** (`frontend/esphome/README.md:14`), NO Native (y usamos Native, D1). → **módulo propio
   `app_provision.c`**, calco del patrón endurecido DriveGuard (`archive/dashcam-ia/firmware/main/app_portal.c`,
-  lectura para inspiración, no copia ciega): AP fallback si STA falla N=3 reintentos; SSID
+  lectura para inspiración, no copia ciega): AP fallback al agotar un **contador PROPIO del módulo**
+  (`AULASENSE_PROVISION_RETRIES`=3, observado por `IP_EVENT_STA_GOT_IP`/`WIFI_EVENT_STA_DISCONNECTED` — NO es un
+  estado del vendor, que reintentan con `max_retry=8` + back-off 30 s en bucle infinito; `.tmp/f24a_spec_implementable.md` §1/E2); SSID
   `AULASENSE-CFG-<4 hex MAC>`; **AP abierto CON aviso** (patrón D6, app_portal.c:118-120,387) o WPA2 opcional
   (`AULASENSE_PROVISION_AP_PASS`); **ruta privada** `http://192.168.4.1/cfg/<token>` (token = 8 hex de clave
   efímera NVS `aulasense_prov/cfg_token` generada con `esp_fill_random`, **mostrada UNA vez en serial**,
-  ruta incorrecta → 404 sin pista); POST con **Origin/Referer guard 403** (app_portal.c:73-98,260),
+  ruta incorrecta → 404 sin pista, vía enrutado de parámetro `/cfg/:vtoken` o catch-all + `consttime_memequal` (E5); al guardar credenciales: **AP OFF → STA puro (`WIFI_MODE_STA`) → intentar conexión → re-levantar AP solo si vuelve a fallar** (radio única: AP canal 1 ≠ STA canal 11, NO `APSTA` cross-canal — E3); POST con **Origin/Referer guard 403** (app_portal.c:73-98,260),
   cabeceras seguridad (app_portal.c:104-112), **NVS write solo si cambio real + cooldown 5 s → 429**
   (app_portal.c:255-292), **NUNCA loguea SSID/pass** (solo longitudes, app_portal.c:290-291); AP off 30 s
   tras STA OK; **BOOT 3 s → Improv PRESERVADO**. *Decisión de auth AP:* abierto + ruta token = dos factores
@@ -419,7 +421,7 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
   campo opcional en motion + metadata upload + columnas `ia_persona`/`ia_score` → **DATO ANALIZABLE en el
   consolidado**, no solo galería. *Evidencia:* `.tmp/f23_research_viabilidad.md:94-109` (YOLO11n 320²
   961 ms ~1 FPS / 8 MB flash; YOLO26n exige 16 MB PSRAM; espdet_pico 224² 120 ms ~7.7 FPS), `:104` (ESP-WHO
-  trae pedestrian), `:215` (tamaño .espdl espdet_pico INCONCLUSO → resolver en F24-a/e0); vendor
+  trae pedestrian, y ESP-WHO es compatible con IDF **v5.5** según su tabla README 2026-11-12 — no solo 5.4, corrige al F23); tamaño .espdl **RESUELTO en F24-a**: ESPDet-Pico 0.36M×w8a8 ≈ **~0.4 MB** (estimación por conteo de parámetros; flash XIP, arena en PSRAM), y el cuello previsto del gate e0 es **contención de CPU no heap** (veredicto `.tmp/f24a_spec_implementable.md` §4/§6 E6: MARGINAL / probable borderline-fail req 1/5); vendor
   `app/sdkconfig:1300` `# CONFIG_SPIRAM is not set` (PSRAM 8 MB enteramente libre para la arena).
   *Por qué:* el usuario delegó ("si no se puede no lo hagas"); comprometer la integración sin medir
   coexistencia reviviría la clase de fallo de DriveGuard (prometer visión que el S3 no entrega en vivo).
@@ -533,7 +535,7 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
 |---|---|---|---|
 | S13 | El OV3660 de esta placa captura QVGA JPEG ~4–8 KB con fb PSRAM (config DriveGuard probada en el mismo sensor); el tamaño real se mide en F24-c | archive app_camara.c:68-71; DriveGuard F1–F3 operativo | Nuevo → gate F24-c (medir tamaño) |
 | S14 | Habilitar SPIRAM octal 8 MB + camera driver bajo AULASENSE_IMAGEN no degrada csi_accepted_pps >10 % ni el heap interno bajo el umbral (vendor no usa PSRAM hoy; heap baseline 206 KB) | vendor sdkconfig:1300; f1c_diagnostics.json:4-6 | Nuevo → gate F24-c (pps/heap) + F24-e0 (esp-dl) |
-| S15 | Existe un modelo de PERSONA esp-dl/ESP-WHO (pedestrian_detect/espdet_pico escala humana) que cabe en PSRAM con arena y coexiste con el CSI; tamaño .espdl INCONCLUSO hasta medir | f23_research_viabilidad.md:100,104,215 | Nuevo → gate F24-a (verificar modelo) + F24-e0 (spike coexistencia); si FAIL → ABANDONADO |
+| S15 | Existe un modelo de PERSONA esp-dl/ESP-WHO (ESPDet-Pico 0.36M / 224², pedestrian_detect/espdet_pico escala humana) **compatible con IDF v5.5** (tabla README 2026-11-12, no solo 5.4); tamaño .espdl ≈ **~0.4 MB** w8a8 (estimación, arena en PSRAM). La coexistencia con el CSI: cuello previsto = **contención de CPU, no heap** (F24-a: MARGINAL / probable borderline-fail req 1/5) | `.tmp/f24a_spec_implementable.md` §4/§6 (E6); f23_research_viabilidad.md:100,104 | F24-a **resuelve** modelo + tamaño; gate F24-e0 (spike mide CPU/pps); si FAIL → ABANDONADO |
 
 ### 11.5 Riesgos nuevos F24 (R9–R16) → mitigación en el checklist
 
@@ -557,8 +559,8 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
   documentado, retención 30 d purgable (imagen_purgada sin romper dataset), local-only (nunca nube/broker),
   sin caras-ML, imágenes gitignored, token auth, galería loopback. Checklist: F24-f docs consentimiento+
   retención; gate seguridad/documentacion; .gitignore datos/imagenes/.
-- **R14 — Modelo persona esp-dl disponibilidad/tamaño no verificado (INCONCLUSO research:215).**
-  **Mitigación:** F24-a verifica modelo exacto + tamaño; F24-e0 spike mide coexistencia; si no cabe →
+- **R14 — Modelo persona esp-dl disponibilidad/tamaño (era INCONCLUSO research:215).** **Resuelto en F24-a:** ESPDet-Pico 0.36M/224² ≈ ~0.4 MB w8a8 (estimación, flash + arena PSRAM); ESP-WHO compatible IDF v5.5 (no solo 5.4). **El riesgo real pasa a ser CONTENCIÓN de CPU, no heap** (F24-a: gate e0 MARGINAL / probable borderline-fail req 1/5).
+  **Mitigación:** F24-e0 spike mide coexistencia esp-dl+CSI (`csi_accepted_pps`/`detection_avg_us`) ANTES de comprometer; si no cabe →
   ABANDONADO documentado (orden usuario). Checklist: F24-a/e0 gates.
 - **R15 — Wheel Pillow cp315 no verificado para thumbnails.** **Mitigación:** sin thumbnail server-side
   (QVGA ya es pequeño, navegador escala). Checklist: F24-b2 galería sin resize server.
