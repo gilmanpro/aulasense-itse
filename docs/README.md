@@ -48,4 +48,6 @@ detector de caras en vivo nunca detectó una cara real pese a encuadre perfecto 
 documentado en `PLAN_DETECCION.md` E1–E3). En F0 el orquestador lo archiva en `iot2/archive/dashcam-ia/`
 (historia preservada). AulaSense hereda su infraestructura como **patrón** (E7) y sus lecciones como
 **restricciones de diseño** (E1–E10, `iot2/.tmp/registro_riesgos_nuevo.md`), pero es un proyecto nuevo:
-sensing no visual por Wi-Fi CSI, sin cámara en el pipeline, con prueba de vida temprana (gate F1c).
+sensing por Wi-Fi CSI con IA en-chip (el detector no necesita cámara), evidencia de imagen QVGA acotada
+local-only (F24: solo al servidor local, consentimiento + retención purgable) y prueba de vida temprana
+(gate F1c).

@@ -7,7 +7,7 @@
 firmware/**/sdkconfig.defaults.local
 firmware/**/credentials.h
 
-# Vendor ESPectre (clon reproducible por tag v3.2.0, GPLv3 — no se trackea el clon)
+# Vendor ESPectre (clon reproducible por tag 3.2.0 SIN prefijo v, GPLv3 — no se trackea el clon)
 firmware/espectre/
 
 # Builds de firmware
@@ -33,6 +33,8 @@ server/datos/*.db
 server/datos/*.db-wal
 server/datos/*.db-shm
 server/datos/export_*.csv
+# F24: imágenes de evidencia = datos personales, NUNCA commitear (privacidad acotada local-only)
+server/datos/imagenes/
 
 # Sistema
 .DS_Store

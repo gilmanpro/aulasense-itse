@@ -5,13 +5,19 @@
 > implementa `@5-dev` en la **fase F3** del mapa `PLAN.md` §6, bajo el ejecutor. Nada de este parche
 > existe aún como código; este documento es el entregable de diseño verificable.
 >
+> **F24 (2026-11-12):** este directorio se AMPLÍA con módulos nuevos — `app_imagen.c/.h` (F24-c),
+> `app_provision.c/.h` (F24-d), `app_ia_imagen.c/.h` (F24-e, opcional spike-gated) — que comparten
+> `Kconfig.projbuild`/`CMakeLists.txt`/este README. Contratos: `../../SPEC.md` §3.2–§3.4; decisiones
+> D-F24-1..8: `../../PLAN.md` §11. F24-c/d/e añaden aquí su sección de spec (NO reabren F3).
+>
 > Companion: `../../SPEC.md` §3.1 (contrato), `../../PLAN.md` D5 (decisión), `../../AGENTS.md`
 > (reglas duras: GPIO, secretos, edge-first). Fuente del pinout: analista de viabilidad 2026-11-12
 > (`bbhpy/docs` GOOUUU_ESP32-S3-CAM.md + `profharris/GOOUUU-Tech-ESP32-S3-CAM-Expansion-Board`).
 
 ## 1. Qué es y por qué existe
 
-Único código de firmware propio del proyecto (D5). Se añade al app **ESPectre Native v3.2.0** (vendor
+Módulo de feedback local (D5), primer código de firmware propio del proyecto (F24 añade los módulos de
+imagen/provisioning/IA-opcional). Se añade al app **ESPectre Native 3.2.0** (vendor
 GPLv3, clon gitignored en `../espectre/`) para cubrir dos condiciones del curso que el vendor no trae:
 
 - **C11 — alerta audible/visual local sin red:** buzzer piezo onboard (GPIO14, LEDC PWM) + LED WS2812
@@ -85,7 +91,9 @@ chip (D9): este módulo solo consume el estado `idle|motion` ya decidido en el n
 `#error` en tiempo de compilación si se configura un pin prohibido:
 - **19/20** — USB nativo D-/D+ (USB device stack = riesgo de brick, lección F18-A de DriveGuard).
 - **43/44** — UART0 real (consola/flasheo; la SPEC vieja de DriveGuard decía "41–44", corregido).
-- **4–18** — bus DVP de la cámara (nunca inicializada; no tocar sus pines).
+- **4–18** — bus DVP de la cámara: usados por OV3660 SOLO bajo `AULASENSE_IMAGEN=y` (F24-c, evidencia
+  de evento); NINGÚN otro periférico puede tocar sus pines (la regla v23 "nunca inicializada" quedó
+  revocada por D-F24-1).
 - **0/45/46** — strapping (BOOT/DC/Shutter).
 - **26–37** — QSPI flash interna / PSRAM octal.
 - 22–25 no existen en el S3; 33–34 missing en este módulo.
@@ -96,9 +104,9 @@ conector), 21, 41, 42, 47 (+38/39/40 sin SD).
 
 ## 6. Instrucciones de aplicación al vendor (las ejecuta F3, `@5-dev`)
 
-1. Vendor presente: `../espectre/` clonado en F1a (`git clone --branch v3.2.0 --depth 1
-   https://github.com/francescopace/espectre.git`). **No se trackea el clon** (gitignored, reproducible
-   por tag). LICENSE GPLv3 preservado intacto.
+1. Vendor presente: `../espectre/` clonado en F1a (`git clone --branch 3.2.0 --depth 1
+   https://github.com/francescopace/espectre.git` — **tag SIN prefijo v**; `v3.2.0` da 404, verificado
+   F1a). **No se trackea el clon** (gitignored, reproducible por tag). LICENSE GPLv3 preservado intacto.
 2. Copiar los archivos del parche al app Native: `../espectre/src/cpp/frontend/native/app/main/`
    (o el directorio de componentes que el app use — verificar estructura real en F3 antes de copiar).
 3. Registrar `app_feedback.c` en las fuentes del `CMakeLists.txt` del app (SRCS) y añadir las
@@ -110,8 +118,9 @@ conector), 21, 41, 42, 47 (+38/39/40 sin SD).
      (misma transición que va al topic MQTT — no duplicar la lógica del detector).
    - La tarea de die temp arranca con `app_feedback_start_temp()` y usa el cliente MQTT existente.
 5. **Verificar sdkconfig ANTES de flashear** (regla dura E5/AGENTS): sin USB device stack
-   (CONFIG_USB_*/tinyusb), sin driver camera, PSRAM octal 8 MB, flash 16 MB, `AULASENSE_BLE=n` por
-   default. Consola UART en S3 (no activar TinyUSB).
+   (CONFIG_USB_*/tinyusb), sin driver camera (**F3 no añade cámara**; F24-c la habilita SOLO bajo
+   `AULASENSE_IMAGEN=y` con SPIRAM=y octal y actualiza este precheck), PSRAM octal 8 MB, flash 16 MB,
+   `AULASENSE_BLE=n` por default. Consola USB-Serial-JTAG en S3 (COM6; no activar TinyUSB).
 6. Rebuild + flash: `eim run "idf.py build" v5.5.6` + `eim run "idf.py -p COM6 flash monitor" v5.5.6`
    (COM autodetectado; recuperación BOOT 3 s si hace falta).
 7. Criterios de aceptación (F3, verificables en disco/operador):
@@ -125,14 +134,16 @@ conector), 21, 41, 42, 47 (+38/39/40 sin SD).
 
 El vendor ESPectre es **GPLv3** (© Francesco Pace y contribuidores). Este parche es un **derivado** y se
 publica bajo GPLv3: el fuente se trackea en este directorio y se entrega al profesor (fuente disponible).
-El clon vendor va gitignored pero es reproducible por tag `v3.2.0` + las instrucciones de §6. **No
-relicenciar el vendor ni eliminar su LICENSE.** Uso académico del curso IoT2/ITSE.
+El clon vendor va gitignored pero es reproducible por tag `3.2.0` (SIN prefijo v) + las instrucciones de
+§6. **No relicenciar el vendor ni eliminar su LICENSE.** Uso académico del curso IoT2/ITSE.
 
 ## 8. Límites del módulo (no hacer)
 
 - NO modificar el detector, los pesos ni el pipeline CSI (edge-first: la IA es del vendor, medida en C12).
-- NO inicializar la cámara ni el micrófono (no hay mic; la cámara existe pero NUNCA se usa, D9/E9).
-- NO activar USB device stack ni TinyUSB en S3 (riesgo brick E5; consola UART).
+- NO inicializar la cámara ni el micrófono DESDE ESTE MÓDULO (no hay mic). La cámara OV3660 la usa
+  `app_imagen` en F24-c bajo `AULASENSE_IMAGEN=y` (evidencia de evento local, D-F24-1/2 — la regla v23
+  "la cámara NUNCA se usa, D9/E9" quedó revocada por orden del dueño).
+- NO activar USB device stack ni TinyUSB en S3 (riesgo brick E5; consola USB-Serial-JTAG).
 - NO escribir claves en el código: WiFi por NVS/Improv o `sdkconfig.defaults.local` generado desde
   `.env` (gitignored); MQTT por `PATCH /mqtt` desde `tools/config_mqtt.py` (lee `.env`, nunca imprime).
 - NO publicar CSI crudo ni imágenes por ningún canal (solo estado + métricas + die temp).
