@@ -1,0 +1,39 @@
+# Temporales (regla dura: siempre en .tmp/, nunca %TEMP%/AppData)
+.tmp/
+*.log
+
+# Secretos (NUNCA commitear claves reales)
+.env
+firmware/**/sdkconfig.defaults.local
+firmware/**/credentials.h
+
+# Vendor ESPectre (clon reproducible por tag v3.2.0, GPLv3 — no se trackea el clon)
+firmware/espectre/
+
+# Builds de firmware
+firmware/**/build/
+firmware/**/build-flash-*/
+firmware/**/sdkconfig
+firmware/**/sdkconfig.old
+firmware/**/dependencies.lock
+firmware/**/.cache/
+firmware/**/managed_components/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Datos vivos del server (el dataset consolidado real SÍ se trackea en analysis/dataset/)
+server/datos/*.db
+server/datos/*.db-wal
+server/datos/*.db-shm
+server/datos/export_*.csv
+
+# Sistema
+.DS_Store
+Thumbs.db
