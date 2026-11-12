@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AulaSense — dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    .tarjeta { background: #0f172a; border: 1px solid #1e293b; border-radius: .9rem; }
+    .estado-idle { color: #60a5fa; }
+    .estado-motion { color: #34d399; }
+    .estado-nulo { color: #94a3b8; }
+    @keyframes flash-tarjeta {
+      0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, .85); }
+      100% { box-shadow: 0 0 0 18px rgba(52, 211, 153, 0); }
+    }
+    .flash { animation: flash-tarjeta 700ms ease-out; }
+    .badge-simulado { background: #92400e; color: #fde68a; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; letter-spacing: .04em; }
+    .badge-vivo { background: #064e3b; color: #6ee7b7; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
+    .badge-stale { background: #78350f; color: #fcd34d; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
+    .pestana-activa { background: #1d4ed8; color: #fff; }
+    .celda-metrica { background: #111c31; border-radius: .5rem; padding: .45rem .6rem; }
+    .tabla-scroll { max-height: 26rem; overflow: auto; }
+    table.datos { width: 100%; border-collapse: collapse; font-size: .8rem; }
+    table.datos th, table.datos td { padding: .3rem .5rem; border-bottom: 1px solid #1e293b; text-align: left; white-space: nowrap; }
+    table.datos th { color: #94a3b8; font-weight: 600; position: sticky; top: 0; background: #0f172a; }
+    .feed-item { border-bottom: 1px solid #1e293b; padding: .35rem .2rem; font-size: .8rem; }
+    .heat-celda { border-radius: .35rem; padding: .35rem 0; text-align: center; font-size: .68rem; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <header class="border-b border-slate-800 px-4 py-3 flex flex-wrap items-center gap-3">
+    <h1 class="text-xl font-semibold tracking-tight">AulaSense</h1>
+    <span class="text-xs text-slate-400">sensing de movimiento por Wi-Fi CSI · ESP32-S3 · edge</span>
+    <span class="ml-auto text-xs" id="ws-badge">WS: conectando…</span>
+  </header>
+
+  <!-- REGLA 11: badge honesto permanente y visible -->
+  <div class="bg-amber-900/60 border-y border-amber-700 text-amber-100 px-4 py-2 text-sm font-medium"
+       role="note" id="badge-honesto">
+    movimiento/ocupación dinámica — idle NO significa sala vacía
+  </div>
+
+  <nav class="px-4 py-3 flex flex-wrap gap-2" id="pestanas">
+    <button data-tab="monitoreo" class="pestana-activa rounded-lg px-3 py-1.5 text-sm">Monitoreo</button>
+    <button data-tab="reportes" class="rounded-lg px-3 py-1.5 text-sm bg-slate-800 hover:bg-slate-700">Reportes</button>
+    <button data-tab="validacion" class="rounded-lg px-3 py-1.5 text-sm bg-slate-800 hover:bg-slate-700">Validación</button>
+  </nav>
+
+  <main class="px-4 pb-10 space-y-4">
+    <!-- ===================== MONITOREO ===================== -->
+    <section id="tab-monitoreo" class="space-y-4">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="kpis"></div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="xl:col-span-2 space-y-4">
+          <div class="flex items-center gap-3 flex-wrap">
+            <h2 class="text-lg font-semibold">Dispositivos</h2>
+            <label class="ml-auto text-xs flex items-center gap-2 text-slate-300">
+              <input type="checkbox" id="toggle-alertas" />
+              alertas sonoras en onset de motion
+            </label>
+          </div>
+          <div id="devices" class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <p class="text-sm text-slate-400">Sin datos todavía…</p>
+          </div>
+
+          <div class="tarjeta p-3">
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="text-sm font-semibold text-slate-200">Serie temporal de score</h2>
+              <span class="text-xs text-slate-400" id="chart-score-info">últimas 120 evaluaciones</span>
+            </div>
+            <canvas id="chart-score" height="110"></canvas>
+          </div>
+        </div>
+
+        <div class="tarjeta p-3">
+          <h2 class="text-sm font-semibold text-slate-200 mb-2">Eventos recientes</h2>
+          <div id="feed-eventos" class="max-h-[30rem] overflow-auto">
+            <p class="text-sm text-slate-400">Sin eventos…</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== REPORTES ===================== -->
+    <section id="tab-reportes" class="space-y-4" hidden>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="kpis-reportes"></div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="tarjeta p-3">
+          <h2 class="text-sm font-semibold mb-2">Eventos por tipo</h2>
+          <canvas id="chart-eventos" height="150"></canvas>
+        </div>
+        <div class="tarjeta p-3">
+          <h2 class="text-sm font-semibold mb-2">Inicios de movimiento por hora (últimos eventos)</h2>
+          <canvas id="chart-horas" height="150"></canvas>
+        </div>
+      </div>
+
+      <div class="tarjeta p-3">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <h2 class="text-sm font-semibold">Evaluaciones</h2>
+          <div class="ml-auto flex flex-wrap items-center gap-2 text-xs">
+            <a class="rounded bg-slate-800 hover:bg-slate-700 px-2 py-1" href="/api/export?tabla=evaluaciones&origen=real">CSV evaluaciones (real)</a>
+            <a class="rounded bg-slate-800 hover:bg-slate-700 px-2 py-1" href="/api/export?tabla=eventos&origen=real">CSV eventos (real)</a>
+            <a class="rounded bg-slate-800 hover:bg-slate-700 px-2 py-1" href="/api/export?tabla=telemetria&origen=real">CSV telemetría (real)</a>
+            <a class="rounded bg-amber-800 hover:bg-amber-700 px-2 py-1" href="/api/export?tabla=evaluaciones&origen=sintetico">CSV evaluaciones (SIMULADO)</a>
+          </div>
+        </div>
+        <div class="tabla-scroll">
+          <table class="datos" id="tabla-evaluaciones">
+            <thead>
+              <tr>
+                <th>id</th><th>device</th><th>ts (local)</th><th>estado</th><th>score</th>
+                <th>hora_sinc</th><th>origen</th><th>recibido</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="flex items-center gap-2 mt-2 text-xs text-slate-400">
+          <button id="pagina-prev" class="rounded bg-slate-800 hover:bg-slate-700 px-2 py-1">← Anterior</button>
+          <span id="pagina-info">página 1</span>
+          <button id="pagina-next" class="rounded bg-slate-800 hover:bg-slate-700 px-2 py-1">Siguiente →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== VALIDACIÓN ===================== -->
+    <section id="tab-validacion" class="space-y-4" hidden>
+      <div class="tarjeta p-3">
+        <h2 class="text-sm font-semibold mb-2">Matriz de confusión (verdad terreno manual vs predicción de ventana)</h2>
+        <p class="text-xs text-slate-400 mb-3" id="validacion-nota"></p>
+        <div class="overflow-auto">
+          <table class="datos" id="tabla-matriz">
+            <thead><tr><th></th><th>predicho motion</th><th>predicho idle</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3" id="validacion-kpis"></div>
+      </div>
+
+      <div class="tarjeta p-3">
+        <h2 class="text-sm font-semibold mb-2">Sesiones</h2>
+        <div class="tabla-scroll">
+          <table class="datos" id="tabla-sesiones">
+            <thead>
+              <tr><th>sesión</th><th>inicio</th><th>fin</th><th>verdad</th><th>predicho</th>
+                  <th>evaluaciones</th><th>celda</th><th>notas</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="px-4 pb-6 text-xs text-slate-500">
+    Sin cámara, sin micrófono, sin radar. Las filas <span class="badge-simulado">SIMULADO</span>
+    nunca se mezclan con captura real. La die temp es proxy de carga de cómputo, no temperatura ambiente.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

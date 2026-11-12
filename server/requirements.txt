@@ -1,0 +1,14 @@
+# AulaSense server — Python 3.15 (C:\Python315). Versiones fijadas del patrón heredado
+# (archive/dashcam-ia) ya verificadas con wheel cp315 en esta máquina.
+paho-mqtt==2.2.0
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+websockets==17.4
+python-dotenv==1.2.4
+pandas==3.1.1
+scikit-learn==1.9.1
+matplotlib==3.11.2
+requests==2.34.2
+bleak==3.0.2
+pytest==9.2.0
+httpx==0.28.1
