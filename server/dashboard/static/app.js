@@ -1,7 +1,7 @@
 "use strict";
 
 /* ============================================================================
- * AulaSense — lógica del dashboard (una página, tres pestañas).
+ * AulaSense — lógica del dashboard (una página, cuatro pestañas).
  * Regla AGENTS.md: TODO dato dinámico se pinta con textContent o con esc();
  * aquí no se usa innerHTML con datos (cero innerHTML en esta app).
  * ========================================================================== */
@@ -470,12 +470,13 @@ function activarPestana(nombre) {
     boton.className = `rounded-lg px-3 py-1.5 text-sm ${
       activa ? "pestana-activa" : "bg-slate-800 hover:bg-slate-700"}`;
   });
-  ["monitoreo", "reportes", "validacion"].forEach((tab) => {
+  ["monitoreo", "reportes", "validacion", "galeria"].forEach((tab) => {
     const seccion = document.getElementById(`tab-${tab}`);
     if (seccion) seccion.hidden = tab !== nombre;
   });
   if (nombre === "reportes") cargarReportes();
   if (nombre === "validacion") cargarValidacion();
+  if (nombre === "galeria") cargarGaleria();
 }
 
 function cargarTodo() {
@@ -681,6 +682,111 @@ function cargarValidacion() {
     .catch((error) => console.warn("Validación:", error.message));
 }
 
+/* -------------------------------- galería -------------------------------- */
+// SPEC §9.1: el grid pide la foto QVGA por id de BD; el servidor nunca expone la
+// ruta del archivo y el dashboard nunca acepta uploads (el upload es el receptor
+// LAN :8001 de la ingesta). Metadata SIEMPRE por textContent (cero innerHTML).
+const RE_DEVICE = /^[0-9a-f]{16}$/;
+
+function msDeFecha(valor, finDelDia) {
+  if (!valor) return null;
+  const sufijo = finDelDia ? "T23:59:59.999" : "T00:00:00";
+  const ms = new Date(`${valor}${sufijo}`).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function parametrosGaleria() {
+  const device = (document.getElementById("galeria-device").value || "").trim().toLowerCase();
+  const params = new URLSearchParams();
+  if (device) params.set("device_id", device);
+  const desde = msDeFecha(document.getElementById("galeria-desde").value, false);
+  const hasta = msDeFecha(document.getElementById("galeria-hasta").value, true);
+  if (desde !== null) params.set("desde", String(desde));
+  if (hasta !== null) params.set("hasta", String(hasta));
+  params.set("limite", "200");
+  return { device, params };
+}
+
+function tarjetaImagen(fila) {
+  const caja = el("div", "tarjeta p-2 space-y-2");
+  const id = Number(fila.id);
+  const purgada = Number(fila.imagen_purgada) === 1;
+  if (purgada) {
+    // La purga borró el archivo: placeholder, sin pedir la foto (sería un 404).
+    caja.appendChild(el(
+      "div",
+      "w-full aspect-[4/3] rounded border border-slate-800 bg-slate-900 text-slate-500 "
+        + "flex items-center justify-center text-xs",
+      "imagen purgada",
+    ));
+  } else if (Number.isFinite(id)) {
+    const img = document.createElement("img");
+    img.src = `/api/imagenes/${id}/foto`;
+    img.loading = "lazy";
+    img.alt = `Evidencia de imagen ${id}`;
+    img.className = "w-full rounded border border-slate-800 bg-slate-900 aspect-[4/3] object-contain";
+    img.addEventListener("error", () => {
+      // Archivo ausente en disco: se sustituye por texto (sin innerHTML).
+      img.replaceWith(el(
+        "div",
+        "w-full aspect-[4/3] rounded border border-slate-800 bg-slate-900 text-slate-500 "
+          + "flex items-center justify-center text-xs",
+        "no disponible",
+      ));
+    });
+    caja.appendChild(img);
+  }
+
+  const meta = el("div", "text-[0.7rem] text-slate-300 space-y-0.5");
+  meta.appendChild(el("div", "font-medium", fila.device_id));
+  meta.appendChild(el("div", "text-slate-400", fmtMs(fila.ts_ms)));
+  const dimensiones = `${fmtNum(fila.ancho, 0)}×${fmtNum(fila.alto, 0)} px · `
+    + `${fmtNum((Number(fila.tamano_bytes) || 0) / 1024, 1)} KB`;
+  meta.appendChild(el("div", "text-slate-500", dimensiones));
+
+  const badges = el("div", "flex flex-wrap gap-1 pt-1");
+  if (fila.ia_persona !== null && fila.ia_persona !== undefined) {
+    const etiqueta = Number(fila.ia_persona) === 1 ? "persona" : "sin persona";
+    const score = (fila.ia_score === null || fila.ia_score === undefined)
+      ? "" : ` ${fmtNum(fila.ia_score, 2)}`;
+    badges.appendChild(el("span", "badge-ia", `IA: ${etiqueta}${score}`));
+  }
+  if (purgada) badges.appendChild(el("span", "badge-purgada", "purgada"));
+  if (fila.origen === "sintetico") badges.appendChild(el("span", "badge-simulado", "SIMULADO"));
+  meta.appendChild(badges);
+  caja.appendChild(meta);
+  return caja;
+}
+
+function pintarGaleria(datos) {
+  const grid = document.getElementById("galeria-grid");
+  const info = document.getElementById("galeria-info");
+  grid.replaceChildren();
+  const filas = (datos && datos.filas) || [];
+  info.textContent = `${filas.length} imagen(es) · límite ${fmtNum(datos && datos.limite, 0)}`;
+  if (!filas.length) {
+    grid.appendChild(el("p", "text-sm text-slate-400", "Sin imágenes para el filtro actual…"));
+    return;
+  }
+  filas.forEach((fila) => grid.appendChild(tarjetaImagen(fila)));
+}
+
+function cargarGaleria() {
+  const { device, params } = parametrosGaleria();
+  const info = document.getElementById("galeria-info");
+  if (device && !RE_DEVICE.test(device)) {
+    info.textContent = "device_id debe ser 16 hex minúscula";
+    return;
+  }
+  info.textContent = "cargando…";
+  obtener(`/api/imagenes?${params.toString()}`)
+    .then(pintarGaleria)
+    .catch((error) => {
+      info.textContent = "no se pudo cargar la galería";
+      console.warn("Galería:", error.message);
+    });
+}
+
 /* ------------------------------- arranque -------------------------------- */
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("#pestanas button").forEach((boton) => {
@@ -708,6 +814,11 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch (error) { /* sin audio */ }
       beep();
     }
+  });
+
+  document.getElementById("galeria-recargar").addEventListener("click", cargarGaleria);
+  document.getElementById("galeria-device").addEventListener("keydown", (evento) => {
+    if (evento.key === "Enter") cargarGaleria();
   });
 
   cargarTodo();

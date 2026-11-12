@@ -19,7 +19,13 @@ evaluaciones repetidas (re-entrega del broker) se aceptan a proposito (id
 autoincrement, sin UNIQUE): el analisis agrega por ventanas. Los mensajes marcados
 ``dup`` por paho en QoS 1 se descartan en el callback.
 
-Secretos: MQTT_PASS solo se pasa a paho; jamas se registra en logs.
+F24 (SPEC §6.1/§7.1): se suscribe ademas ``+/aulasense_config`` (tabla
+``config_eventos``). Si ``AULASENSE_UPLOAD_HOST`` no esta vacio, ``main`` arranca
+el receptor HTTP de imagen (:mod:`receptor_imagen`) como hilo y sus jobs validados
+entran por la MISMA cola que los mensajes MQTT: el writer sigue siendo unico.
+
+Secretos: MQTT_PASS solo se pasa a paho; jamas se registra en logs. El token del
+receptor no se imprime (solo su longitud si hiciera falta diagnosticar).
 """
 
 from __future__ import annotations
@@ -54,7 +60,8 @@ _DOTENV_DEFECTO = _RAIZ_REPO / ".env"
 _DB_DEFECTO = _RAIZ_REPO / "server" / "datos" / "aulasense.db"
 _CSV_DEFECTO = _RAIZ_REPO / "server" / "datos" / "export_evaluaciones.csv"
 
-# Suffix suscritos (SPEC §7).
+# Suffix suscritos (SPEC §7). ``aulasense_config`` es el topic F24 de
+# provision/config/captura (SPEC §6.1).
 SUFIJOS_SUSCRITOS: tuple[str, ...] = (
     "motion",
     "health",
@@ -64,6 +71,7 @@ SUFIJOS_SUSCRITOS: tuple[str, ...] = (
     "fault",
     "commands/result",
     "aulasense_temp",
+    "aulasense_config",
 )
 
 # Campos del comando read_diagnostics (metricas edge C12, SPEC §6).
@@ -140,7 +148,12 @@ def ahora_ms() -> int:
 
 @dataclass
 class MqttConfig:
-    """Parametros de conexion leidos de .env."""
+    """Parametros de conexion leidos de .env.
+
+    ``user`` es el de la INGESTA: ``MQTT_INGESTA_USER`` (srv-electiva, D-F24-6) con
+    fallback a ``MQTT_USER`` y, por ultimo, ``srv-electiva``. El nodo publica con
+    ``MQTT_USER``; separar usuarios permite revocar la ingesta sin tocar el nodo.
+    """
 
     host: str = ""
     port: int = 1883
@@ -162,11 +175,17 @@ class MqttConfig:
         scheme = (os.getenv("MQTT_SCHEME", "mqtt").strip() or "mqtt").lower()
         if scheme not in ("mqtt", "mqtts"):
             scheme = "mqtt"
+        # Usuario de la ingesta: MQTT_INGESTA_USER > MQTT_USER > 'srv-electiva'.
+        usuario_ingesta = (
+            os.getenv("MQTT_INGESTA_USER", "").strip()
+            or os.getenv("MQTT_USER", "").strip()
+            or "srv-electiva"
+        )
         return cls(
             host=os.getenv("MQTT_HOST", "").strip(),
             port=port,
             scheme=scheme,
-            user=os.getenv("MQTT_USER", "").strip(),
+            user=usuario_ingesta,
             password=os.getenv("MQTT_PASS", ""),
             topic_prefix=(
                 os.getenv("MQTT_TOPIC_PREFIX", "").strip()
@@ -183,6 +202,32 @@ class MqttConfig:
 
 
 # --- Writer unico ----------------------------------------------------------
+
+
+@dataclass
+class JobImagen:
+    """Imagen validada por el receptor HTTP, lista para persistir por el writer.
+
+    El receptor (:mod:`receptor_imagen`) escribe el JPEG a disco y encola este
+    job en la MISMA cola que los mensajes MQTT; el writer unico resuelve el reloj
+    R3 e inserta la fila ``imagenes``. ``resultado`` (Event) permite al receptor
+    responder 201 con ``imagen_id`` sin romper la invariante de escritor unico.
+    """
+
+    device_id: str
+    ts_device_ms: int
+    ruta: str
+    hash_sha256: str
+    tamano_bytes: int
+    ancho: int | None = None
+    alto: int | None = None
+    evento_id: int | None = None
+    ia_persona: int | None = None
+    ia_score: float | None = None
+    origen: str = "real"
+    imagen_id: int | None = None
+    error: str | None = None
+    resultado: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass
@@ -212,10 +257,17 @@ class IngestaWriter:
         db_path: str | Path,
         csv_path: str | Path,
         topic_prefix: str = esquema.TOPIC_PREFIX_DEFECTO,
+        cola: "queue.Queue[Any] | None" = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.csv_path = Path(csv_path)
         self.topic_prefix = topic_prefix
+        # Cola compartida (MQTT + jobs de imagen del receptor): la expone el writer
+        # para que el receptor encole sin abrir una segunda ruta de escritura.
+        self.cola: "queue.Queue[Any]" = (
+            cola if cola is not None else queue.Queue(maxsize=COLA_MAX)
+        )
+        self._activo = True
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -279,20 +331,75 @@ class IngestaWriter:
                 }
         return {**resultado, "accion": accion}
 
+    def procesar_imagen(self, job: JobImagen, now_ms: int | None = None) -> dict[str, Any]:
+        """Persiste un job de imagen encolado por el receptor HTTP (writer unico).
+
+        El archivo YA existe en disco (lo escribio el receptor). Resuelve el reloj
+        R3, valida el FK nullable ``evento_id`` e inserta en ``imagenes``. Nunca
+        lanza: deja el error en ``job.error`` para que el receptor responda.
+        """
+        ahora = int(now_ms) if now_ms is not None else ahora_ms()
+        try:
+            with self._lock:
+                estado = self._estado(job.device_id)
+                if job.evento_id is not None:
+                    fila = self._conn.execute(
+                        "SELECT 1 FROM eventos WHERE id = ? LIMIT 1",
+                        (int(job.evento_id),),
+                    ).fetchone()
+                    if fila is None:
+                        job.error = "evento_id inexistente"
+                        return {"ok": False, "error": job.error, "imagen_id": None}
+                ts_ms, _hora_sinc = self._resolver_ts(
+                    estado, int(job.ts_device_ms), ahora
+                )
+                origen = job.origen if job.origen in ("real", "sintetico") else "real"
+                cursor = self._conn.execute(
+                    "INSERT INTO imagenes "
+                    "(device_id, ts_ms, ruta, hash_sha256, tamano_bytes, ancho, alto, "
+                    " evento_id, ia_persona, ia_score, imagen_purgada, origen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                    (
+                        job.device_id,
+                        ts_ms,
+                        job.ruta,
+                        job.hash_sha256,
+                        int(job.tamano_bytes),
+                        job.ancho,
+                        job.alto,
+                        job.evento_id,
+                        job.ia_persona,
+                        job.ia_score,
+                        origen,
+                    ),
+                )
+                job.imagen_id = int(cursor.lastrowid)
+                self._upsert_last_seen(job.device_id, ahora)
+                self._conn.commit()
+        except sqlite3.Error:
+            LOG.exception("error de SQLite al persistir imagen device=%s", job.device_id)
+            job.error = "error_sqlite"
+            return {"ok": False, "error": job.error, "imagen_id": None}
+        finally:
+            job.resultado.set()
+        return {"ok": True, "error": None, "imagen_id": job.imagen_id}
+
     def run_forever(self, cola: "queue.Queue[Any]") -> None:
         """Bucle del hilo writer: consume hasta recibir el centinela ``None``."""
-        while True:
-            item = cola.get()
-            if item is None:
-                cola.task_done()
-                return
-            topic, payload = item
-            try:
-                self.procesar(topic, payload)
-            except Exception:  # pragma: no cover - red de seguridad del hilo
-                LOG.exception("fallo procesando mensaje topic=%s", topic)
-            finally:
-                cola.task_done()
+        try:
+            while True:
+                item = cola.get()
+                if item is None:
+                    cola.task_done()
+                    return
+                try:
+                    self._procesar_item(item)
+                except Exception:  # pragma: no cover - red de seguridad del hilo
+                    LOG.exception("fallo procesando item de la cola")
+                finally:
+                    cola.task_done()
+        finally:
+            self._activo = False
 
     def drenar(self, cola: "queue.Queue[Any]") -> int:
         """Procesa lo que haya en la cola sin bloquear (modo ``--once``)."""
@@ -305,11 +412,23 @@ class IngestaWriter:
             try:
                 if item is None:
                     continue
-                topic, payload = item
-                self.procesar(topic, payload)
+                self._procesar_item(item)
                 procesados += 1
             finally:
                 cola.task_done()
+
+    def _procesar_item(self, item: Any) -> None:
+        """Despacha un item de la cola: mensaje MQTT o job de imagen del receptor."""
+        if isinstance(item, JobImagen):
+            self.procesar_imagen(item)
+            return
+        topic, payload = item
+        self.procesar(topic, payload)
+
+    @property
+    def activo(self) -> bool:
+        """``False`` si el writer se cerro o su hilo termino (lo consulta el receptor)."""
+        return self._activo
 
     def dispositivos_conocidos(self, limite: int = 32) -> list[str]:
         """device_id vistos, para el poller de diagnosticos (tolerante a DB vacia)."""
@@ -320,7 +439,24 @@ class IngestaWriter:
             ).fetchall()
         return [fila[0] for fila in filas]
 
+    def dispositivo_conocido(self, device_id: str) -> bool:
+        """Allowlist del receptor: el device debe existir en ``dispositivos``."""
+        with self._lock:
+            fila = self._conn.execute(
+                "SELECT 1 FROM dispositivos WHERE device_id = ? LIMIT 1", (device_id,)
+            ).fetchone()
+        return fila is not None
+
+    def evento_existe(self, evento_id: int) -> bool:
+        """Comprueba el FK nullable ``imagenes.evento_id`` antes de escribir la foto."""
+        with self._lock:
+            fila = self._conn.execute(
+                "SELECT 1 FROM eventos WHERE id = ? LIMIT 1", (int(evento_id),)
+            ).fetchone()
+        return fila is not None
+
     def cerrar(self) -> None:
+        self._activo = False
         with self._lock:
             try:
                 self._conn.commit()
@@ -332,6 +468,21 @@ class IngestaWriter:
                     pass
 
     # -- Estado y reloj -----------------------------------------------------
+
+    def estimar_epoca_ms(
+        self, device_id: str, ts_device_ms: int, now_ms: int | None = None
+    ) -> tuple[int, bool]:
+        """Estimacion READ-ONLY de la epoca del nodo (R3) para nombrar el archivo.
+
+        No muta el estado del reloj: el definitivo lo fija ``_resolver_ts`` al
+        persistir la fila. Sin ``health`` previo cae a la hora del PC (R3).
+        """
+        ahora = int(now_ms) if now_ms is not None else ahora_ms()
+        with self._lock:
+            estado = self._estado(device_id)
+            if estado.epoca_boot_ms is None:
+                return ahora, False
+            return int(estado.epoca_boot_ms) + int(ts_device_ms), True
 
     def _estado(self, device_id: str) -> EstadoDispositivo:
         estado = self._estados.get(device_id)
@@ -410,6 +561,8 @@ class IngestaWriter:
             return self._procesar_fault(device_id, datos, estado, ahora)
         if kind == "aulasense_temp":
             return self._procesar_temp(device_id, datos, estado, ahora)
+        if kind == "aulasense_config":
+            return self._procesar_config(device_id, datos, estado, ahora)
         if kind == "commands_result":
             return self._procesar_commands_result(device_id, datos, estado, ahora)
         # sensing/wifi: se validan y se aceptan, pero no tienen tabla destino.
@@ -564,6 +717,23 @@ class IngestaWriter:
         )
         self._upsert_last_seen(device_id, ahora)
         return "telemetria_temp"
+
+    def _procesar_config(
+        self,
+        device_id: str,
+        datos: dict[str, Any],
+        estado: EstadoDispositivo,
+        ahora: int,
+    ) -> str:
+        """Topic ``aulasense_config`` -> fila ``config_eventos`` (SPEC §6.1/§8.1)."""
+        ts_ms, _hora_sinc = self._resolver_ts(estado, int(datos["timestamp_ms"]), ahora)
+        self._conn.execute(
+            "INSERT INTO config_eventos (device_id, ts_ms, tipo, detalle, origen) "
+            "VALUES (?, ?, ?, ?, 'real')",
+            (device_id, ts_ms, datos["evento"], datos.get("detalle")),
+        )
+        self._upsert_last_seen(device_id, ahora)
+        return "config_evento"
 
     def _procesar_commands_result(
         self,
@@ -795,8 +965,9 @@ def main(argv: list[str] | None = None) -> int:
 
     db_path = Path(args.db or os.getenv("AULASENSE_DB") or _DB_DEFECTO)
     csv_path = Path(args.csv or _CSV_DEFECTO)
-    writer = IngestaWriter(db_path, csv_path)
+    # La cola existe antes que el writer: el receptor de imagen la comparte.
     cola: "queue.Queue[Any]" = queue.Queue(maxsize=COLA_MAX)
+    writer = IngestaWriter(db_path, csv_path, cola=cola)
 
     if args.once:
         procesados = writer.drenar(cola)
@@ -819,6 +990,19 @@ def main(argv: list[str] | None = None) -> int:
     poller = PollerDiagnosticos(cliente, writer, cfg.topic_prefix)
     poller.start()
 
+    # F24: receptor de imagen HTTP como hilo DENTRO de este proceso (nunca en import).
+    # Sus jobs validados entran por la MISMA cola -> writer unico preservado.
+    servidor_imagen = None
+    try:
+        try:  # ejecucion directa (server/ingesta en sys.path)
+            from receptor_imagen import iniciar_receptor_desde_env
+        except ImportError:  # import como paquete server.ingesta
+            from .receptor_imagen import iniciar_receptor_desde_env
+
+        servidor_imagen = iniciar_receptor_desde_env(writer)
+    except Exception:  # el receptor jamas debe tumbar la ingesta MQTT
+        LOG.exception("no se pudo arrancar el receptor de imagen")
+
     try:
         cliente.connect(cfg.host, cfg.port, keepalive=30)
         cliente.loop_forever()
@@ -833,6 +1017,9 @@ def main(argv: list[str] | None = None) -> int:
             cliente.disconnect()
         except Exception:  # pragma: no cover
             pass
+        if servidor_imagen is not None:
+            servidor_imagen.shutdown()
+            servidor_imagen.server_close()
         cola.put(None)
         hilo_writer.join(timeout=5)
         writer.cerrar()

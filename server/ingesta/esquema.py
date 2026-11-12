@@ -33,6 +33,7 @@ SUFFIX_VALIDOS: tuple[str, ...] = (
     "fault",
     "commands/result",
     "aulasense_temp",
+    "aulasense_config",
 )
 
 # Tipos que se persisten (interfaz fijada por el coordinador).
@@ -45,6 +46,7 @@ KINDS_VALIDOS: tuple[str, ...] = (
     "fault",
     "commands_result",
     "aulasense_temp",
+    "aulasense_config",
 )
 
 # Mapa suffix del topic -> kind logico devuelto por ``validar``.
@@ -57,7 +59,17 @@ _SUFFIX_A_KIND: dict[str, str] = {
     "fault": "fault",
     "commands/result": "commands_result",
     "aulasense_temp": "aulasense_temp",
+    "aulasense_config": "aulasense_config",
 }
+
+# Eventos de provision/config/captura del parche F24 (SPEC §6.1/§8.1).
+EVENTOS_CONFIG: tuple[str, ...] = (
+    "AP_FALLBACK",
+    "CFG_GUARDADA",
+    "STA_RECONECTADO",
+    "IMAGEN_GATE_OFF",
+    "IMAGEN_DESCARTE",
+)
 
 _ID_HEX16 = re.compile(r"^[0-9a-f]{16}$")
 _COMMAND_ID = re.compile(r"^[\x20-\x7E]{1,64}$")
@@ -100,6 +112,27 @@ def _es_hex16(valor: Any) -> bool:
 # --- Validadores por tipo (devuelven None si el payload es correcto) --------
 
 
+def _validar_ia_imagen(p: dict[str, Any]) -> str | None:
+    """Campo OPCIONAL ``ia_imagen`` (SPEC §6.1): resultado de la vision persona.
+
+    Ausente o ``null`` es valido (la ingesta lo tolera -> null en BD). Si viene,
+    debe ser ``{"persona": bool, "score": float 0..1}``; un tipo errado es invalido.
+    """
+    ia = p.get("ia_imagen")
+    if ia is None:
+        return None
+    if not isinstance(ia, dict):
+        return "motion.ia_imagen debe ser objeto o null"
+    if not _es_bool(ia.get("persona")):
+        return "motion.ia_imagen.persona debe ser booleano"
+    score = ia.get("score")
+    if not _es_num(score):
+        return "motion.ia_imagen.score debe ser numerico"
+    if not 0.0 <= float(score) <= 1.0:
+        return "motion.ia_imagen.score fuera de rango [0,1]"
+    return None
+
+
 def _validar_motion(p: dict[str, Any]) -> str | None:
     ts = p.get("timestamp_ms")
     if not _es_int(ts):
@@ -113,7 +146,7 @@ def _validar_motion(p: dict[str, Any]) -> str | None:
         return "motion.score debe ser numerico"
     if not 0.0 <= float(score) <= 1.0:
         return "motion.score fuera de rango [0,1]"
-    return None
+    return _validar_ia_imagen(p)
 
 
 def _validar_health(p: dict[str, Any]) -> str | None:
@@ -246,6 +279,73 @@ def _validar_aulasense_temp(p: dict[str, Any]) -> str | None:
     return None
 
 
+def _validar_aulasense_config(p: dict[str, Any]) -> str | None:
+    """Topic ``aulasense_config`` (SPEC §6.1): provision/config/captura SIN secretos."""
+    ts = p.get("timestamp_ms")
+    if not _es_int(ts):
+        return "aulasense_config.timestamp_ms debe ser entero"
+    if ts < 0:
+        return "aulasense_config.timestamp_ms no puede ser negativo"
+    if p.get("evento") not in EVENTOS_CONFIG:
+        return (
+            "aulasense_config.evento debe ser uno de "
+            + "|".join(EVENTOS_CONFIG)
+        )
+    detalle = p.get("detalle")
+    if detalle is not None:
+        if not _es_str(detalle):
+            return "aulasense_config.detalle debe ser texto o null"
+        if len(detalle) > 120:
+            return "aulasense_config.detalle supera 120 caracteres"
+    if _claves_secreto(p):
+        # Nunca se repite el valor: solo se informa que hay un campo de secreto.
+        return "aulasense_config incluye campos de secreto no permitidos (SSID/pass/token)"
+    return None
+
+
+# Marcadores de nombre que delatan un secreto dentro de ``aulasense_config``.
+_MARCAS_SECRETO = ("ssid", "pass", "password", "token")
+# Sufijos que SI se permiten: solo longitudes/flags, nunca el valor.
+_SUFIJOS_METADATO = ("_len", "_num")
+
+
+def _valor_no_vacio(valor: Any) -> bool:
+    """``True`` si el valor de un campo sensible tiene contenido real."""
+    if valor is None:
+        return False
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor != 0
+    if isinstance(valor, str):
+        return bool(valor.strip())
+    if isinstance(valor, (list, tuple, dict, set)):
+        return len(valor) > 0
+    return True
+
+
+def _claves_secreto(datos: Any) -> list[str]:
+    """Claves tipo SSID/pass/token con valor no vacio (recursivo, sin mirar valores).
+
+    ``*_len``/``*_num`` quedan permitidas porque solo llevan longitudes/flags
+    (p. ej. ``ssid_len=12``), no el secreto en si (SPEC §6.1/§12).
+    """
+    encontradas: list[str] = []
+    if isinstance(datos, dict):
+        for clave, valor in datos.items():
+            if isinstance(clave, str):
+                nombre = clave.lower()
+                es_metadato = nombre.endswith(_SUFIJOS_METADATO)
+                if not es_metadato and any(m in nombre for m in _MARCAS_SECRETO):
+                    if _valor_no_vacio(valor):
+                        encontradas.append(clave)
+            encontradas.extend(_claves_secreto(valor))
+    elif isinstance(datos, (list, tuple)):
+        for elemento in datos:
+            encontradas.extend(_claves_secreto(elemento))
+    return encontradas
+
+
 # --- API publica -----------------------------------------------------------
 
 
@@ -306,6 +406,8 @@ def validar(topic: str, payload: dict) -> dict[str, Any]:
         fallo = _validar_fault(payload)
     elif kind == "commands_result":
         fallo = _validar_commands_result(payload)
+    elif kind == "aulasense_config":
+        fallo = _validar_aulasense_config(payload)
     else:  # aulasense_temp
         fallo = _validar_aulasense_temp(payload)
 
@@ -359,4 +461,35 @@ CREATE TABLE IF NOT EXISTS fuentes_externas (
   lat REAL, lon REAL, temperatura_c REAL, humedad_pct REAL, precipitacion_mm REAL, viento_kmh REAL,
   payload_json TEXT, recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Evidencia de imagen local (D-F24-2/3/7). La foto es accesoria; el evento es la fuente de verdad.
+CREATE TABLE IF NOT EXISTS imagenes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,                 -- época (mapeo R3 del monótono del nodo)
+  ruta TEXT NOT NULL,                     -- relativa bajo server/datos/imagenes/<device>/<archivo>.jpg
+  hash_sha256 TEXT NOT NULL,              -- sha256 completo del contenido
+  tamano_bytes INTEGER NOT NULL,
+  ancho INTEGER, alto INTEGER,            -- 320x240 QVGA esperado
+  evento_id INTEGER,                      -- FK nullable → eventos.id (el onset MOVIMIENTO_INICIO que la disparó)
+  ia_persona INTEGER,                     -- F24-e opcional: 1/0/null (null si IA off o no inferida)
+  ia_score REAL,                          -- F24-e opcional: score persona/null
+  imagen_purgada INTEGER NOT NULL DEFAULT 0,  -- 1 si la purga borró el archivo (fila+ia CONSERVADAS → dataset intacto)
+  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(evento_id) REFERENCES eventos(id)
+);
+CREATE INDEX IF NOT EXISTS idx_img_dev_ts ON imagenes(device_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_img_evento ON imagenes(evento_id);
+CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
+
+-- Eventos de provision/config/captura (D-F24-7, sin secretos). Topic aulasense_config (§6.1).
+CREATE TABLE IF NOT EXISTS config_eventos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
+  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
+  detalle TEXT,                           -- ≤120 chars, SIN secretos (solo longitudes/flags)
+  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
 """

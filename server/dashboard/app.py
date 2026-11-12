@@ -9,7 +9,13 @@ Reglas de seguridad aplicadas aquí (AGENTS.md, sección "Seguridad de la demo")
   de ``AULASENSE_ORIGINS_EXTRA`` (coma-separada, host[:puerto], sin wildcards). Un
   host sin puerto usa el puerto por defecto de su esquema (80/443). No se aceptan
   coincidencias por prefijo/sufijo ni cabeceras sin protocolo;
-- cero endpoints de imágenes o CSI crudo (no existen en el sistema);
+- CSI crudo: ningún endpoint (el contrato §6 no lo expone);
+- **F24 — galería de imágenes SOLO loopback (SPEC §9.1):** se SIRVEN fotos de
+  evidencia por id de BD (``GET /api/imagenes/{id}/foto``); la ruta se resuelve
+  bajo la base de datos y se valida con ``is_relative_to`` (cualquier escape →
+  404 sin pista), con ``nosniff`` y ``no-store``. El dashboard NUNCA acepta
+  uploads (eso es el receptor LAN :8001 de la ingesta); sin Origin guard extra en
+  lectura: el bind 127.0.0.1 ES el control (SPEC §9.1);
 - SQL 100 % parametrizado y ``limite`` siempre clampado.
 
 El writer de producción es la ingesta; este proceso solo lee y, para pruebas,
@@ -32,7 +38,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterator
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -69,6 +75,48 @@ POLL_INGESTA_S = 0.4  # latencia objetivo <2 s global (SPEC §9)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+# --- DDL literal de SPEC §8.1 (copia local deliberada, NO se importa) ---------
+# La ingesta es la dueña del esquema (§8.1); el dashboard solo lo replica como
+# migración idempotente de respaldo (tests con DB nueva, DB antigua anterior a
+# F24). Se mantiene como constante local para no acoplarnos a los símbolos que
+# B1 edita en paralelo en ``server/ingesta/esquema.py`` (condición de carrera).
+IMAGENES_SQL = """
+CREATE TABLE IF NOT EXISTS imagenes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  ruta TEXT NOT NULL,
+  hash_sha256 TEXT NOT NULL,
+  tamano_bytes INTEGER NOT NULL,
+  ancho INTEGER, alto INTEGER,
+  evento_id INTEGER,
+  ia_persona INTEGER,
+  ia_score REAL,
+  imagen_purgada INTEGER NOT NULL DEFAULT 0,
+  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY(evento_id) REFERENCES eventos(id)
+);
+CREATE INDEX IF NOT EXISTS idx_img_dev_ts ON imagenes(device_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_img_evento ON imagenes(evento_id);
+CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
+CREATE TABLE IF NOT EXISTS config_eventos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
+  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
+  detalle TEXT,
+  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
+"""
+
+# Columnas exactas de metadata de la galería: ``ruta`` NUNCA se expone (SPEC §9.1).
+COLS_IMAGEN_METADATA = (
+    "id, device_id, ts_ms, tamano_bytes, ancho, alto, evento_id, "
+    "ia_persona, ia_score, imagen_purgada, origen, recibido_en"
+)
+
 # --- SQL de export por whitelist (nunca se concatena el nombre de tabla) -------
 _SQL_EXPORT: dict[tuple[str, bool], str] = {
     ("evaluaciones", True): "SELECT * FROM evaluaciones WHERE origen = ? ORDER BY id",
@@ -101,6 +149,19 @@ def _db_path() -> Path:
     return SERVER_DIR / "datos" / "aulasense.db"
 
 
+def _datos_dir() -> Path:
+    """Base de las rutas relativas de ``imagenes.ruta`` (convención F24-B).
+
+    ``AULASENSE_DATOS_DIR`` si está puesto; si no, el directorio de la DB
+    (``AULASENSE_DB`` o el default ``server/datos``). Devuelve siempre una ruta
+    resuelta: la validación ``is_relative_to`` de la galería compara absolutas.
+    """
+    crudo = os.environ.get("AULASENSE_DATOS_DIR", "").strip()
+    if crudo:
+        return Path(crudo).expanduser().resolve()
+    return _db_path().expanduser().resolve().parent
+
+
 def _conectar() -> sqlite3.Connection:
     """Abre la DB en WAL y garantiza el esquema (CREATE IF NOT EXISTS es idempotente)."""
     ruta = _db_path()
@@ -114,6 +175,12 @@ def _conectar() -> sqlite3.Connection:
     ).fetchone()
     if not existe:
         con.executescript(ESQUEMA_SQL)
+    # Migración F24 idempotente de respaldo (la dueña real del esquema es la ingesta).
+    existe_img = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='imagenes'"
+    ).fetchone()
+    if not existe_img:
+        con.executescript(IMAGENES_SQL)
     return con
 
 
@@ -404,8 +471,8 @@ def raiz() -> FileResponse:
 
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon() -> JSONResponse:
-    """No hay imágenes en el sistema (AGENTS.md): favicon inexistente a propósito."""
-    return JSONResponse(status_code=404, content={"detail": "sin imágenes en AulaSense"})
+    """Favicon inexistente a propósito (la galería F24 sirve evidencia, no branding)."""
+    return JSONResponse(status_code=404, content={"detail": "sin favicon en AulaSense"})
 
 
 # ------------------------------------------------------------------------------
@@ -667,6 +734,90 @@ def api_fuentes_externas(fuente: str | None = None, limite: int | None = None) -
     finally:
         con.close()
     return {"limite": lim, "fuente": filtro or None, "filas": filas}
+
+
+# ------------------------------------------------------------------------------
+# API de galería F24 (SPEC §9.1) — SOLO loopback; el dashboard NUNCA acepta uploads
+# ------------------------------------------------------------------------------
+@app.get("/api/imagenes")
+def api_imagenes(
+    device_id: str | None = None,
+    desde: int | None = None,
+    hasta: int | None = None,
+    limite: int | None = None,
+) -> dict[str, Any]:
+    """Metadata paginada de imágenes de evidencia (SPEC §9.1).
+
+    Devuelve solo columnas de metadata (``COLS_IMAGEN_METADATA``); la ruta del
+    archivo NUNCA sale por la API.
+    """
+    device = _validar_device(device_id)
+    lim = _clamp_limite(limite)
+    condiciones: list[str] = []
+    params: list[Any] = []
+    if device:
+        condiciones.append("device_id = ?")
+        params.append(device)
+    if desde is not None:
+        condiciones.append("ts_ms >= ?")
+        params.append(int(desde))
+    if hasta is not None:
+        condiciones.append("ts_ms <= ?")
+        params.append(int(hasta))
+    where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
+    con = _conectar()
+    try:
+        filas = _filas(
+            con,
+            f"SELECT {COLS_IMAGEN_METADATA} FROM imagenes{where} "
+            "ORDER BY ts_ms DESC, id DESC LIMIT ?",
+            (*params, lim),
+        )
+    finally:
+        con.close()
+    return {"limite": lim, "filas": filas}
+
+
+def _resolver_foto(ruta_relativa: str) -> Path | None:
+    """Resuelve ``BASE/ruta`` y devuelve ``None`` si escapa de la base (path traversal)."""
+    base = _datos_dir()
+    candidata = (base / str(ruta_relativa)).resolve()
+    if not candidata.is_relative_to(base):
+        return None  # cualquier escape se trata igual que "no existe": 404 sin pista
+    return candidata
+
+
+@app.get("/api/imagenes/{imagen_id}/foto")
+def api_imagen_foto(imagen_id: int) -> Response:
+    """Sirve el JPEG de evidencia por id de BD (SPEC §9.1).
+
+    - ``imagen_id`` no entero → 422 (validador de FastAPI).
+    - Sin Origin guard extra: lectura GET estándar en loopback; el bind 127.0.0.1
+      ES el control (mismo criterio que ``/api/eventos``, AGENTS.md "Seguridad").
+    - ``imagen_purgada=1``, id inexistente, archivo ausente o ruta que escape de la
+      base de datos → 404 (nunca se filtra la ruta ni la causa exacta).
+    """
+    con = _conectar()
+    try:
+        fila = con.execute(
+            "SELECT ruta, imagen_purgada, origen FROM imagenes WHERE id = ?",
+            (imagen_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if fila is None or int(fila["imagen_purgada"] or 0) == 1:
+        raise HTTPException(status_code=404, detail="imagen no disponible")
+    archivo = _resolver_foto(fila["ruta"])
+    if archivo is None or not archivo.is_file():
+        raise HTTPException(status_code=404, detail="imagen no disponible")
+    return Response(
+        content=archivo.read_bytes(),
+        media_type="image/jpeg",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ------------------------------------------------------------------------------
