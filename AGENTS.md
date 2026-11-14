@@ -3,7 +3,7 @@
 Este archivo lo lee todo agente que trabaje en el repo. Respétalo al pie de la letra.
 Hereda las reglas duras del proyecto anterior (DriveGuard, `../archive/dashcam-ia/AGENTS.md` tras el
 archivado) **con las correcciones del dominio CSI**. Plan maestro: `PLAN.md`. Especificación: `SPEC.md`.
-Checklist vivo: `../.tmp/checklist.md` (en `iot2\.tmp\checklist.md`, **v24**; v23 archivada en `checklist_pre_v24.md`).
+Checklist vivo: `../.tmp/checklist.md` (en `iot2\.tmp\checklist.md`, **v25**; v24 archivada en `checklist_pre_v25.md`).
 
 ## Qué es esto
 Sensor de movimiento/ocupación dinámica con IA **en el borde** (ESP32-S3 GOOUUU v1.5): detector
@@ -14,6 +14,13 @@ hora, alerta audible (buzzer GPIO14) + visual (WS2812 GPIO48). **Sin micrófono,
 QVGA al onset de motion, cooldown 15 s, subida HTTP al servidor local, galería loopback). La IA principal
 sigue siendo el detector CSI en-chip; una capa de visión persona (esp-dl) es OPCIONAL default n,
 spike-gated (si no cabe junto al CSI, se abandona documentado). **Privacidad acotada local-only** (regla 2).
+**F25 (orden del dueño, 2026-11-14):** las imágenes viajan por **MQTT** (topic `image`, b64, QoS 0,
+retain=false) al broker autenticado — la regla "nunca por MQTT" de F24 queda REVOCADA (D-F25-1);
+HTTP :8001 queda alternativo. El servidor (ingesta+dashboard+worker visión) corre en **WSL Debian 13**
+(systemd, venv linux, sin Docker; datos en ext4; Windows fallback). El dashboard gana **login seguro**
+(admin único, Argon2id/scrypt, cookie HttpOnly+SameSite, lockout progresivo) y **búsqueda por texto**
+en la galería (descripciones IA de Qwen vision con rate limits obligatorios y cumplimiento ToS del
+Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas SOLO por código).
 
 ## Reglas duras
 1. **Edge-first:** el detector ML corre EN el ESP32-S3. Ningún procesamiento de sensing/IA se mueve al
@@ -22,9 +29,15 @@ spike-gated (si no cabe junto al CSI, se abandona documentado). **Privacidad aco
 2. **Privacidad ACOTADA (local-only) — RE-ENMARQUE F24 por orden explícita del dueño (2026-11-12).**
    La regla v23 "privacidad por construcción / cero imágenes / la OV3660 NUNCA se inicializa" queda
    **REVOCADA**. Nueva política:
-   - **Imágenes SOLO al servidor local del proyecto** (LAN → receptor de ingesta :8001 con Bearer token;
-     galería servida SOLO en loopback 127.0.0.1:8000). **NUNCA a la nube ni al broker MQTT público.**
-     Las imágenes NO viajan por MQTT (solo el resultado opcional `ia_imagen` persona/score).
+   - **Imágenes SOLO al servidor local del proyecto como destino final** — **F25 (D-F25-1, orden
+     del dueño 2026-11-14): el transporte PRIMARIO es MQTT** (topic
+     `aulasense/v1/devices/<id>/image`, JSON+b64, QoS 0, **retain=false** → la foto NO persiste en
+     el broker; auth electiva/srv-electiva, prefijo aislado). HTTP :8001 con Bearer token queda
+     como canal ALTERNATIVO (`canal` en BD). Galería servida SOLO en loopback **con login**
+     (127.0.0.1:8000, SPEC §9.2). **NUNCA a la nube.** La regla F24 "las imágenes NO viajan por
+     MQTT" queda **REVOCADA** por orden del dueño (viabilidad: Mosquitto message_size_limit
+     default 0 / max_packet_size 2 MB, man oficial 2026-11-14 + probe F25-a). El resultado
+     opcional `ia_imagen` persona/score sigue como estaba.
    - **Captura = evidencia de evento, no streaming:** 1 JPEG QVGA al ONSET de motion, cooldown 15 s,
      tarea dedicada de baja prioridad (NUNCA desde el loop del detector CSI), cola corta en PSRAM
      (si se llena: se DESCARTA la imagen y el EVENTO SIGUE — el evento es la fuente de verdad).
@@ -39,11 +52,16 @@ spike-gated (si no cabe junto al CSI, se abandona documentado). **Privacidad aco
      solo investigación, y NO se usa). Solo eventos de movimiento + métricas + la imagen de evidencia
      acotada. **C9 = cumple-parcial (local-only), no "privacidad por construcción".**
 3. **Python del PC:** el `python` del PATH está ROTO (3.13). Usa SIEMPRE `C:\Python315\python.exe`
-   (3.15.2). El venv `server\.venv` se crea con ese intérprete; requirements con wheel cp315 o build
-   local (patrón heredado: bleak, pandas, scikit-learn, paho-mqtt, fastapi, uvicorn, matplotlib,
-   requests, python-docx, python-pptx, pytest). Sin fallback a otro python.
-4. **Sin Docker.** Todo corre nativo en Windows 11. (El CLI de ESPectre ofrece Docker como fallback de
-   build; **NO se usa** — ruta primaria `eim run idf.py`.)
+   (3.15.2) para firmware/tools y el **fallback Windows** del server. El venv `server\.venv` se crea
+   con ese intérprete; requirements con wheel cp315 o build local (patrón heredado: bleak, pandas,
+   scikit-learn, paho-mqtt, fastapi, uvicorn, matplotlib, requests, python-docx, python-pptx, pytest).
+   Sin fallback a otro python. **F25: el runtime PRIMARIO del server es el venv linux de WSL Debian**
+   (`~/venvs/aulasense`, python3.13 de apt, `server/requirements-linux.txt` — argon2-cffi incluido,
+   bleak fuera). Ambos runtimes deben pasar pytest; NUNCA dos stacks vivos a la vez (split-brain).
+4. **Sin Docker.** El server corre nativo: **F25 = WSL Debian 13 (nativo linux, systemd, NO Docker)**
+   como runtime primario; Windows nativo como fallback. (El CLI de ESPectre ofrece Docker como
+   fallback de build; **NO se usa** — ruta primaria `eim run idf.py`.) La VM WSL es compartida con
+   otras distros del usuario: **NO tocar `.wslconfig` global ni otras distros** (D-F25-3).
 5. **ESP-IDF v5.5.6** (NO v5.4): el SDK ESPectre requiere ≥5.5.3 y docs/CLI.md recomienda 5.5.6.
    Desviación documentada de la regla E5 original (v5.4 queda instalado para el archive). Comando
    canónico: `eim run "idf.py …" v5.5.6`. **NO usar** `. $env:IDF_PATH\export.ps1` (exige python sano en
@@ -75,28 +93,63 @@ spike-gated (si no cabe junto al CSI, se abandona documentado). **Privacidad aco
     vendor (`firmware/espectre/`) va gitignored (reproducible por tag `3.2.0`, SIN prefijo v — `v3.2.0`
     da 404, verificado F1a). No relicenciar el vendor.
 13. **Qwen API (opcional):** solo capa opcional del dashboard/análisis. El sistema completo debe
-    funcionar con `DASHSCOPE_API_KEY` vacío.
+    funcionar con `DASHSCOPE_API_KEY` vacío. **F25: el worker de visión (§7.3 SPEC) usa la allowlist
+    TP exact-string (default `qwen3.8-flash`; qwen*-vl NO está en TP) y respeta los ToS del Token
+    Plan: la key `sk-sp-` es SOLO para uso interactivo en agentes — PROHIBIDO daemon autónomo con
+    ella (modo B agente-mediado; modo A daemon solo con key pay-as-you-go `sk-*`). Rate limits
+    obligatorios (regla 16).**
 14. **Imágenes locales = evidencia de evento (F24, complementa regla 2):** la OV3660 se inicializa
     SOLO bajo `AULASENSE_IMAGEN=y` (default y), captura QVGA JPEG al onset con cooldown 15 s, sube por
     `POST /internal/imagen` al receptor de ingesta (LAN :8001, Bearer token `AULASENSE_UPLOAD_TOKEN`
-    generado `secrets.token_hex(16)`, nunca impreso). **NUNCA imágenes por MQTT ni a la nube.** El
-    dashboard sirve la galería SOLO en loopback (bind 127.0.0.1 intacto). `datos/imagenes/` gitignored.
+    generado `secrets.token_hex(16)`, nunca impreso). **F25 (D-F25-1): el canal PRIMARIO es MQTT
+    (topic `image`, b64, QoS 0, retain=false, parche outbox vendor 8192→32768 documentado); HTTP
+    :8001 queda alternativo. NUNCA a la nube.** El
+    dashboard sirve la galería SOLO en loopback **con login** (bind loopback intacto; exposición
+    Windows solo 127.0.0.1, SPEC §15). `datos/imagenes/` gitignored.
     Purga con `imagen_purgada` conserva la fila (dataset intacto). La IA de visión persona es OPCIONAL
     (`AULASENSE_IA_IMAGEN` default n), spike-gated F24-e0: si no coexiste con el CSI, se ABANDONA
     documentado (orden del usuario: "si no se puede no lo hagas"). **La IA principal YA ES el detector
     CSI neuronal en-chip** (edge-first C1); la visión es capa adicional, no la reemplaza.
+15. **`claves/.env` (F25, D-F25-9):** las credenciales del dashboard (admin) y la key de IA viven en
+    `aulasense/claves/.env` — carpeta NUEVA **gitignored** (`claves/*` + `!claves/.env.example`).
+    **Generación SOLO por código** (`secrets.token_hex(16)` para la password admin en F25-e;
+    `tools/reset_admin.py` la regenera). **Entrega al dueño por canal local** (el archivo en disco;
+    el orquestador indica la ruta, NUNCA el valor). Prohibido: imprimirla en logs/reportes/evidencia
+    `.tmp/`, escribirla en docs o commitearla. El `.env` raíz sigue para WiFi/MQTT/upload; el loader
+    lee ambos (claves/ prioridad para auth/IA). El modelo NUNCA asigna contraseñas.
+16. **Presupuesto de Credits (F25, D-F25-6, OBLIGATORIO):** toda llamada a modelos de pago (visión,
+    imagen, video, TTS) lleva **rate limit configurable** (visión: `AULASENSE_VISION_MAX_DIA=120` +
+    `AULASENSE_VISION_MAX_HORA=20`, contadores persistentes), **dedupe por hash**, **backoff
+    exponencial** (429 → Retry-After), **interruptible** (SIGTERM/`--stop`, estado en BD) y
+    **Paso 0 de medición real** antes de lotes (1 llamada/clip de prueba → registrar `usage`/consumo
+    en `.tmp/`). CERO promesas de coste sin medir (patrón E10). Video: ≤8 clips 480P 5 s, clip de
+    prueba medido ANTES del lote; si el consumo es anómalo → parar y reportar. ToS del Token Plan
+    respetados (regla 13): nada de backends autónomos con key `sk-sp-`.
 
 ## Seguridad de la demo (modelo de amenaza — no regresar estos controles, heredados E7)
-- **Dashboard SOLO en `127.0.0.1`** (nunca `0.0.0.0`). Guard de Origin para `/ws` y `/internal/evento`
-  (403 al origen cruzado). Ampliable SOLO por `AULASENSE_ORIGINS_EXTRA` explícita (host[:puerto] exactos,
-  sin wildcards, opt-in); los defaults `127.0.0.1`/`localhost` no se tocan.
+- **Dashboard SOLO en `127.0.0.1` + LOGIN (F25: loopback+auth, defensa en profundidad).** Guard de
+  Origin para `/ws` y `/internal/evento` (403 al origen cruzado). Ampliable SOLO por
+  `AULASENSE_ORIGINS_EXTRA` explícita (host[:puerto] exactos, sin wildcards, opt-in); los defaults
+  `127.0.0.1`/`localhost` no se tocan. **F25 (D-F25-8):** todas las rutas exigen sesión salvo
+  /login, /logout, estáticos de login y /internal/* (Origin guard, máquina local); cookie
+  HttpOnly+SameSite=Lax, sesión 12 h absoluta + 2 h idle, lockout progresivo por IP+usuario
+  (5/10/20 fallos → 60 s/15 min/1 h, 429+Retry-After), logout, `tools/reset_admin.py` local.
+  Password admin generada por código → `claves/.env` (regla 15), hash Argon2id/scrypt.
+- **Exposición WSL (F25, D-F25-3, reinterpreta el bind):** el server primario corre en WSL Debian
+  (NAT). Dentro de la VM el dashboard bind `0.0.0.0` es **VM-local** (NAT sin portproxy LAN =
+  inalcanzable desde la LAN); la **superficie expuesta en Windows sigue siendo SOLO 127.0.0.1**
+  (portproxy `listenaddress=127.0.0.1:8000` → WSL_IP; fallback sin admin: http://WSL_IP:8000 +
+  ORIGINS_EXTRA exacto). **NO tocar `.wslconfig` global** (8 distros comparten la VM; mirrored
+  per-distro imposible, WSL#13706). El receptor :8001 LAN→WSL es OPT-IN (portproxy+firewall); con
+  MQTT primario no hace falta. Origin guard y login intactos en todos los casos.
 - **Galería de imágenes SOLO loopback (F24, reemplaza "cero endpoints de imágenes" v23):** el dashboard
   NUNCA acepta uploads; sirve fotos de evidencia por id de BD en `GET /api/imagenes/{id}/foto` (bind
   127.0.0.1, nosniff, ruta validada bajo datos/imagenes/, 404 si purgada). El **upload** va a un receptor
   HTTP SEPARADO dentro de la ingesta (`POST /internal/imagen`, LAN :8001, **Bearer token** obligatorio,
   JPEG magic, ≤64 KB, device allowlist, rate-limit 1/10 s → 401/413/422/429). Bind del receptor
-  `AULASENSE_UPLOAD_HOST` (vacío=desactivado; NUNCA 0.0.0.0 default). **Imágenes NUNCA al broker MQTT
-  público ni a la nube.** `POST /internal/evento` sigue siendo solo JSON de evento validado.
+  `AULASENSE_UPLOAD_HOST` (vacío=desactivado; NUNCA 0.0.0.0 default). **F25: las imágenes SÍ viajan
+  por MQTT al broker autenticado (canal primario, retain=false, QoS 0, prefijo aislado); NUNCA a la
+  nube.** `POST /internal/evento` sigue siendo solo JSON de evento validado.
 - **Provisioning AP privado (F24):** AP fallback `AULASENSE-CFG-xxxx` abierto CON aviso (o WPA2 opcional);
   portal SOLO en ruta privada `http://192.168.4.1/cfg/<token>` (token NVS 8 hex, mostrado una vez en
   serial, 404 sin pista). POST con Origin/Referer guard (403), cooldown NVS 5 s (429), **NUNCA loguea
@@ -127,24 +180,33 @@ spike-gated (si no cabe junto al CSI, se abandona documentado). **Privacidad aco
 ```
 aulasense/
 ├─ PLAN.md SPEC.md README.md AGENTS.md .gitignore .env.example
+├─ claves/                  # F25: .env de auth/IA (GITIGNORED, generado por código) + .env.example
 ├─ firmware/
 │   ├─ espectre/            # vendor ESPectre tag 3.2.0 (GITIGNORED, clon por tag, GPLv3)
-│   └─ parche_aulasense/    # derivado propio: app_feedback.c/.h (F3), app_imagen.c/.h (F24-c),
-│                           #   app_provision.c/.h (F24-d), app_ia_imagen.c/.h (F24-e opt), Kconfig, CMake
+│   └─ parche_aulasense/    # derivado propio: app_feedback.c/.h (F3), app_imagen.c/.h (F24-c,
+│                           #   +transporte MQTT F25-c), app_provision.c/.h (F24-d),
+│                           #   app_ia_imagen.c/.h (F24-e opt), Kconfig, CMake
 ├─ server/
-│   ├─ ingesta/             # ingesta_mqtt.py + esquema.py + receptor_imagen.py (F24, :8001 token)
-│   ├─ dashboard/           # app.py + static/ (FastAPI + WS + Chart.js + galería F24, 127.0.0.1)
-│   ├─ ble/                 # receptor_ble.py (opcional, bleak)
+│   ├─ ingesta/             # ingesta_mqtt.py (+decoder image MQTT F25) + esquema.py + receptor_imagen.py
+│   ├─ dashboard/           # app.py + auth.py (F25 login) + static/ (FastAPI + WS + Chart.js +
+│   │                       #   galería F24 + búsqueda F25, loopback+auth)
+│   ├─ vision/              # F25: cliente.py (worker descripción IA, rate limits, modos A/B)
+│   ├─ deploy/              # F25: units systemd WSL + README_wsl.md
+│   ├─ ble/                 # receptor_ble.py (opcional, bleak; fuera de WSL)
 │   ├─ fuentes/             # openmeteo.py (gratis sin key)
-│   ├─ datos/               # aulasense.db + exports + imagenes/ (F24, gitignored) 
-│   └─ tests/               # pytest
+│   ├─ datos/               # aulasense.db + exports + imagenes/ (gitignored; tras cutover F25 la DB
+│   │                       #   canónica vive en ~/aulasense-datos/ ext4 de WSL)
+│   └─ tests/               # pytest (ambos runtimes: Windows py3.15 + WSL py3.13)
 ├─ analysis/                # eda.py, modelo_ocupacion.py, export_consolida.py, smoke_consolida.py (F24)
 │                           #   run_analisis.ps1 · dataset/consolidado.csv (esquema §10.1)
-├─ tools/                   # start_demo/stop_demo.ps1, gen_firmware_config.py, config_mqtt.py, lee_serial.py
-│   │                       #   purga_imagenes.py (F24, retención)
+├─ tools/                   # start_demo/stop_demo.ps1, gen_firmware_config.py, config_mqtt.py,
+│   │                       #   lee_serial.py, purga_imagenes.py (F24), session_logger.py (F3)
+│   │                       #   F25: vision_describe.py, reset_admin.py, wsl_aulasense.ps1
 │   └─ generadores/         # gen_informe.py / gen_presentacion.py (docs/INFORME.docx, PRESENTACION.pptx)
 ├─ docs/                    # README.md (índice), PROPUESTA.md, guion_demo.md, fuentes.md, Word/PPTX
-├─ assets/                  # figuras EDA/modelo, diagramas
+│                           #   F25: guion_video.md, video_subtitulos.srt, video_aulasense.mp4
+├─ assets/                  # figuras EDA/modelo, diagramas; F25: diagrama_tecnico.*, 
+│                           #   poster_funcionamiento.png, video/ (escenas/audio intermedios)
 └─ .tmp/                    # temporales (gitignored)
 ```
 
@@ -172,6 +234,17 @@ server\.venv\Scripts\python.exe tools/purga_imagenes.py --dias 30   # default .e
 # Demo / análisis:
 powershell tools/start_demo.ps1 ; powershell tools/stop_demo.ps1
 powershell analysis/run_analisis.ps1 --origen real --validacion docs/validacion_sesion1.csv
+
+# F25 · Runtime WSL (primario; skill wsl-manager-cli; NUNCA dos stacks vivos):
+powershell tools/wsl_aulasense.ps1 status          # systemctl is-active ×3 + URL del dashboard
+powershell tools/wsl_aulasense.ps1 start           # arranca servicios WSL (ingesta/dashboard/vision)
+powershell tools/wsl_aulasense.ps1 stop            # para servicios WSL
+powershell tools/wsl_aulasense.ps1 refresh-portproxy  # WSL_IP cambió tras reboot (admin; fallback sin admin)
+wsl -d Debian -- ~/venvs/aulasense/bin/python -m pytest server/tests -q   # tests en runtime WSL
+# F25 · Visión (modo B agente-mediado con key TP; modo A daemon SOLO sk-* pay-as-you-go):
+#   el agente lanza: tools/vision_describe.py --once --limit 30   (rate limits/dedupe/backoff en el CLI)
+# F25 · Reset admin (acceso físico del dueño; regenera password en claves/.env, nunca la imprime):
+#   tools/reset_admin.py
 ```
 
 ## Estilo

@@ -4,6 +4,9 @@
 
 # Secretos (NUNCA commitear claves reales)
 .env
+# F25: credenciales de auth/IA (generadas SOLO por código; entrega al dueño por canal local)
+claves/*
+!claves/.env.example
 firmware/**/sdkconfig.defaults.local
 firmware/**/credentials.h
 
@@ -35,6 +38,8 @@ server/datos/*.db-shm
 server/datos/export_*.csv
 # F24: imágenes de evidencia = datos personales, NUNCA commitear (privacidad acotada local-only)
 server/datos/imagenes/
+# F25: intermedios de video (escenas/audio regenerables, pesan); el mp4 final vive en docs/
+assets/video/
 
 # Sistema
 .DS_Store

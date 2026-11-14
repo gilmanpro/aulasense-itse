@@ -2,7 +2,7 @@
 
 > Proyecto nuevo IoT2/ITSE (2026-11-12). Reemplaza al abandonado DriveGuard (`dashcam-ia/`, archivable
 > por el orquestador a `iot2/archive/`). Plan maestro del `planificador`; lo ejecuta el `@1-orquestador`
-> con el roster real. Checklist vivo: `../.tmp/checklist.md` (**v24**; v23 archivada en `checklist_pre_v24.md`). Especificación: `SPEC.md`.
+> con el roster real. Checklist vivo: `../.tmp/checklist.md` (**v25**; v24 archivada en `checklist_pre_v25.md`). Especificación: `SPEC.md`.
 > Evidencia de decisión: `../.tmp/f23_research_tendencias.md` (analista + addendum verificación primaria)
 > y `../.tmp/f23_research_viabilidad.md` (analista). Condiciones: `../.tmp/condiciones_curso.md` (C1–C14).
 > Restricciones de diseño: `../.tmp/registro_riesgos_nuevo.md` (E1–E10).
@@ -586,3 +586,502 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
    bd/pruebas/documentacion) tras F6+F24-f+F24-f2. `devops` omitido (sin Docker/CI).
 7. **Verificar en disco y marcar** el checklist v24 (solo el orquestador marca `[x]`); reconciliar las
    marcas de F2 (completa según f2_backend.md, 42 tests) y F1 (en vuelo).
+
+## 12. F25 · EXPANSIÓN (orden explícita del dueño, 2026-11-14) — decisiones, fases, riesgos
+
+> El dueño ordenó 8 frentes nuevos ("quiero todo terminado, usa planificador y especialistas, tokens los
+> que hagan falta"; bitácora 2026-11-14): (1) imágenes por MQTT, (2) servidor en WSL, (3) descripción IA
+> de imágenes + búsqueda, (4) login seguro, (5) diagrama técnico, (6) póster visual, (7) video explicativo,
+> (8) cierre TOTAL (F24 restante + F4–F7 + GATE). Esta sección adopta los supuestos declarados por el
+> orquestador **refinados con evidencia verificada en terreno y fuentes primarias (2026-11-14)**.
+> Contratos nuevos: `SPEC.md` §3.2.1, §6.2, §7.2, §7.3, §8.2, §9.2, §9.3, §12.1, §15. Checklist:
+> `../.tmp/checklist.md` **v25** (v24 archivada byte-a-byte en `checklist_pre_v25.md`).
+> **RE-ENMARQUE OBLIGATORIO:** la decisión D-F24-1/6 "imágenes NUNCA por MQTT" queda **REVOCADA** por
+> orden del dueño (2026-11-14) — ver D-F25-1 con evidencia técnica de viabilidad.
+> **F24-c ESTÁ EN VUELO por OTRO ejecutor (fotos HTTP al receptor :8001). F25 NO lo re-hace ni lo
+> interrumpe:** las fases server-side de F25 usan rutas disjuntas; el firmware F25-c se serializa DETRÁS
+> de F24-c/d/e0/e (placa única COM6 + archivos compartidos del parche); el cutover WSL (F25-b2) espera
+> el reporte de F24-c para no romper su E2E en Windows.
+
+### 12.1 Decisiones D-F25-1..13 (con evidencia archivo:linea / fuente primaria)
+
+- **D-F25-1 — IMÁGENES POR MQTT (revoca D-F24-1/6 "nunca por MQTT" por orden del dueño, 2026-11-14).**
+  Canal PRIMARIO: el nodo publica cada foto-evidencia como JSON con base64 en
+  `aulasense/v1/devices/{device_id}/image` (payload: `v, device_id, ts_ms, motivo="onset", tamano,
+  sha256, b64`; contrato SPEC §6.2). HTTP :8001 (F24-b) queda como **canal alternativo** (`canal='http'`
+  vs `canal='mqtt'` en BD). **Viabilidad verificada:**
+  - *Broker:* Mosquitto `message_size_limit` default = **0 = acepta todo mensaje MQTT válido** (máximo
+    del protocolo 268 435 455 B ≈ 256 MB) y `max_packet_size` default = **2 000 000 B** desde 2.1.
+    QVGA JPEG ~4–8 KB → b64 ~5,4–10,7 KB + envelope JSON ≈ **≤12 KB ≪ 2 MB**. Fuente:
+    mosquitto.org/man/mosquitto-conf-5.html (webfetch del planificador, 2026-11-14). La config REAL de
+    broker.gilman.pro no es legible desde aquí → **probe empírico obligatorio F25-a** (publish+subscribe
+    de 12 KB y 64 KB en `aulasense/v1/test/image_probe_*` con srv-electiva/electiva; si el broker
+    rechazara, fallback documentado: HTTP primario + MQTT solo-notificación, y se reporta al dueño).
+  - *Nodo (cuello REAL encontrado):* el transporte vendor tiene **outbox limitado a 8192 B**
+    (`firmware/espectre/src/cpp/runtime/esp_idf/mqtt_transport_esp_idf.h:90` `kMqttOutboxLimitBytes=8192U`,
+    aplicado en `.cpp:86`) → un payload b64 ~10 KB NO cabe. **Parche documentado de una línea**
+    (8192→32768, re-aplicable, registrado en `firmware/parche_aulasense/README.md` §F25, mismo patrón
+    que las ediciones vendor de cámara de F24-c). El outbox es un TOPE, no pre-asignación: subirlo no
+    reserva memoria; el heap baseline (206 KB libres, f1c_diagnostics.json:4-6) lo absorbe.
+  - *QoS/retain:* el vendor publica **QoS 0** fijo (`.cpp:384` `esp_mqtt_client_enqueue(...,0,0,...)`) →
+    pérdida posible tolerada (la imagen es accesoria; el EVENTO es la fuente de verdad, D-F24-2).
+    **retain=false SIEMPRE** (la foto NO queda persistida en el broker compartido). Vía de publicación:
+    `publish(topic_completo, payload, false)` → **NO-reemplazable** (`.cpp:154-161`: replaceable =
+    retain || topic `ha/`); NO usar `publish_suffix()` (marca todo reemplazable, `.cpp:163-171`, y el
+    high-water de 2048 B `.cpp:379-381` diferiría la imagen). El hook ya existe en el parche en vuelo:
+    `app_imagen_set_mqtt_publisher`/`app_imagen_publish_pending` (`firmware/parche_aulasense/app_imagen.h:33-42`).
+  - *Tope firmware:* si b64 > `AULASENSE_IMAGEN_MQTT_MAX_B64` (16384) → fallback HTTP (si hay receptor)
+    o descarte con log; el evento sigue. Dedupe por `sha256` en ingesta (unique index) cubre duplicados.
+  - *Privacidad (C9 sigue cumple-parcial, nueva mitigación):* las imágenes ahora transitan el broker
+    compartido AUTENTICADO (electiva publica / srv-electiva suscribe, `.env` gitignored), aisladas por
+    `topic_prefix=aulasense/v1/devices`, sin retain, QoS 0, galería loopback+login (D-F25-8), retención/
+    purga intactas, consentimiento de aula ACTUALIZADO (F25-g). Nunca a la nube. *Evidencia del cambio:*
+    orden del dueño 2026-11-14 (bitácora entrada EXPANSION F25). *Por qué:* el dueño es el dueño y ordenó
+    el transporte; la mitigación honesta es acotar el flujo (auth+prefijo+no-retain+login+retención) y
+    documentar el re-enmarque, no fingir que sigue vigente la regla vieja.
+
+- **D-F25-2 — SERVIDOR EN WSL: reutilizar la distro `Debian` 13 (trixie) YA EXISTENTE, systemd activo,
+  venv linux propio, SIN Docker (regla 4 intacta).** *Evidencia (shell lectura del planificador,
+  2026-11-14):* `wsl -l -v` → `Debian Running 2` (también existen deb-hermes1, kali, Ubuntu-24.04,
+  docker-desktop, etc. — NO se tocan); `wsl -d Debian cat /etc/os-release` → Debian GNU/Linux 13;
+  `ps -p 1` → **systemd**; `/etc/wsl.conf` ya trae `[boot] systemd=true`; `python3` NO instalado →
+  `apt install python3 python3-venv` (Debian 13 = Python 3.13, wheels abundantes: argon2-cffi/bcrypt
+  sin el riesgo cp315 de Windows). **No se crea distro nueva** (el default del dueño, Debian, ya está).
+  Gestión con skill `wsl-manager-cli` (cargada por el planificador; el ejecutor la carga en F25-b):
+  `wsl-manager doctor/status/list --json`, `start/stop/restart Debian`, `run Debian <cmd>`,
+  `autostart set Debian`; si el binario no está en PATH → fallback documentado `wsl.exe` directo
+  (troubleshooting de la skill). **Código:** se ejecuta desde `/mnt/c/Users/Gilman/Desktop/1-Universidad/
+  itse/iot2/aulasense` (el repo git sigue en Windows; CERO duplicación de código). **Datos:** en ext4
+  nativo `~/aulasense-datos/` (aulasense.db + imagenes/) — SQLite WAL sobre drvfs/9P (/mnt/c) es lento y
+  con locking poco fiable; las env `AULASENSE_DB`/`AULASENSE_DATOS_DIR` YA existen (F24-b,
+  `.tmp/f24b_server.md` "Convenciones compactadas"). **SQLite, NO MariaDB:** el esquema §8/§8.1 + 90
+  tests + writer único ya existen; MariaDB exigiría reescribir todo el SQL y el gate bd sin beneficio a
+  esta escala (~14,4k evaluaciones + cientos de imágenes). **Migración = copia con cutover** (F25-b2):
+  parar stack Windows → copiar DB+imagenes a ext4 → verificar conteos de filas → arrancar WSL →
+  **NUNCA dos stacks vivos a la vez** (split-brain, R-F25-6). El venv Windows `server\.venv` queda como
+  **fallback de emergencia documentado** (parar WSL antes de arrancarlo). Análisis F5a: corre en el
+  venv WSL (pandas/sklearn instalados ahí) o Windows leyendo el consolidado CSV que el export WSL
+  escribe en `analysis/dataset/` (ruta del repo) — el criterio es `run_analisis` punta a punta verde.
+
+- **D-F25-3 — RED WSL: NAT intacto, NO tocar `.wslconfig` global; portproxy LOOPBACK en Windows.**
+  *Evidencia:* `.wslconfig` actual = `localhostForwarding=false`, memory=10GB, processors=3, SIN
+  networkingMode (NAT); **8 distros comparten la misma VM** → mirrored global afectaría kali/docker/
+  ubuntu del usuario. **Mirrored per-distro es IMPOSIBLE:** issue microsoft/WSL#13706, cerrado
+  "not planned" el 2025-11-12 por el mantenedor (benhillis): "architecturally this is not possible since
+  all distros share a single VM" (webfetch 2026-11-14). Por tanto:
+  - Dashboard bind `0.0.0.0` **dentro de la VM WSL** (NAT = VM-local; SIN portproxy LAN es inalcanzable
+    desde la LAN) + **`netsh interface portproxy` con `listenaddress=127.0.0.1`** listenport=8000 →
+    WSL_IP:8000. La exposición en Windows sigue siendo ESTRICTAMENTE loopback (la regla dura se
+    reinterpreta así en AGENTS: "superficie expuesta en Windows = solo 127.0.0.1"). Requiere admin
+    una vez; `tools/wsl_aulasense.ps1` refresca la WSL_IP (cambia tras reboot) y re-aplica el portproxy.
+  - **Fallback sin admin:** navegador Windows → `http://<WSL_IP>:8000` (host→VM siempre enrutable en
+    NAT) + `AULASENSE_ORIGINS_EXTRA=<WSL_IP>:8000` (exacto, opt-in, sin wildcards). El script imprime
+    la URL. La LAN NO alcanza la WSL_IP (NAT sin portproxy de escucha LAN).
+  - **Salida WSL→broker externo:** NAT permite outbound (verificación obligatoria F25-b1: paho connect
+    rc=0 + mensaje real desde WSL). **HTTP :8001 desde el nodo (LAN→WSL):** NAT lo bloquea → portproxy
+    LAN OPT-IN documentado (listenaddress=IP_LAN del PC + regla firewall) SOLO si el dueño quiere el
+    canal alternativo HTTP activo en WSL; con MQTT primario (D-F25-1) NO es necesario. Origin guard y
+    login (D-F25-8) intactos en todos los casos.
+
+- **D-F25-4 — VISIÓN IA: modelo `qwen3.8-flash` (visual understanding) del Token Plan; `qwen3-vl`/
+  `qwen-vl-max` NO están en la allowlist TP (supuesto del orquestador REFINADO con fuente primaria).**
+  *Evidencia:* docs.qwencloud.com/token-plan/personal/token-plan-personal-overview (webfetch del
+  planificador 2026-11-14), tabla "Supported models" = **allowlist exact-string**: los modelos con
+  "visual understanding" son `qwen4-max-preview`, `qwen3.8-max`, **`qwen3.8-flash`**, `qwen3.7-plus`,
+  `qwen3.6-flash`, `deepseek-v4.1-flash(-1017)`, `auto`. NO existe ningún `qwen*-vl*` en TP.
+  **Default `qwen3.8-flash`** (tier flash = el más barato con visión; descuento nocturno 60 %
+  22:00–08:00 UTC+8 documentado en la misma página); cadena de fallback `qwen3.6-flash` → `auto`.
+  Con key **pay-as-you-go `sk-*`** (opcional, la rellena el operador) sí existen `qwen3-vl-flash`/
+  `qwen-vl-max` vía `https://maas.qwencloudapi.com/compatible-mode/v1` (alternativa documentada, NO
+  requerida). Base TP verificada: `https://token-plan.maas.qwencloudapi.com/compatible-mode/v1`
+  (200 en vivo 2026-11-09, skill qwen-web-search §cadena de bases). **Key resuelta SIEMPRE por código:**
+  env `DASHSCOPE_API_KEY` → `claves/.env` → `auth.json` (providers alibaba-token-plan, patrón de las
+  skills qwen-*); el modelo NUNCA la escribe ni la imprime. Llamada: chat/completions compatible-mode
+  con `image_url` data-URI base64 (QVGA ~10 KB viaja inline; docs TP "Add visual understanding").
+
+- **D-F25-5 — CUMPLIMIENTO ToS DEL TOKEN PLAN (hallazgo crítico): worker autónomo con key `sk-sp-`
+  PROHIBIDO → dos modos de operación.** *Evidencia:* misma página TP, "Terms of use → Usage scope":
+  "Use is limited to interactive use within programming and agent tools… **It must not be used for
+  automation scripts, custom application backends, or any non-interactive batch call scenarios**…
+  calls initiated interactively within a tool are considered normal use" (webfetch 2026-11-14).
+  Un daemon systemd llamando solo con la key del plan = backend de aplicación → riesgo de suspensión/
+  BAN de la key. **Solución adoptada (sin preguntas, supuesto documentado):**
+  - **Modo A (daemon autónomo `aulasense-vision.service`):** SOLO se activa si la key resuelta es
+    pay-as-you-go `sk-*` (DashScope permite backends). El CLI/systemd unit **rechaza `sk-sp-` con log
+    honesto** (guarda verificable por el gate seguridad). Sin key → worker idle (regla 13: el sistema
+    completo funciona sin IA).
+  - **Modo B (agente-mediado, DEFAULT con key TP `sk-sp-`):** el MISMO CLI `tools/vision_describe.py
+    --once --limit N` lo lanza interactivamente un agente en sesión (@2-ejecutor→5-dev; el patrón
+    sancionado por los ToS: "models are accessed through the tools' extension mechanisms (Skill,
+    Slash Command, or Agent)"). El orquestador agenda pasadas (p.ej. tras cada sesión F4 y antes de
+    F6a). Rate limits/dedupe/backoff/presupuesto aplican IGUAL en ambos modos (el CLI los impone, no
+    el lanzador). La cola queda en BD (`vision_estado='pendiente'`); ningún modo pierde imágenes.
+  *Por qué:* cumple la orden del dueño (descripciones IA + búsqueda) sin violar el contrato del
+  proveedor ni arriesgar la key del plan; la limitación se documenta honestamente en AGENTS/PROPUESTA.
+
+- **D-F25-6 — RATE LIMIT DE VISIÓN OBLIGATORIO + PRESUPUESTO HONESTO.** Cola persistente en BD
+  (columnas `vision_*` en `imagenes`, §8.2). Topes configurables por env: `AULASENSE_VISION_MAX_DIA=120`
+  (default conservador ordenado), `AULASENSE_VISION_MAX_HORA=20`; contadores persistentes (tabla
+  `vision_uso`) que sobreviven reinicios. **Dedupe por `hash_sha256`** (unique index; una imagen nunca
+  se describe dos veces). **Reintentos con backoff exponencial** (máx 2: 10 s/30 s; 429 → respetar
+  Retry-After; error de red → `vision_estado='error'` reintetable, no bucle infinito). **Interruptible:**
+  SIGTERM limpio + `--stop` + estado en BD (reanudable). **Presupuesto documentado con medición real:**
+  QVGA 320×240 ≈ 300–500 tokens de visión + prompt ~100 + salida ~150 ≈ **~1k tokens/imagen**;
+  120 imágenes/día ≈ 120k tokens/día (tier flash = Credits bajos; el descuento nocturno TP aplica).
+  **Paso 0 obligatorio (F25-a):** 1 llamada de prueba con una imagen real/sintética → leer `usage` de
+  la respuesta y el consumo real en Model usage del TP → registrar en `.tmp/f25a_vision_paso0.json` +
+  `.tmp/f25_vision_presupuesto.md`. CERO promesas de coste sin medir (patrón E10). El worker registra
+  tokens/imagen en `vision_uso` para auditoría del gate.
+
+- **D-F25-7 — BÚSQUEDA EN GALERÍA: LIKE parametrizado sobre `descripcion`/`etiquetas` (+filtros
+  canal/estado/device/fecha); FTS5 solo como evolución documentada.** Volumen esperado: cientos de
+  imágenes (1 por onset, cooldown 15 s) → `LIKE '%texto%'` parametrizado (escapando `%`/`_`) responde
+  en ms; FTS5 añadiría tabla virtual + triggers sin beneficio a esta escala. Criterio de escalado
+  documentado: si >5 000 imágenes o latencia >100 ms → migrar a FTS5 (extensión futura). Endpoint
+  `GET /api/imagenes?q=&canal=&vision_estado=` (SPEC §9.3); UI: caja de búsqueda en pestaña Galería,
+  `esc()`/textContent, sin innerHTML. La descripción la genera el worker (D-F25-4/5) en español,
+  1–2 frases + etiquetas separadas por coma (prompt acotado, salida ≤200 tokens).
+
+- **D-F25-8 — LOGIN SEGURO: admin único, Argon2id (argon2-cffi) con fallback `hashlib.scrypt` stdlib,
+  sesiones cookie HttpOnly+SameSite=Lax, lockout progresivo por IP+usuario, logout, expiración.**
+  - **Hash:** argon2-cffi (wheels linux py3.13 verificados en el ecosistema; en WSL se instala sin
+    fricción). Fallback portable SIN dependencias: `hashlib.scrypt` (stdlib; N=2^14, r=8, p=1, salt
+    16 B) — cubre el venv Windows py3.15 si el wheel argon2 no existiera. passlib/bcrypt quedan como
+    alternativa documentada, no requerida. **Password generado POR CÓDIGO** (`secrets.token_hex(16)`)
+    en F25-e → escrito en `claves/.env` (D-F25-9), NUNCA impreso ni commiteado.
+  - **Sesiones:** token `secrets.token_urlsafe(32)`; en BD solo su **SHA-256** (tabla `sesiones`);
+    cookie `aulasense_sesion` HttpOnly, SameSite=Lax, Path=/, Max-Age=43200 (12 h absoluta) +
+    inactividad 2 h (sliding, verificada en cada request); `Secure` omitido CON JUSTIFICACIÓN (http en
+    loopback; el navegador trata localhost como secure context — documentado en SPEC §9.2). Logout
+    borra la sesión en BD + cookie. Expiradas se limpian al arrancar (DELETE idempotente).
+  - **Rate-limit de intentos:** tabla `intentos_login` (ip, username, ts, exito); ventana 15 min:
+    ≥5 fallos → lock 60 s; ≥10 → 15 min; ≥20 → 1 h; respuesta **429 + Retry-After**; el lockout es
+    TEMPORAL (auto-expira) → **mitigación del encierro del dueño** (R-F25-3): además
+    `tools/reset_admin.py` (CLI local, acceso físico = dueño) regenera la password en `claves/.env`
+    y limpia lockouts. Éxito resetea el contador.
+  - **Cobertura:** TODAS las rutas del dashboard exigen sesión salvo `GET/POST /login`, `POST /logout`,
+    estáticos de la página de login y `/internal/*` (máquina-a-máquina local: Origin guard vigente,
+    sin sesión — documentado). `WS /ws` valida la cookie en el handshake (403 sin sesión).
+    `POST /api/validacion` (F3) pasa a requerir sesión (el operador usa el navegador logueado;
+    session_logger CLI escribe por BD, no afectado). **Origin guard INTACTO** y extendido a
+    `POST /login` (anti-CSRF junto a SameSite=Lax). XSS/SQL param intactos. Tests existentes se
+    adaptan con fixture de sesión (NO se debilitan).
+  - **Modelo de amenaza actualizado (AGENTS):** el dashboard deja de ser "solo loopback sin auth" →
+    **loopback + auth** (defensa en profundidad: aunque un proceso local o un SSRF intente pegarle,
+    sin sesión no lee datos). Bind/exposición loopback intacto (D-F25-3).
+
+- **D-F25-9 — `claves/.env` vive en `aulasense/claves/.env` (carpeta NUEVA dentro del repo,
+  gitignored).** *Decisión:* dentro de `aulasense/` (no en la raíz de iot2) porque el server la lee
+  relativa al repo (funciona igual desde WSL vía /mnt/c), el `.gitignore` del repo la cubre y no se
+  mezcla con otros proyectos de iot2. Contenido (NOMBRES en `claves/.env.example`, valores vacíos):
+  `AULASENSE_ADMIN_USER=admin`, `AULASENSE_ADMIN_PASSWORD=` (generada por código en F25-e),
+  `DASHSCOPE_API_KEY=` (opcional; el operador la rellena si tiene pay-as-you-go; si vacío se resuelve
+  la TP desde auth.json SOLO para modo B). El `.env` raíz sigue para WiFi/MQTT/upload; el loader lee
+  ambos (claves/ tiene prioridad para auth/IA). **Entrega al dueño: canal local** (el archivo en disco;
+  el dueño lo abre). NUNCA en logs, reportes, evidencia `.tmp/`, docs ni commits. `.gitignore`:
+  `claves/*` + `!claves/.env.example`. Regla nueva en AGENTS (15).
+
+- **D-F25-10 — DIAGRAMA TÉCNICO con skill `graphic-arq-software`: C4 contenedores + flujo de datos.**
+  Entregable `assets/diagrama_tecnico.dsl` (Structurizr) o fuente equivalente de la skill +
+  `assets/diagrama_tecnico.svg` + **`assets/diagrama_tecnico.png`** (versión png obligatoria).
+  Contenido: ESP32-S3 (CSI+detector+cámara) → broker.gilman.pro (MQTT motion+image) → WSL Debian
+  (ingesta+decoder → SQLite ext4 → dashboard FastAPI loopback+login → worker visión → QwenCloud) →
+  navegador Windows; canal alternativo HTTP :8001; fases del pipeline F1→F25. Ejecuta
+  @2-ejecutor→5-dev con la skill cargada (bash: structurizr/plantuml/python-diagrams según skill).
+  Rutas disjuntas (assets/) → paralelo total.
+
+- **D-F25-11 — PÓSTER VISUAL con skill `qwen-imagen` (@6-medios).** Concepto CSI: ondas Wi-Fi
+  atravesando el aula, persona caminando, chip ESP32-S3, dashboard con galería; estilo explicativo
+  limpio, texto en español renderizado por el modelo. **Auto-selección del modelo barato** (la skill
+  elige sola entre wan2.7-image / qwen-image-3.0-pro según su tabla; NUNCA pregunta). Coste honesto:
+  ~$0,03–0,075 por imagen de referencia equivalente en Credits (skill qwen-imagen); 1 póster + máximo
+  1 variante. **Paso 0:** validar que la skill cubre la tarea (script + key); si no cubre → reportar,
+  NO improvisar (orden del dueño). Entregable `assets/poster_funcionamiento.png` (+ fuente/prompt en
+  `.tmp/f25f2_poster.md`).
+
+- **D-F25-12 — VIDEO EXPLICATIVO COMPLETO: guion primero, escenas HappyHorse 480P, ensamblaje FFmpeg
+  por 5-dev (graphic-video NO está en el roster de 6-medios).** Cadena:
+  1. `docs/guion_video.md` (@4-documentos): narrativa DriveGuard (inicio) → por qué falló el enfoque
+     de caras (E1: nunca detectó una cara real en vivo) → qué es CSI → cómo funciona AulaSense →
+     pasos de construcción (F1→F25) → finalidad. 6–8 escenas de 5 s + narración por escena + SRT.
+  2. Escenas (@6-medios, skill `qwen-video`): **happyhorse-1.1-t2v** (en allowlist TP, verificado
+     2026-11-09 por la skill), **480P** (resolución mínima que cumple; auto-selección), clips 5 s,
+     ≤8 clips ≈ 40 s. **Presupuesto por segundos documentado:** ~$0,07/s equivalente (skill) →
+     ~$2,8–4,2 en Credits; **Paso 0 OBLIGATORIO: 1 clip de prueba de 3–5 s y leer el consumo REAL**
+     antes del lote (la propia doc TP lo recomienda: "use a shorter duration and lower resolution,
+     check the actual consumption per call"). Si el consumo real es anómalo → parar y reportar.
+  3. Voz TTS OPCIONAL (@6-medios, skill `qwen-audio`): `qwen-audio-3.0-tts-plus`, voces verificadas
+     longanlingxin (F) / longanlufeng (M), español verificado empíricamente (skill). Si la key/ToS
+     no cubre → video con subtítulos sin voz (degradación honesta documentada).
+  4. Ensamblaje + subtítulos (@2-ejecutor→5-dev, skill `graphic-video`/FFmpeg): concat escenas +
+     audio TTS + SRT burn-in → **`docs/video_aulasense.mp4`** (H.264+AAC, ≤1080p de salida aunque
+     las escenas sean 480P). **Paso 0 por skill:** 6-medios valida qwen-video y qwen-audio por
+     separado y reporta si algo NO es cubrible — NO improvisar (orden explícita del dueño).
+     Intermedios en `assets/video/` (escenas, audio, srt) gitignored si pesan; el mp4 final se
+     trackea si <50 MB (si no, gitignored + nota de reproducción).
+
+- **D-F25-13 — CIERRE TOTAL INTEGRADO (orden 8 del dueño).** Tras F25: cerrar F24-d/e0/e/f2/f (cadena
+  placa serializada), F4 (3 sesiones ground truth HOY+MAÑANA, usuario autorizó tiempo; panel F3 +
+  session_logger), F5a/F5b, F6a (INFORME.docx + PRESENTACION.pptx ACTUALIZADOS con TODO: WSL,
+  MQTT-imágenes, vision-descriptions+búsqueda, login, diagramas, video), F6b (ensayo demo sobre el
+  runtime WSL con login+galería+imagen MQTT en vivo), GATE ×7 con criterios nuevos (WSL hardening,
+  login rate-limit, presupuesto Credits, ToS, payload MQTT) + `auditor-externo` OPCIONAL (doble ciego
+  cmdc; se INCLUYE como pasada externa del mega-cierre si `cmdc` está disponible — skill
+  validacion-con-commandcode; si no, validación interna y se anota), F7 commit final + **REPORTE DE
+  TODO al usuario**. `devops` sigue OMITIDO (sin Docker/CI; el hardening WSL/systemd lo cubren
+  seguridad+arquitectura — se anota el porqué).
+
+### 12.2 Refinamiento de los supuestos del orquestador (evidencia → ajuste)
+
+| Supuesto del orquestador | Veredicto | Evidencia / ajuste |
+|---|---|---|
+| 1. Mosquitto soporta QVGA b64 ~10 KB | **CONFIRMADO con matiz** | message_size_limit default 0 / max_packet_size 2 MB (man oficial 2026-11-14). El cuello NO es el broker sino el **outbox vendor de 8192 B** (mqtt_transport_esp_idf.h:90) → parche 1 línea a 32768 (D-F25-1). Probe empírico F25-a obligatorio (config real del broker no legible). |
+| 2. WSL Debian default, sin Docker, venv linux, SQLite vs MariaDB | **REFINADO** | Debian 13 YA existe con systemd (no crear distro). SQLite SÍ (esquema+90 tests existentes; MariaDB = reescritura sin beneficio). Datos en ext4 (WAL sobre 9P no fiable). Red: NAT+portproxy loopback; mirrored per-distro IMPOSIBLE (WSL#13706) y global afectaría 8 distros → NO tocar .wslconfig (D-F25-2/3). |
+| 3. Qwen vision qwen3-vl/qwen-vl-max, key del plan | **REFINADO (crítico)** | qwen*-vl NO está en la allowlist TP exact-string → **qwen3.8-flash** (visual understanding, tier barato). **ToS TP prohíben backends autónomos con sk-sp-** → modo B agente-mediado (default) / modo A daemon solo con sk-* pay-as-you-go (D-F25-4/5). Rate limit 120/día + 20/h, dedupe hash, backoff, interruptible, presupuesto medido en Paso 0 (D-F25-6). |
+| 4. Login con credenciales en claves\.env (¿dónde?) | **DECIDIDO** | `aulasense/claves/.env` gitignored (D-F25-9); Argon2id + fallback scrypt stdlib; lockout temporal + reset_admin.py local para no encerrar al dueño (D-F25-8). |
+| 5. Diagrama técnico graphic-arq-software | **ADOPTADO** | C4 contenedores + flujo, assets/diagrama_tecnico.* + png (D-F25-10). |
+| 6. Póster qwen-imagen, modelo barato | **ADOPTADO** | 6-medios, auto-selección, Paso 0, coste ~$0,03–0,075/imagen (D-F25-11). |
+| 7. Video HappyHorse + TTS + FFmpeg | **ADOPTADO con ajuste de roster** | graphic-video NO está en las skills de 6-medios → ensamblaje lo hace 5-dev bajo ejecutor; 6-medios solo escenas (qwen-video) + voz (qwen-audio), Paso 0 por skill, 480P mínimo, presupuesto por segundos medido antes del lote (D-F25-12). |
+| 8. Cierre total F24+F4–F7+GATE | **ADOPTADO** | F24-c en vuelo NO se toca; F25-c firmware detrás de la cadena placa; F4 hoy+mañana; F6a con TODO; GATE ×7 + auditor-externo opcional; F7 reporte total (D-F25-13). |
+
+### 12.3 Mapa de fases F25 (agente · sub-despachos · background · deps · entregable · criterio)
+
+> Regla: TODA delegación `background: SI`. Techos: ejecutor 500, dev 400, analista 300, especialistas
+> 300. Rutas disjuntas por fase → paralelismo máximo. La placa COM6 serializa F24-c→F24-d→F24-e0→
+> (F24-e)→F25-c. El cutover WSL (F25-b2) espera F24-c. Detalle ejecutable: checklist v25.
+
+- **F25-a · PROBES de viabilidad + Paso 0 visión** — `@3-analista` (solo lectura/probes inocuos).
+  background SI. **Deps: ninguna.** Entregables `.tmp/f25a_viabilidad.md`, `.tmp/f25a_probe_mqtt.json`,
+  `.tmp/f25a_vision_paso0.json`, `.tmp/f25_vision_presupuesto.md`. Criterio: (1) publish+subscribe
+  paho de 12 KB y 64 KB b64 en `aulasense/v1/test/image_probe_*` (srv-electiva y electiva) → roundtrip
+  OK o límite real documentado; (2) 1 llamada visión qwen3.8-flash con imagen de prueba → `usage`
+  registrado + modelo confirmado en allowlist; (3) inventario WSL read-only (distro, systemd, python)
+  confirmado. ~120 steps ≤300. NO toca firmware/placa ni código de producto.
+- **F25-b1 · WSL montaje (sin cutover)** — `@2-ejecutor` → `5-dev` (skill `wsl-manager-cli` cargada).
+  background SI. **Deps: ninguna** (paralelo a F24-c; NO para el stack Windows). Entregables
+  `server/deploy/aulasense-ingesta.service`, `aulasense-dashboard.service`, `aulasense-vision.service`
+  (unit con guarda sk-sp-), `server/deploy/README_wsl.md`, `tools/wsl_aulasense.ps1`
+  (start/stop/status/portproxy-refresh/url), `server/requirements-linux.txt`, `.tmp/f25b1_wsl.md`.
+  Criterio: venv linux py3.13 creado + deps instaladas; pytest verde en WSL (suite existente);
+  paho WSL→broker rc=0 con mensaje real; units systemd instaladas (enabled, aún sin DB migrada);
+  portproxy 127.0.0.1:8000→WSL_IP aplicado (o fallback WSL_IP documentado); dashboard de prueba
+  responde desde navegador Windows (curl 200). ~350 steps ≤400.
+- **F25-b2 · WSL cutover (migración DB)** — `@2-ejecutor` → `5-dev`. background SI. **Deps: F25-b1 +
+  F24-c COMPLETA** (no romper el E2E HTTP en vuelo) + F25-d1 (decoder listo). Entregables
+  `~/aulasense-datos/aulasense.db` + `imagenes/` (copiados), `.tmp/f25b2_cutover.md`. Criterio:
+  stack Windows parado (puertos 8000/8001 libres); conteos de filas DB origen==destino (por tabla);
+  servicios WSL activos (systemctl is-active ×3); nodo real → MQTT → SQLite WSL → dashboard <2 s;
+  **un solo writer vivo** (verificado); fallback Windows documentado probado (arranque/parada).
+  ~150 steps.
+- **F25-c · FIRMWARE imagen por MQTT** — `@2-ejecutor` → `5-dev` (firmware). background SI.
+  **Deps: F24-c + F24-d completadas (+F24-e0/e si corrieron) + F25-a + F25-d1 + F25-b2** (placa serial
+  + receptor WSL vivo). Entregables `firmware/parche_aulasense/app_imagen.c/.h` (extiende, NO rehace),
+  `README.md` §F25 (parche outbox 8192→32768 documentado, re-aplicable), Kconfig
+  (`AULASENSE_IMAGEN_MQTT` bool default y, `AULASENSE_IMAGEN_MQTT_MAX_B64` 16384),
+  `.tmp/f25c_build.log`/`f25c_flash.log`/`f25c_evidencia.md`/`f25c_metricas.json`. Criterio: ≥3
+  imágenes reales canal='mqtt' en BD+galería (onset→galería <5 s medido); sha256/dedupe verificado;
+  payload >16 KB → fallback/descarte con log y el EVENTO sigue; retain=false verificado (subscribe
+  tardío NO recibe fotos viejas); cooldown 15 s y gate memoria intactos; `csi_accepted_pps` no cae
+  >10 % vs F1c; sdkconfig pre-flash (SPIRAM octal, sin USB device). ~350 steps ≤400.
+- **F25-d1 · INGESTA decoder MQTT-image + esquema** — `@2-ejecutor` → `5-dev` D1. background SI.
+  **Deps: ninguna** (contract-first SPEC §6.2/§7.2/§8.2; paralelo YA). Entregables
+  `server/ingesta/esquema.py` (migración idempotente §8.2: columnas canal/descripcion/etiquetas/
+  vision_* + tablas usuarios/sesiones/intentos_login/vision_uso), `server/ingesta/ingesta_mqtt.py`
+  (suscribe `+/image`, handler decoder), `server/tests/test_imagen_mqtt.py`. Criterio: ≥10 tests
+  nuevos verdes (b64 válido→archivo+fila canal='mqtt'; b64 corrupto→descarte+log; sha256 mismatch→
+  descarte; tamano incoherente→descarte; >64 KB JSON→descarte; device desconocido→descarte;
+  dedupe hash→no duplica; FK evento_id por ventana onset; rate 1/10 s→descarte; writer único
+  preservado — todo encola en la cola existente). Ruta disjunta: server/ingesta + test_imagen_mqtt.
+  ~300 steps ≤400.
+- **F25-d2 · WORKER VISIÓN (CLI + rate limits + modes A/B)** — `@2-ejecutor` → `5-dev` D2.
+  background SI. **Deps: ninguna** (contract-first §7.3/§8.2; el esquema lo crea D1 — coordinar por
+  contrato, tests con DB temporal propia). Entregables `tools/vision_describe.py`,
+  `server/vision/__init__.py`+`cliente.py` (resolución de key por código, cadena de modelos, backoff),
+  `server/tests/test_vision.py`, `.tmp/f25d2_vision.md`. Criterio: ≥10 tests verdes (dedupe hash,
+  tope día/hora con contador persistente, backoff 429, interruptible SIGTERM, guarda sk-sp-→rechaza
+  daemon, key vacía→idle honesto, UPDATE solo columnas vision_* con WAL+busy_timeout); 1 pasada real
+  modo B sobre ≥1 imagen (descripción+etiquetas en BD, usage registrado); presupuesto actualizado.
+  Ruta disjunta: tools/vision_describe.py + server/vision/ + test_vision. ~350 steps ≤400.
+- **F25-e · LOGIN SEGURO dashboard** — `@2-ejecutor` → `5-dev` E. background SI. **Deps: ninguna**
+  (contract-first §9.2; paralelo YA). Entregables `server/dashboard/auth.py` (nuevo),
+  `server/dashboard/app.py` (middleware+login/logout, edición acotada), `static/login.html`,
+  `tools/reset_admin.py`, `claves/.env` (GENERADO por código, gitignored), `server/tests/test_auth.py`.
+  Criterio: ≥12 tests verdes (login OK→cookie HttpOnly+SameSite; pass mala→401 sin pista; 5 fallos→
+  429+Retry-After; lockout progresivo 60 s/15 min/1 h; expiración 12 h/2 h idle; logout invalida;
+  rutas protegidas 401/302 sin sesión; /ws sin cookie→403; Origin guard en POST /login→403;
+  reset_admin regenera; hash argon2/scrypt verificado; tests previos adaptados con fixture, suite
+  completa verde). Password NUNCA impresa (grep evidencia). Ruta disjunta: auth.py+login.html+
+  reset_admin+test_auth (app.py: solo wiring de middleware; d3 espera a e para tocar app.py).
+  ~350 steps ≤400.
+- **F25-d3 · GALERÍA: búsqueda por texto + filtros** — `@2-ejecutor` → `5-dev` D3. background SI.
+  **Deps: F25-e + F25-d1** (app.py compartido con login; columnas vision_* de D1). Entregables
+  `server/dashboard/app.py` (extiende /api/imagenes con q/canal/vision_estado), `static/index.html`+
+  `app.js` (caja de búsqueda + badges descripción/etiquetas/canal), `server/tests/test_dashboard.py`
+  (extiende). Criterio: ≥6 tests verdes (q LIKE parametrizado encuentra por descripción/etiquetas;
+  comodines %/_ escapados; filtros combinados; sin sesión→401; XSS escapado; ruta absoluta nunca
+  expuesta); búsqueda en vivo con ≥1 imagen descrita devuelve la fila. ~180 steps ≤400.
+- **F25-f1 · DIAGRAMA TÉCNICO** — `@2-ejecutor` → `5-dev` (skill `graphic-arq-software`). background
+  SI. **Deps: ninguna** (assets/ disjunto; el diagrama refleja el contrato SPEC, no espera código).
+  Entregables `assets/diagrama_tecnico.dsl` (o fuente de la skill), `.svg`, **`.png`**,
+  `.tmp/f25f1_diagrama.md`. Criterio: los 3 archivos existen; el png abre y muestra C4 contenedores
+  ESP32→broker→WSL→dashboard + flujo de imagen MQTT/HTTP + worker visión; coherente con SPEC §15.
+  ~150 steps.
+- **F25-f2 · PÓSTER VISUAL** — `@6-medios` (skill `qwen-imagen`, despacho directo del orquestador).
+  background SI. **Deps: ninguna.** Entregables `assets/poster_funcionamiento.png`,
+  `.tmp/f25f2_poster.md` (prompt, modelo, coste). Criterio: Paso 0 skill validado; png existe con el
+  concepto CSI (ondas/persona/chip/dashboard); coste registrado; si la skill no cubre → reporte
+  honesto, NO improvisación. ~80 steps ≤300.
+- **F25-f3 · GUION DEL VIDEO** — `@4-documentos` (despacho directo). background SI. **Deps: ninguna.**
+  Entregable `docs/guion_video.md` (+ `docs/video_subtitulos.srt` base). Criterio: narrativa completa
+  DriveGuard→fallo caras→CSI→cómo funciona→construcción→finalidad; 6–8 escenas de 5 s con prompt
+  visual por escena + narración TTS + tiempos SRT coherentes; honestidad (métricas vendor vs propias,
+  motion≠presencia). ~150 steps ≤300.
+- **F25-f4 · ESCENAS + TTS** — `@6-medios` (skills `qwen-video` + `qwen-audio`, Paso 0 POR SKILL).
+  background SI. **Deps: F25-f3.** Entregables `assets/video/escena_01..08.mp4` (happyhorse-1.1-t2v
+  480P 5 s), `assets/video/narracion_*.mp3` (qwen-audio-3.0-tts-plus, español), `.tmp/f25f4_video.md`
+  (consumo REAL por clip tras el clip de prueba, presupuesto total). Criterio: Paso 0 por skill
+  (si algo no cubrible → reportar y parar esa rama, NO improvisar); 1 clip de prueba medido ANTES del
+  lote; ≤8 clips; consumo registrado; TTS opcional degradado a subtítulos si no cubre. ~200 steps
+  ≤300 + espera asíncrona de generación (poll de la skill).
+- **F25-f5 · ENSAMBLAJE VIDEO** — `@2-ejecutor` → `5-dev` (skill `graphic-video`/FFmpeg). background
+  SI. **Deps: F25-f4 (+f3 para SRT).** Entregables **`docs/video_aulasense.mp4`**,
+  `docs/video_subtitulos.srt` (final), `.tmp/f25f5_ensamblaje.md`. Criterio: mp4 existe; duración
+  ≈40–60 s, H.264+AAC, subtítulos burn-in legibles, narración sincronizada (si hubo TTS), abre en
+  reproductor local (ffprobe válido); intermedios ordenados en assets/video/. ~150 steps.
+- **F25-g · DOCS F25 + re-enmarque + verificación** — `@4-documentos` (directo) + `@3-analista`
+  (verificación solo lectura). background SI. **Deps: F25-b2+c+d1+d2+d3+e+f1+f2+f5.** Entregables
+  `README.md`, `docs/README.md` (índice), `docs/PROPUESTA.md`, `docs/fuentes.md` (URLs+fechas F25),
+  `docs/consentimiento_aula.md` (ACTUALIZADO: tránsito por broker), `docs/politica_retencion_imagenes.md`,
+  `.tmp/f25g_verificacion.md`. Criterio: grep CERO afirmaciones vigentes "imágenes nunca por MQTT"/
+  "solo loopback sin auth"; C9 cumple-parcial con mitigaciones nuevas; ToS TP y modos A/B documentados;
+  presupuesto Credits real documentado; WSL+login+búsqueda+diagramas+video en el índice; el analista
+  verifica que toda ruta citada existe. ~200 docs + ~100 analista.
+- **F25-h · CIERRE TOTAL** — paraguas de los renglones existentes ACTUALIZADOS en checklist v25:
+  F24-d/e0/e/f2/f (cadena placa), F4 (3 sesiones HOY+MAÑANA), F5a/F5b, F6a (INFORME+PPTX con TODO),
+  F6b (ensayo en WSL), GATE ×7 (+auditor-externo opcional), F7 (commit final + REPORTE DE TODO al
+  usuario, `.tmp/cierre_v25.md`). Ver checklist v25 para el renglón por renglón.
+
+#### Grupos [PARALELO] (maximizados; todas las delegaciones background SI)
+
+- **[PARALELO G-F25-1] LANZAR YA (8 delegaciones + F24-c ya en vuelo):** F25-a (analista) ∥ F25-b1
+  (WSL setup) ∥ F25-d1 (decoder ingesta) ∥ F25-d2 (worker visión) ∥ F25-e (login) ∥ F25-f1 (diagrama)
+  ∥ F25-f2 (póster, 6-medios) ∥ F25-f3 (guion, 4-documentos). Rutas 100 % disjuntas; ninguna toca la
+  placa ni el stack Windows en vuelo (F24-c). F25-d2 y F25-e no pisan app.py (d2 = tools/+server/vision;
+  e = auth.py+wiring acotado).
+- **[PARALELO G-F25-2] al cerrar F24-c:** F25-b2 (cutover WSL) ∥ F24-d (placa) ∥ F25-f4 (escenas, si
+  f3 listo) ∥ F25-d3 (búsqueda, si e+d1 listos) ∥ F4-sesión-1 (operador, ground truth panel F3).
+- **[PARALELO G-F25-3] cadena placa serializada:** F24-d → F24-e0 (spike ≤200) → F24-e (solo si PASS)
+  → F25-c (MQTT image). En paralelo sin placa: F25-f5 (ensamblaje, si f4 listo), F24-f2 (consolidado),
+  F4-sesión-2/3 (mañana), F5a/F5b (tras F4).
+- **[PARALELO G-F25-4] cierre:** F25-g (docs) ∥ F24-f (docs F24, se fusiona en F25-g si coincide) →
+  F6a ∥ F6b → GATE ×7 (+auditor-externo) → F7.
+- Dependencias que IMPIDEN agrupar más (todas demostrables): F25-b2←F24-c (cutover rompería el E2E
+  HTTP en vuelo); F25-c←cadena placa (COM6 única + app_imagen.c compartido); F25-d3←F25-e (app.py
+  mismo archivo); F25-f4←f3 (guion es entrada); F25-f5←f4 (escenas son entrada); F25-b2←F25-d1
+  (el decoder debe estar en el código que migra); F6a←F5a+F5b+F25-g (contenido completo).
+
+### 12.4 Supuestos nuevos F25 (S16–S22, numerados, visibles)
+
+| # | Supuesto | Fuente/verificación | Estado |
+|---|---|---|---|
+| S16 | broker.gilman.pro acepta payloads ~12 KB (default Mosquitto message_size_limit=0, max_packet_size 2 MB); la config real se confirma con probe | man mosquitto.conf (webfetch 2026-11-14); probe F25-a | Nuevo → gate F25-a; fallback HTTP primario si rechazara |
+| S17 | La distro Debian 13 existente (systemd ON) sirve de runtime; NAT+portproxy loopback da acceso desde Windows sin tocar .wslconfig global | wsl -l -v / os-release / wsl.conf leídos 2026-11-14; WSL#13706 (mirrored per-distro imposible) | Nuevo → gate F25-b1 (curl 200 desde Windows) |
+| S18 | qwen3.8-flash (visual understanding) está en la allowlist TP y describe QVGA en español con ~1k tokens/imagen; ToS TP exigen modo agente-mediado para sk-sp- | docs.qwencloud.com TP overview (webfetch 2026-11-14); Paso 0 F25-a mide usage real | Nuevo → gate F25-a (llamada real) |
+| S19 | argon2-cffi tiene wheel linux py3.13; fallback hashlib.scrypt stdlib cubre cualquier plataforma | ecosistema wheels Debian 13; scrypt es stdlib | Nuevo → gate F25-e (test de hash) |
+| S20 | SQLite WAL en ext4 WSL rinde igual o mejor que en Windows; la copia de migración preserva integridad (conteos por tabla) | patrón documentado SQLite/9P; verificación F25-b2 | Nuevo → gate F25-b2 |
+| S21 | HappyHorse 480P 5 s ×8 ≈ 40 s cuesta ~$2,8–4,2 equivalentes en Credits; el consumo REAL se mide con 1 clip antes del lote | skill qwen-video (~$0,07/s); doc TP (recomienda medir primero) | Nuevo → gate F25-f4 (Paso 0) |
+| S22 | El usuario ejecuta 3 sesiones ground truth hoy+mañana (autorizado); el panel F3 + session_logger bastan para marcar verdad terreno | bitácora 2026-11-14 (F4 autorizado); f3_e2e.md §5 (panel verificado) | Nuevo → F4 |
+
+### 12.5 Riesgos nuevos R-F25-1..10 → mitigación en el checklist
+
+- **R-F25-1 — Coste Credits (video/visión/póster) se dispara.** Mitigación: Paso 0 obligatorio por
+  dominio (1 clip de video medido ANTES del lote; 1 llamada visión con usage registrado; póster 1+1);
+  480P mínimo; ≤8 clips; tope visión 120/día+20/h; presupuesto honesto en `.tmp/f25_vision_presupuesto.md`
+  y `.tmp/f25f4_video.md`; si el consumo real es anómalo → parar y reportar. Checklist: F25-a/f2/f4.
+- **R-F25-2 — Red WSL2 (localhostForwarding=false, NAT, IP dinámica, firewall).** Mitigación:
+  portproxy listenaddress=127.0.0.1 (exposición loopback estricta) + script refresh de WSL_IP;
+  fallback WSL_IP+ORIGINS_EXTRA sin admin; NO tocar .wslconfig global (8 distros); outbound broker
+  verificado en b1; :8001 LAN solo opt-in con portproxy+firewall documentado. Checklist: F25-b1/b2;
+  gate seguridad (exposición) y arquitectura.
+- **R-F25-3 — Lockout que encierra al dueño.** Mitigación: lockout TEMPORAL auto-expirante (60 s/
+  15 min/1 h) + `tools/reset_admin.py` local (acceso físico = dueño) que regenera password en
+  claves/.env y limpia lockouts; password entregada en archivo local, nunca impresa. Checklist:
+  F25-e (test de reset) ; gate seguridad.
+- **R-F25-4 — Payload MQTT rechazado (broker o outbox vendor).** Mitigación: probe F25-a (12/64 KB);
+  parche outbox 8192→32768 documentado y re-aplicable; tope b64 16 KB en firmware con fallback HTTP/
+  descarte; QoS 0 pérdida tolerada (evento es verdad); dedupe sha256; retain=false. Checklist:
+  F25-a/c/d1; gate pruebas (fuzz decoder) y rendimiento (pps con publish b64).
+- **R-F25-5 — ToS Token Plan: daemon autónomo con sk-sp- = riesgo de BAN.** Mitigación: guarda en el
+  CLI/unit que rechaza sk-sp- en modo daemon (modo A solo sk-*); modo B agente-mediado interactivo
+  (patrón sancionado); documentado en AGENTS/PROPUESTA/fuentes. Checklist: F25-d2 (test de la guarda);
+  gate seguridad (grep unit/CLI).
+- **R-F25-6 — Split-brain de BD (Windows y WSL escribiendo a la vez).** Mitigación: protocolo cutover
+  stop→copy→verify→start; criterio "un solo writer vivo" (puertos+procesos); fallback Windows exige
+  parar WSL antes; DB canónica en ext4 WSL tras b2. Checklist: F25-b2; gate bd/arquitectura.
+- **R-F25-7 — Regresión de privacidad (fotos transitan broker compartido).** Mitigación: broker auth
+  (electiva/srv-electiva), prefijo aislado, retain=false (no persisten), QoS 0, galería loopback+login,
+  retención/purga intactas, consentimiento ACTUALIZADO (tránsito por broker declarado), imágenes
+  gitignored, sin caras-ML. C9 sigue cumple-parcial con el texto nuevo. Checklist: F25-g (docs);
+  gate seguridad/documentacion.
+- **R-F25-8 — Dependencias py3.13 WSL vs py3.15 Windows (argon2/bleak/etc.).** Mitigación:
+  requirements-linux.txt separado; scrypt stdlib fallback; bleak opcional fuera de WSL (BLE default n);
+  pytest verde en AMBOS runtimes antes del cutover. Checklist: F25-b1/e; gate pruebas.
+- **R-F25-9 — Colisión con F24-c en vuelo (placa, parche, receptor, DB).** Mitigación: F25 server-side
+  con rutas disjuntas; firmware F25-c detrás de F24-c/d/e0/e; cutover b2 espera reporte F24-c; nadie
+  mata procesos ajenos (patrón f3_e2e.md §8). Checklist: deps explícitas + nota de vuelo.
+- **R-F25-10 — Skills multimedia no cubren la tarea (video/TTS/póster).** Mitigación: Paso 0 POR
+  SKILL en 6-medios (valida script+key+modelo antes de gastar); si no cubre → reportar y degradar
+  honestamente (video con subtítulos sin voz; póster alternativo con graphic-imagen vía 5-dev SOLO
+  si el orquestador lo aprueba); ensamblaje FFmpeg por 5-dev (graphic-video fuera del roster de
+  6-medios). Checklist: F25-f2/f4/f5; gate documentacion (honestidad).
+
+### 12.6 Qué necesita F25 del orquestador (orden de despacho con paralelismo máximo)
+
+1. **LANZAR YA el grupo [PARALELO G-F25-1] completo (8 delegaciones, background SI):** F25-a
+   (analista), F25-b1 (ejecutor, skill wsl-manager-cli), F25-d1+d2+e (UN ejecutor con 3 devs
+   disjuntos o ejecutores separados — recomendado: 1 ejecutor server con 3 devs para coordinar el
+   contrato §8.2), F25-f1 (ejecutor/5-dev graphic-arq-software), F25-f2 (6-medios qwen-imagen),
+   F25-f3 (4-documentos guion). F24-c sigue en vuelo en su propia sesión — NO interferir.
+2. **Al llegar el reporte de F24-c:** verificar en disco (JPEG reales+fila BD), marcar checklist,
+   lanzar [G-F25-2]: F25-b2 (cutover) ∥ F24-d (placa) ∥ F25-f4 (si f3 listo) ∥ F25-d3 (si e+d1
+   listos) ∥ F4-sesión-1 (coordinar con el usuario HOY; ground truth por panel F3).
+3. **Cadena placa:** F24-d → F24-e0 (spike ≤200 steps; si FAIL → F24-e ABANDONADO documentado) →
+   F24-e (si PASS) → **F25-c** (MQTT image). Serializada por COM6.
+4. **F4:** 3 sesiones ≥20 min en ≥2 días (HOY 2026-11-14 + MAÑANA 2026-11-15, autorizado). El
+   operador marca verdad terreno en el panel (login F25-e si el cutover ya ocurrió). Sesión 3 ideal
+   tras F25-c para tener imágenes canal='mqtt' en el dataset.
+5. **Pasadas de visión modo B:** tras cada sesión F4 (y antes de F6a), despachar 5-dev interactivo
+   que corra `tools/vision_describe.py --once --limit 30` (key TP, ToS-compliant). Registrar consumo.
+6. **F25-f5** (ensamblaje) al llegar f4; **F25-g** (docs+re-enmarque) al cerrar b2/c/d/e/f; **F6a**
+   (INFORME+PPTX con TODO) tras F5a/F5b/F25-g; **F6b** ensayo en runtime WSL.
+7. **GATE ×7 fan-out DIRECTO** (criterios F25 añadidos) + `auditor-externo` opcional (cmdc; si no
+   está, validación interna anotada). `devops` omitido (sin Docker/CI; hardening WSL en
+   seguridad+arquitectura).
+8. **F7 (manos propias):** verificar todo en disco, commit final, `.tmp/cierre_v25.md` y **REPORTE
+   DE TODO al usuario** (entregables, métricas, costes Credits reales, limitaciones honestas).
+9. **Credenciales:** el dueño NO rellena nada a mano salvo que quiera key pay-as-you-go (opcional).
+   `AULASENSE_ADMIN_PASSWORD` la GENERA el código en F25-e → `claves/.env` (gitignored); el orquestador
+   indica al dueño la ruta del archivo por canal local (NUNCA imprime el valor en el reporte).
+10. **Admin PowerShell:** el portproxy (F25-b1) requiere elevación una vez; si no hay admin, usar el
+    fallback WSL_IP documentado (el plan no se bloquea).
+
+### 12.7 Integración con el cierre natural (F24 restante + F4–F7)
+
+- **F24-c (EN VUELO):** intacto; su reporte habilita b2 y la cadena placa. Su canal HTTP sigue
+  válido como alternativo (canal='http').
+- **F24-d/e0/e:** sin cambios de contrato (SPEC §3.3/§3.4); se ejecutan en la cadena placa ANTES de
+  F25-c. El veredicto del spike e0 se documenta igual (ABANDONADO si FAIL).
+- **F24-f2:** el consolidado gana las columnas F25 (`canal`, `descripcion`, `etiquetas` opcionales
+  como features de texto; `tiene_imagen` ya existe). Se re-genera tras F25-c para incluir filas mqtt.
+- **F24-f:** se FUSIONA en F25-g (un solo pase de docs+verificación para no duplicar trabajo).
+- **F4:** 3 sesiones hoy+mañana; el dataset incluye imágenes HTTP (hoy) y MQTT (tras F25-c);
+  ground truth por panel F3 (con login si el cutover ocurrió); consolidado SOLO real.
+- **F5a/F5b:** consumen el esquema extendido; las features de texto (etiquetas) son opcionales sin
+  romperse si null. F5b incluye el guion demo actualizado (WSL+login+galería+búsqueda).
+- **F6a:** INFORME.docx + PRESENTACION.pptx regenerados con TODO (WSL, MQTT-imágenes, vision+
+  búsqueda, login, diagramas técnico+póster, video embebido/enlazado, métricas F4/F5, costes Credits
+  reales, limitaciones honestas: ToS, QoS 0, motion≠presencia, privacidad parcial).
+- **F6b:** ensayo completo sobre WSL: wsl_aulasense.ps1 start → login → estímulo → motion+buzzer+LED
+  → imagen MQTT en galería <5 s → búsqueda por texto → stop. <5 min de setup.
+- **GATE:** los 7 especialistas con criterios F25 (ver checklist v25) + auditor-externo opcional.
+- **F7:** commit final (manos propias del orquestador) + cierre_v25.md + REPORTE DE TODO al usuario.
