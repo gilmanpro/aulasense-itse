@@ -394,8 +394,267 @@ def test_galeria_ui_banner_privacidad_y_pestana(cliente):
     assert 'id="tab-galeria"' in html
     assert "solo servidor local (nunca nube/broker)" in html
     assert "consentimiento de aula requerido" in html
-    # La lógica pide la foto por id de BD y no acepta uploads (sin POST de imagen).
+    # La lógica pide la foto por id de BD y no acepta uploads (sin POST a /api/imagenes).
     js = cliente.get("/static/app.js")
     assert js.status_code == 200
     assert "/api/imagenes/" in js.text
-    assert 'method: "POST"' not in js.text
+    assert 'fetch("/api/imagenes"' not in js.text
+    assert "FormData" not in js.text
+
+
+# ------------------------------------------------------------------------------
+# F3 — panel de validación: sesiones, ventanas marcables y export CSV
+# ------------------------------------------------------------------------------
+BUCKET_MS = 30_000
+
+
+def _db_temporal() -> str:
+    return os.environ["AULASENSE_DB"]
+
+
+def _insertar_evaluaciones_reales(inicio_ms: int, n_motion: int = 2, n_idle: int = 0) -> None:
+    """Filas reales dentro del bucket (el panel ignora origen='sintetico')."""
+    con = sqlite3.connect(_db_temporal())
+    try:
+        for indice in range(n_motion):
+            ts = inicio_ms + 1000 + indice
+            con.execute(
+                "INSERT INTO evaluaciones (device_id, ts_ms, ts_device_ms, hora_sinc, "
+                "state, score, origen, recibido_en) VALUES (?, ?, ?, 1, 'motion', ?, 'real', "
+                "datetime(?, 'unixepoch'))",
+                (DEVID, ts, 1000 + indice, 0.9, ts // 1000),
+            )
+        for indice in range(n_idle):
+            ts = inicio_ms + 5000 + indice
+            con.execute(
+                "INSERT INTO evaluaciones (device_id, ts_ms, ts_device_ms, hora_sinc, "
+                "state, score, origen, recibido_en) VALUES (?, ?, ?, 1, 'idle', ?, 'real', "
+                "datetime(?, 'unixepoch'))",
+                (DEVID, ts, 2000 + indice, 0.1, ts // 1000),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _bucket_actual() -> int:
+    """Bucket de 30 s ya cerrado (sus filas están en el pasado y dentro de 10 min)."""
+    ahora = int(time.time() * 1000)
+    return ((ahora // BUCKET_MS) - 1) * BUCKET_MS
+
+
+def test_validacion_panel_vacio_no_crashea_extendido(cliente):
+    cuerpo = cliente.get("/api/validacion").json()
+    # Contrato previo intacto (matriz vacía) + extensiones F3.
+    assert cuerpo["sesiones"] == []
+    assert cuerpo["matriz"]["n_sesiones"] == 0
+    assert cuerpo["registro_sesiones"] == []
+    assert cuerpo["sesion_activa"] is None
+    assert cuerpo["ventanas"] == []
+    assert cuerpo["ventana_ms"] == BUCKET_MS
+    assert cuerpo["panel_ms"] == 600_000
+
+
+def test_api_sesiones_lista_y_sesion_activa(cliente):
+    ruta = _db_temporal()
+    con = sqlite3.connect(ruta)
+    try:
+        con.execute(
+            "INSERT INTO sesiones (sesion, inicio_ms, estado, nota) "
+            "VALUES ('S1', ?, 'activa', 'aula con movimiento')",
+            (int(time.time() * 1000) - 5000,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    cuerpo = cliente.get("/api/sesiones").json()
+    assert cuerpo["activa"]["sesion"] == "S1"
+    assert [fila["sesion"] for fila in cuerpo["sesiones"]] == ["S1"]
+
+    validacion = cliente.get("/api/validacion").json()
+    assert validacion["sesion_activa"]["sesion"] == "S1"
+    assert validacion["registro_sesiones"][0]["estado"] == "activa"
+
+
+def test_validacion_post_marca_ventana_y_export_csv(cliente):
+    inicio = _bucket_actual()
+    _insertar_evaluaciones_reales(inicio, n_motion=3, n_idle=1)
+
+    respuesta = cliente.post(
+        "/api/validacion",
+        json={
+            "sesion": "S1",
+            "inicio_ms": inicio,
+            "fin_ms": inicio + BUCKET_MS,
+            "hubo_movimiento_real": "si",
+            "nota": "dos personas caminando",
+        },
+    )
+    assert respuesta.status_code == 201
+    cuerpo = respuesta.json()
+    assert cuerpo["persistido"] is True
+    assert cuerpo["verdad_terreno"] == "motion"
+
+    panel = cliente.get("/api/validacion").json()
+    ventana = next(fila for fila in panel["ventanas"] if fila["inicio_ms"] == inicio)
+    assert ventana["n_evaluaciones"] == 4
+    assert ventana["n_motion"] == 3
+    assert ventana["predicho"] == "motion"
+    assert ventana["hubo_movimiento_real"] == "si"
+    assert ventana["nota"] == "dos personas caminando"
+    assert ventana["sesion"] == "S1"
+    # La marca entra en la matriz de confusión existente (verdad motion vs predicho motion).
+    assert panel["matriz"]["n_sesiones"] == 1
+    assert panel["matriz"]["verdaderos_positivos"] == 1
+    assert panel["matriz"]["recall"] == 1.0
+
+    export = cliente.get("/api/validacion/export", params={"sesion": "S1"})
+    assert export.status_code == 200
+    assert export.headers["content-type"].startswith("text/csv")
+    assert export.headers["content-disposition"] == 'attachment; filename="validacion_S1.csv"'
+    lineas = export.text.splitlines()
+    assert lineas[0] == (
+        "sesion,inicio_ms,fin_ms,verdad_terreno,hubo_movimiento_real,fuente,notas,recibido_en"
+    )
+    assert "S1" in export.text and "motion" in export.text and ",si," in export.text
+    assert "dos personas caminando" in export.text
+
+    # Export sin filtro = todas las sesiones.
+    todas = cliente.get("/api/validacion/export")
+    assert todas.status_code == 200
+    assert 'filename="validacion_todas.csv"' in todas.headers["content-disposition"]
+
+
+def test_validacion_post_reemplaza_y_sin_dato_desmarca(cliente):
+    inicio = _bucket_actual()
+    _insertar_evaluaciones_reales(inicio, n_motion=1, n_idle=3)
+    payload = {
+        "sesion": "S2",
+        "inicio_ms": inicio,
+        "fin_ms": inicio + BUCKET_MS,
+        "hubo_movimiento_real": "si",
+        "nota": "primera marca",
+    }
+    assert cliente.post("/api/validacion", json=payload).status_code == 201
+    payload.update({"hubo_movimiento_real": "no", "nota": "corrección: nadie"})
+    assert cliente.post("/api/validacion", json=payload).status_code == 201
+
+    con = sqlite3.connect(_db_temporal())
+    try:
+        filas = con.execute(
+            "SELECT verdad_terreno, notas FROM validacion_sesiones WHERE sesion = 'S2'"
+        ).fetchall()
+    finally:
+        con.close()
+    assert filas == [("idle", "corrección: nadie")]  # DELETE+INSERT: una sola marca
+
+    desmarcar = cliente.post(
+        "/api/validacion",
+        json={**payload, "hubo_movimiento_real": "sin-dato", "nota": None},
+    )
+    assert desmarcar.status_code == 200
+    assert desmarcar.json()["persistido"] is False
+    assert desmarcar.json()["marcas_borradas"] == 1
+
+    panel = cliente.get("/api/validacion").json()
+    ventana = next(fila for fila in panel["ventanas"] if fila["inicio_ms"] == inicio)
+    assert ventana["hubo_movimiento_real"] == "sin-dato"
+    assert ventana["marca_id"] is None
+
+
+def test_validacion_post_origin_cruzado_403(cliente):
+    inicio = _bucket_actual()
+    respuesta = cliente.post(
+        "/api/validacion",
+        json={
+            "sesion": "S1",
+            "inicio_ms": inicio,
+            "fin_ms": inicio + BUCKET_MS,
+            "hubo_movimiento_real": "si",
+        },
+        headers={"Origin": "http://evil.com"},
+    )
+    assert respuesta.status_code == 403
+    # Sin Origin = permitir (curl/CLI) y loopback explícito = permitir.
+    assert cliente.post(
+        "/api/validacion",
+        json={
+            "sesion": "S1",
+            "inicio_ms": inicio,
+            "fin_ms": inicio + BUCKET_MS,
+            "hubo_movimiento_real": "si",
+        },
+        headers={"Origin": "http://127.0.0.1:8000"},
+    ).status_code == 201
+
+
+def test_validacion_post_payload_invalido_422(cliente):
+    inicio = _bucket_actual()
+    base = {
+        "sesion": "S1",
+        "inicio_ms": inicio,
+        "fin_ms": inicio + BUCKET_MS,
+        "hubo_movimiento_real": "si",
+    }
+    assert cliente.post(
+        "/api/validacion", json={**base, "hubo_movimiento_real": "quizas"}
+    ).status_code == 422
+    assert cliente.post(
+        "/api/validacion", json={**base, "sesion": "../escape"}
+    ).status_code == 422
+    assert cliente.post(
+        "/api/validacion", json={**base, "fin_ms": inicio}
+    ).status_code == 422
+    assert cliente.post(
+        "/api/validacion", json={**base, "fin_ms": inicio + 31 * 60 * 1000}
+    ).status_code == 422
+    # Export con sesión fuera de contrato (evita inyección en el filename).
+    assert cliente.get(
+        "/api/validacion/export", params={"sesion": "../evil"}
+    ).status_code == 422
+
+
+def test_esquema_sesiones_idempotente(tmp_path):
+    import esquema
+
+    db = tmp_path / "sesiones.db"
+    con = sqlite3.connect(db)
+    try:
+        con.executescript(esquema.ESQUEMA_SQL)
+        con.executescript(esquema.ESQUEMA_SQL)  # segunda pasada: no debe fallar
+        nombres = {
+            fila[0]
+            for fila in con.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('table','index')"
+            )
+        }
+        con.execute(
+            "INSERT INTO sesiones (sesion, inicio_ms, estado) VALUES ('S1', 1, 'activa')"
+        )
+        con.execute(
+            "INSERT INTO sesiones (sesion, inicio_ms, estado) VALUES ('S2', 2, 'cerrada')"
+        )
+        total = con.execute("SELECT COUNT(*) FROM sesiones").fetchone()[0]
+    finally:
+        con.close()
+    assert {"sesiones", "idx_sesiones_inicio", "idx_sesiones_estado"} <= nombres
+    assert total == 2
+
+
+def test_validacion_ui_panel_ventanas_y_export(cliente):
+    html = cliente.get("/").text
+    assert 'id="tabla-ventanas"' in html
+    assert 'id="tabla-registro-sesiones"' in html
+    assert 'id="validacion-export"' in html
+    assert 'id="validacion-sesion-activa"' in html
+    assert "hubo movimiento real" in html
+    js = cliente.get("/static/app.js").text
+    assert "/api/validacion/export" in js
+    assert "pintarVentanas" in js
+    assert "guardarMarcaValidacion" in js
+    # Cero innerHTML con datos en la lógica del panel (esc()/textContent).
+    assert "innerHTML =" not in js
+    assert ".innerHTML" not in js
+    # La galería F24 sigue intacta tras añadir el panel.
+    assert "/api/imagenes/" in js

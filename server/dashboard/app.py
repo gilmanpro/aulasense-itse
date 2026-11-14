@@ -117,6 +117,36 @@ COLS_IMAGEN_METADATA = (
     "ia_persona, ia_score, imagen_purgada, origen, recibido_en"
 )
 
+# Extension F3 (session logger): DDL local deliberado, mismo patrón que
+# IMAGENES_SQL. La dueña real es ``server/ingesta/esquema.py``; esta copia
+# permite que el dashboard arranque sobre una DB anterior a F3 sin depender del
+# orden de arranque de la ingesta.
+SESIONES_SQL = """
+CREATE TABLE IF NOT EXISTS sesiones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sesion TEXT NOT NULL UNIQUE,
+  inicio_ms INTEGER NOT NULL,
+  fin_ms INTEGER,
+  estado TEXT NOT NULL DEFAULT 'activa' CHECK(estado IN ('activa','cerrada')),
+  device_id TEXT,
+  nota TEXT,
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sesiones_inicio ON sesiones(inicio_ms);
+CREATE INDEX IF NOT EXISTS idx_sesiones_estado ON sesiones(estado);
+"""
+
+# Panel de validación (F3): ventana visible y bucket de ground truth manual.
+VENTANA_PANEL_MS = 10 * 60 * 1000
+VENTANA_BUCKET_DEFECTO_MS = 30_000
+VENTANA_BUCKET_MIN_MS = 5_000
+VENTANA_BUCKET_MAX_MS = 120_000
+VENTANA_MARCA_MAX_MS = 30 * 60 * 1000
+NOTA_VALIDACION_MAX = 200
+RE_SESION = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+HUBO_A_VERDAD = {"si": "motion", "no": "idle"}
+VERDAD_A_HUBO = {"motion": "si", "idle": "no"}
+
 # --- SQL de export por whitelist (nunca se concatena el nombre de tabla) -------
 _SQL_EXPORT: dict[tuple[str, bool], str] = {
     ("evaluaciones", True): "SELECT * FROM evaluaciones WHERE origen = ? ORDER BY id",
@@ -181,6 +211,12 @@ def _conectar() -> sqlite3.Connection:
     ).fetchone()
     if not existe_img:
         con.executescript(IMAGENES_SQL)
+    # Extensión F3 (session logger): misma migración de respaldo.
+    existe_ses = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sesiones'"
+    ).fetchone()
+    if not existe_ses:
+        con.executescript(SESIONES_SQL)
     return con
 
 
@@ -625,34 +661,156 @@ def api_telemetria(device_id: str | None = None, limite: int | None = None) -> d
     return {"limite": lim, "filas": filas}
 
 
-@app.get("/api/validacion")
-def api_validacion(sesion: str | None = None) -> dict[str, Any]:
-    """Matriz de confusión básica sesión(verdad terreno) × evaluaciones predichas.
+# --- Panel de validación F3: sesiones + ventanas de ground truth manual -----
 
-    ``validacion_sesiones`` no tiene device_id (SPEC §8), así que se cruza solo por
-    ventana temporal; con varias placas el resultado es agregado. Puede salir vacía.
+
+def _registro_sesiones(con: sqlite3.Connection, limite: int = 100) -> list[dict[str, Any]]:
+    """Sesiones registradas por ``tools/session_logger.py`` (más recientes primero)."""
+    lim = max(1, min(500, int(limite)))
+    return _filas(
+        con,
+        "SELECT * FROM sesiones ORDER BY inicio_ms DESC, id DESC LIMIT ?",
+        (lim,),
+    )
+
+
+def _sesion_activa(con: sqlite3.Connection) -> dict[str, Any] | None:
+    fila = con.execute(
+        "SELECT * FROM sesiones WHERE estado = 'activa' "
+        "ORDER BY inicio_ms DESC, id DESC LIMIT 1"
+    ).fetchone()
+    return dict(fila) if fila is not None else None
+
+
+def _ventanas_panel(
+    con: sqlite3.Connection, bucket_ms: int, sesion: str | None
+) -> list[dict[str, Any]]:
+    """Buckets de los últimos 10 min con evaluaciones REALES + su marca manual.
+
+    Se ancla en ``recibido_en`` (hora de llegada a la ingesta) y NO en ``ts_ms``:
+    el reloj monótono del nodo puede venir desfasado si el ``health`` retenido es
+    viejo (R3), y eso dejaría la ventana "en el futuro" e inutilizable para el
+    operador. ``idle`` ≠ sala vacía (regla 11): la ventana predice el estado
+    dominante y solo la verdad terreno manual decide si hubo movimiento real.
     """
+    ahora = _ahora_ms()
+    filas = con.execute(
+        "SELECT ts_ms, state, score, strftime('%s', recibido_en) * 1000 AS recibido_ms "
+        "FROM evaluaciones "
+        "WHERE origen = 'real' AND recibido_en >= datetime('now', '-10 minutes')"
+    ).fetchall()
+    acumulado: dict[int, dict[str, Any]] = {}
+    for fila in filas:
+        recibido = fila["recibido_ms"]
+        if recibido is None:
+            continue
+        inicio = (int(recibido) // int(bucket_ms)) * int(bucket_ms)
+        caja = acumulado.setdefault(
+            inicio, {"n": 0, "n_motion": 0, "suma_score": 0.0, "n_score": 0}
+        )
+        caja["n"] += 1
+        if fila["state"] == "motion":
+            caja["n_motion"] += 1
+        if fila["score"] is not None:
+            caja["suma_score"] += float(fila["score"])
+            caja["n_score"] += 1
+
+    marcas = con.execute(
+        "SELECT * FROM validacion_sesiones "
+        "WHERE inicio_ms <= ? AND fin_ms >= ? ORDER BY id DESC",
+        (ahora, ahora - VENTANA_PANEL_MS),
+    ).fetchall()
+    indice: dict[tuple[int, int], dict[str, Any]] = {}
+    for marca in marcas:
+        if sesion and marca["sesion"] != sesion:
+            continue
+        clave = (int(marca["inicio_ms"]), int(marca["fin_ms"]))
+        indice.setdefault(clave, dict(marca))  # id DESC: la marca más nueva manda
+
+    activa = _sesion_activa(con)
+    etiqueta_defecto = activa["sesion"] if activa is not None else "manual"
+    salida: list[dict[str, Any]] = []
+    for inicio in sorted(acumulado):
+        caja = acumulado[inicio]
+        fin = inicio + int(bucket_ms)
+        n = int(caja["n"])
+        n_motion = int(caja["n_motion"])
+        n_idle = n - n_motion
+        marca = indice.get((inicio, fin))
+        verdad = marca["verdad_terreno"] if marca is not None else None
+        salida.append(
+            {
+                "inicio_ms": inicio,
+                "fin_ms": fin,
+                "n_evaluaciones": n,
+                "n_motion": n_motion,
+                "n_idle": n_idle,
+                "score_medio": (
+                    round(caja["suma_score"] / caja["n_score"], 4)
+                    if caja["n_score"]
+                    else None
+                ),
+                "predicho": "motion" if n_motion >= n_idle else "idle",
+                "sesion": (marca["sesion"] if marca is not None else etiqueta_defecto),
+                "hubo_movimiento_real": (
+                    VERDAD_A_HUBO.get(verdad, "sin-dato") if verdad else "sin-dato"
+                ),
+                "nota": (marca["notas"] if marca is not None else None),
+                "marca_id": (int(marca["id"]) if marca is not None else None),
+            }
+        )
+    return salida
+
+
+@app.get("/api/validacion")
+def api_validacion(
+    sesion: str | None = None, ventana_s: int | None = None
+) -> dict[str, Any]:
+    """Matriz de confusión + sesiones registradas + ventanas marcables (F3).
+
+    ``validacion_sesiones`` no tiene device_id (SPEC §8), así que la matriz se
+    cruza solo por ventana temporal; con varias placas el resultado es agregado.
+    Puede salir vacía. El panel añade los buckets de los últimos 10 min con
+    evaluaciones ``origen='real'`` y la marca manual de cada ventana.
+    """
+    bucket_ms = VENTANA_BUCKET_DEFECTO_MS
+    if ventana_s is not None:
+        bucket_ms = max(
+            VENTANA_BUCKET_MIN_MS,
+            min(VENTANA_BUCKET_MAX_MS, int(ventana_s) * 1000),
+        )
     con = _conectar()
     try:
         if sesion:
-            sesiones = _filas(
+            filas_sesiones = _filas(
                 con,
                 "SELECT * FROM validacion_sesiones WHERE sesion = ? ORDER BY inicio_ms",
                 (sesion,),
             )
         else:
-            sesiones = _filas(
+            filas_sesiones = _filas(
                 con, "SELECT * FROM validacion_sesiones ORDER BY inicio_ms"
             )
         detalle: list[dict[str, Any]] = []
         matriz = Counter({"vp": 0, "fp": 0, "vn": 0, "fn": 0})
-        for fila in sesiones:
+        for fila in filas_sesiones:
+            # Cuenta por ts del nodo O por llegada a la ingesta: si el health
+            # retenido desfasa R3, la marca manual (hora de pared) sigue siendo
+            # evaluable. La fila se cuenta una sola vez por el OR del WHERE.
             conteo = {
                 r["state"]: int(r["n"])
                 for r in con.execute(
                     "SELECT state, COUNT(*) AS n FROM evaluaciones "
-                    "WHERE ts_ms BETWEEN ? AND ? GROUP BY state",
-                    (int(fila["inicio_ms"]), int(fila["fin_ms"])),
+                    "WHERE (ts_ms BETWEEN ? AND ?) "
+                    "   OR (recibido_en BETWEEN datetime(? / 1000, 'unixepoch') "
+                    "                        AND datetime(? / 1000, 'unixepoch')) "
+                    "GROUP BY state",
+                    (
+                        int(fila["inicio_ms"]),
+                        int(fila["fin_ms"]),
+                        int(fila["inicio_ms"]),
+                        int(fila["fin_ms"]),
+                    ),
                 )
             }
             n_motion = conteo.get("motion", 0)
@@ -690,6 +848,9 @@ def api_validacion(sesion: str | None = None) -> dict[str, Any]:
                     "notas": fila["notas"],
                 }
             )
+        registro = _registro_sesiones(con)
+        activa = _sesion_activa(con)
+        ventanas = _ventanas_panel(con, bucket_ms, sesion)
     finally:
         con.close()
     positivos = matriz["vp"] + matriz["fn"]
@@ -705,11 +866,208 @@ def api_validacion(sesion: str | None = None) -> dict[str, Any]:
             "fpr": (round(matriz["fp"] / negativos, 4) if negativos else None),
             "n_sesiones": len(detalle),
         },
+        "registro_sesiones": registro,
+        "sesion_activa": activa,
+        "ventanas": ventanas,
+        "ventana_ms": bucket_ms,
+        "panel_ms": VENTANA_PANEL_MS,
+        "base_tiempo": "recepcion",
         "nota": (
             "Matriz básica sobre sesiones de verdad terreno manual; "
             f"tamaño muestral N={len(detalle)} sesiones. {_NOTA_HONESTA}"
         ),
     }
+
+
+@app.get("/api/sesiones")
+def api_sesiones() -> dict[str, Any]:
+    """Sesiones del session logger (tabla ``sesiones``) y cuál está activa."""
+    con = _conectar()
+    try:
+        filas = _registro_sesiones(con)
+        activa = _sesion_activa(con)
+    finally:
+        con.close()
+    return {"ahora_ms": _ahora_ms(), "activa": activa, "sesiones": filas}
+
+
+class MarcaValidacion(BaseModel):
+    """Ground truth manual de una ventana (panel Validación, F3)."""
+
+    sesion: str = Field(min_length=1, max_length=32)
+    inicio_ms: int
+    fin_ms: int
+    hubo_movimiento_real: str
+    nota: str | None = Field(default=None, max_length=NOTA_VALIDACION_MAX)
+
+
+def _marcar_validacion(
+    sesion: str,
+    inicio_ms: int,
+    fin_ms: int,
+    hubo_movimiento_real: str,
+    nota: str | None,
+) -> dict[str, Any]:
+    """Persiste/reemplaza la marca de una ventana en ``validacion_sesiones`` (§8).
+
+    ``sin-dato`` no es una verdad terreno: borra la marca previa de esa misma
+    ventana (la tabla solo admite motion/idle). Nunca se duplica una marca:
+    DELETE + INSERT dentro de la misma transacción.
+    """
+    verdad = HUBO_A_VERDAD.get(hubo_movimiento_real)
+    con = _conectar()
+    try:
+        with con:
+            borrados = con.execute(
+                "DELETE FROM validacion_sesiones "
+                "WHERE sesion = ? AND inicio_ms = ? AND fin_ms = ?",
+                (sesion, int(inicio_ms), int(fin_ms)),
+            ).rowcount
+            if verdad is None:
+                return {
+                    "persistido": False,
+                    "verdad_terreno": None,
+                    "marcas_borradas": int(borrados),
+                    "marca": None,
+                }
+            cursor = con.execute(
+                "INSERT INTO validacion_sesiones "
+                "(sesion, inicio_ms, fin_ms, verdad_terreno, fuente, notas) "
+                "VALUES (?, ?, ?, ?, 'manual_operador', ?)",
+                (sesion, int(inicio_ms), int(fin_ms), verdad, nota),
+            )
+            fila = con.execute(
+                "SELECT * FROM validacion_sesiones WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        return {
+            "persistido": True,
+            "verdad_terreno": verdad,
+            "marcas_borradas": int(borrados),
+            "marca": dict(fila) if fila is not None else None,
+        }
+    finally:
+        con.close()
+
+
+@app.post("/api/validacion")
+async def api_validacion_marcar(
+    marca: MarcaValidacion, request: Request
+) -> JSONResponse:
+    """Marca la verdad terreno de una ventana (Origin guard como ``/internal/*``).
+
+    201 si persistió (si/no), 200 si ``sin-dato`` (desmarca). 403 al Origin
+    cruzado, 422 a ids/rangos fuera de contrato.
+    """
+    if not _origen_permitido(request.headers.get("origin")):
+        return _respuesta_403("Origin no permitido")
+    if RE_SESION.fullmatch(marca.sesion) is None:
+        raise HTTPException(
+            status_code=422, detail="sesion debe ser 1-32 caracteres [A-Za-z0-9._-]"
+        )
+    if marca.hubo_movimiento_real not in ("si", "no", "sin-dato"):
+        raise HTTPException(
+            status_code=422, detail="hubo_movimiento_real debe ser si|no|sin-dato"
+        )
+    inicio = int(marca.inicio_ms)
+    fin = int(marca.fin_ms)
+    if inicio < 0 or fin <= inicio:
+        raise HTTPException(status_code=422, detail="rango de ventana inválido")
+    if fin - inicio > VENTANA_MARCA_MAX_MS:
+        raise HTTPException(
+            status_code=422, detail="la ventana supera 30 min (marca tramos más cortos)"
+        )
+    nota = (marca.nota or "").strip() or None
+    resultado = await asyncio.to_thread(
+        _marcar_validacion,
+        marca.sesion,
+        inicio,
+        fin,
+        marca.hubo_movimiento_real,
+        nota,
+    )
+    return JSONResponse(
+        status_code=201 if resultado["persistido"] else 200,
+        content={
+            "ok": True,
+            "sesion": marca.sesion,
+            "inicio_ms": inicio,
+            "fin_ms": fin,
+            "hubo_movimiento_real": marca.hubo_movimiento_real,
+            **resultado,
+        },
+    )
+
+
+def _generar_csv_validacion(sesion: str | None) -> Iterator[str]:
+    """CSV de marcas manuales (patrón F4 ``validacion_sesionN.csv``), streaming."""
+    con = _conectar()
+    try:
+        sql = (
+            "SELECT sesion, inicio_ms, fin_ms, verdad_terreno, fuente, notas, recibido_en "
+            "FROM validacion_sesiones"
+        )
+        params: tuple[Any, ...] = ()
+        if sesion:
+            sql += " WHERE sesion = ?"
+            params = (sesion,)
+        sql += " ORDER BY inicio_ms, id"
+        cursor = con.execute(sql, params)
+        buffer = io.StringIO()
+        escritor = csv.writer(buffer, dialect="excel", lineterminator="\r\n")
+        escritor.writerow(
+            [
+                "sesion",
+                "inicio_ms",
+                "fin_ms",
+                "verdad_terreno",
+                "hubo_movimiento_real",
+                "fuente",
+                "notas",
+                "recibido_en",
+            ]
+        )
+        yield buffer.getvalue()
+        for fila in cursor:
+            buffer.seek(0)
+            buffer.truncate(0)
+            escritor.writerow(
+                [
+                    _celda_csv(fila["sesion"]),
+                    _celda_csv(fila["inicio_ms"]),
+                    _celda_csv(fila["fin_ms"]),
+                    _celda_csv(fila["verdad_terreno"]),
+                    _celda_csv(VERDAD_A_HUBO.get(fila["verdad_terreno"], "sin-dato")),
+                    _celda_csv(fila["fuente"]),
+                    _celda_csv(fila["notas"]),
+                    _celda_csv(fila["recibido_en"]),
+                ]
+            )
+            yield buffer.getvalue()
+    finally:
+        con.close()
+
+
+@app.get("/api/validacion/export")
+def api_validacion_export(sesion: str | None = None) -> StreamingResponse:
+    """Exporta las marcas de validación a CSV (todas o una sesión concreta)."""
+    if sesion is not None and sesion != "":
+        if RE_SESION.fullmatch(sesion) is None:
+            raise HTTPException(
+                status_code=422, detail="sesion debe ser 1-32 caracteres [A-Za-z0-9._-]"
+            )
+        nombre = f"validacion_{sesion}.csv"
+        filtro = sesion
+    else:
+        nombre = "validacion_todas.csv"
+        filtro = None
+    return StreamingResponse(
+        _generar_csv_validacion(filtro),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{nombre}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/api/fuentes_externas")

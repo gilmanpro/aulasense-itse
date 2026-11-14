@@ -1,0 +1,71 @@
+menu "AulaSense Feedback"
+
+    config AULASENSE_FEEDBACK
+        bool "Feedback local AulaSense (buzzer + WS2812 + die temp)"
+        default y
+        help
+            Activa el modulo del derivado AulaSense (parche F3) sobre ESPectre Native.
+
+            Cubre la condicion de curso C11 (alerta audible/visual local sin red) con el
+            buzzer piezo onboard (GPIO14, LEDC PWM) y el WS2812 onboard (GPIO48, RMT), y la
+            fuente de datos C6 con la temperatura interna del die del ESP32-S3.
+
+            La die temp es un PROXY DE CARGA DE COMPUTO, no la temperatura ambiente
+            (honestidad obligatoria en docs y dashboard). El topic aditivo es
+            <topic_prefix>/<device_id>/aulasense_temp y viaja sobre el mismo cliente MQTT
+            de Native: no abre otra conexion ni cambia el contrato nativo.
+
+            Ver firmware/parche_aulasense/README.md (spec) y SPEC.md 3.1.
+
+    config AULASENSE_BUZZER_GPIO
+        int "GPIO del buzzer piezo (LEDC PWM)"
+        range 0 48
+        default 14
+        help
+            GPIO del buzzer piezo. Default 14 = buzzer onboard de la GOOUUU ESP32-S3-CAM v1.5.
+
+            app_feedback.c falla en compilacion (#error) si el pin es prohibido: 19/20 (USB
+            nativo), 43/44 (UART0), 0/45/46 (strapping), 26-37 (flash/PSRAM octal), 22-25
+            (no existen) o el bus DVP 4-18 de la camara (la unica excepcion documentada es el
+            propio buzzer onboard en GPIO14).
+
+    config AULASENSE_WS2812_GPIO
+        int "GPIO del LED WS2812 onboard (RMT)"
+        range 0 48
+        default 48
+        help
+            GPIO del LED WS2812/NeoPixel onboard (default 48). Mismas guardas #error que el
+            buzzer: el bus DVP 4-18 de la camara queda prohibido para este periferico.
+
+    config AULASENSE_DIE_TEMP
+        bool "Publicar la temperatura del die del S3 cada 30 s"
+        default y
+        help
+            Muestrea el sensor interno del ESP32-S3 cada 30 s y publica
+            {"timestamp_ms":<monotono>,"die_temp_c":<float>} en el topic aditivo
+            aulasense_temp, ademas de la linea parseable AULASENSE,T,die_temp_c=XX.X en el log.
+
+            Sin MQTT conectado el modulo sigue funcionando (buzzer/LED) y solo loguea:
+            degradacion elegante, sin panico.
+
+    config AULASENSE_BLE
+        bool "Notificacion BLE NimBLE del estado (OPCIONAL, gate R7)"
+        default n
+        help
+            Sub-hito OPCIONAL (BLE NimBLE notify del estado al onset). Por defecto DESACTIVADO
+            porque Wi-Fi y BLE comparten radio en el ESP32-S3 y pueden degradar el CSI.
+
+            Gate de coexistencia R7: activar SOLO si csi_accepted_pps no cae respecto al
+            baseline de F1c (comparar .tmp/f3_metricas.json con .tmp/f1c_diagnostics.json).
+            Esta opcion no esta implementada en F3: ponerla en y produce un #error explicito
+            en app_feedback.c.
+
+    config AULASENSE_BUZZER_COOLDOWN_S
+        int "Cooldown entre beeps (segundos)"
+        range 1 60
+        default 5
+        help
+            Anti-spam: tiempo minimo entre dos beeps de onset de motion. Evita un pitido
+            continuo cuando la persona se mueve de forma sostenida.
+
+endmenu

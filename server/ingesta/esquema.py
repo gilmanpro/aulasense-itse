@@ -456,6 +456,22 @@ CREATE TABLE IF NOT EXISTS validacion_sesiones (
   fuente TEXT NOT NULL DEFAULT 'manual_operador', notas TEXT,
   recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Extension F3 (session logger, tools/session_logger.py): registro de sesiones
+-- de captura. Aditiva e idempotente; NO altera las tablas de SPEC §8. El
+-- dashboard la consume para etiquetar ventanas de validacion por sesion y F4
+-- puede cruzar evaluaciones.sesion_id por ventana temporal.
+CREATE TABLE IF NOT EXISTS sesiones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sesion TEXT NOT NULL UNIQUE,
+  inicio_ms INTEGER NOT NULL,
+  fin_ms INTEGER,
+  estado TEXT NOT NULL DEFAULT 'activa' CHECK(estado IN ('activa','cerrada')),
+  device_id TEXT,
+  nota TEXT,
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sesiones_inicio ON sesiones(inicio_ms);
+CREATE INDEX IF NOT EXISTS idx_sesiones_estado ON sesiones(estado);
 CREATE TABLE IF NOT EXISTS fuentes_externas (
   id INTEGER PRIMARY KEY AUTOINCREMENT, fuente TEXT NOT NULL, ts_ms INTEGER NOT NULL,
   lat REAL, lon REAL, temperatura_c REAL, humedad_pct REAL, precipitacion_mm REAL, viento_kmh REAL,

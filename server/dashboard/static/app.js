@@ -78,6 +78,7 @@ const estado = {
   idsEventos: new Set(),
   resumen: null,
   validacion: null,
+  validacionActiva: null,
   ultimoEstado: {},
   estadoPrevioPorDevice: {},
   pagina: 0,
@@ -620,6 +621,7 @@ function cargarReportes() {
 
 /* ------------------------------ validación ------------------------------- */
 function pintarValidacion(datos) {
+  estado.validacionActiva = datos.sesion_activa || null;
   const nota = document.getElementById("validacion-nota");
   nota.textContent = datos.nota || "";
   const cuerpoMatriz = document.querySelector("#tabla-matriz tbody");
@@ -674,6 +676,170 @@ function pintarValidacion(datos) {
     tr.appendChild(td);
     cuerpoSesiones.appendChild(tr);
   }
+
+  // F3: sesión activa, ventanas marcables y registro del session logger.
+  pintarSesionActiva(datos);
+  pintarVentanas(datos);
+  pintarRegistroSesiones(datos);
+}
+
+/* ------------------- validación F3: sesión + ventanas -------------------- */
+function pintarSesionActiva(datos) {
+  const nodo = document.getElementById("validacion-sesion-activa");
+  nodo.replaceChildren();
+  const activa = datos.sesion_activa;
+  if (activa) {
+    nodo.appendChild(el("span", "badge-vivo", "ACTIVA"));
+    nodo.appendChild(document.createTextNode(
+      ` ${activa.sesion} · inicio ${fmtMs(activa.inicio_ms)}`,
+    ));
+    if (activa.nota) nodo.appendChild(document.createTextNode(` · ${activa.nota}`));
+  } else {
+    nodo.appendChild(el("span", "badge-stale", "SIN SESIÓN ACTIVA"));
+    nodo.appendChild(document.createTextNode(
+      " — las marcas se guardan como «manual» (inicia una sesión con tools\\session_logger.py).",
+    ));
+  }
+
+  const enlace = document.getElementById("validacion-export");
+  if (enlace) {
+    const sesion = activa ? activa.sesion : null;
+    enlace.href = sesion
+      ? `/api/validacion/export?sesion=${encodeURIComponent(sesion)}`
+      : "/api/validacion/export";
+    enlace.textContent = sesion ? `CSV validación (${sesion})` : "CSV validación (todas)";
+  }
+}
+
+function guardarMarcaValidacion(ventana, hubo, nota) {
+  const sesion = (estado.validacionActiva && estado.validacionActiva.sesion)
+    || ventana.sesion || "manual";
+  fetch("/api/validacion", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      sesion,
+      inicio_ms: Number(ventana.inicio_ms),
+      fin_ms: Number(ventana.fin_ms),
+      hubo_movimiento_real: hubo,
+      nota: (nota || "").trim() || null,
+    }),
+  }).then((respuesta) => {
+    if (!respuesta.ok) throw new Error(`HTTP ${respuesta.status}`);
+    return respuesta.json();
+  }).then(() => cargarValidacion())
+    .catch((error) => console.warn("Validación POST:", error.message));
+}
+
+function pintarVentanas(datos) {
+  const cuerpo = document.querySelector("#tabla-ventanas tbody");
+  cuerpo.replaceChildren();
+  const ventanas = (datos.ventanas || []).slice().reverse(); // más reciente arriba
+  const info = document.getElementById("validacion-ventanas-info");
+  if (info) {
+    info.textContent = `${ventanas.length} ventana(s) con datos reales · bucket `
+      + `${fmtNum((datos.ventana_ms || 0) / 1000, 0)} s`;
+  }
+  if (!ventanas.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "text-slate-400";
+    td.textContent = "Sin evaluaciones reales en los últimos 10 min.";
+    tr.appendChild(td);
+    cuerpo.appendChild(tr);
+    return;
+  }
+  ventanas.forEach((ventana) => {
+    const tr = document.createElement("tr");
+
+    const tdVentana = document.createElement("td");
+    tdVentana.textContent = `${fmtHora(ventana.inicio_ms)} – ${fmtHora(ventana.fin_ms)}`;
+    tr.appendChild(tdVentana);
+
+    const tdEval = document.createElement("td");
+    tdEval.textContent = `${fmtNum(ventana.n_evaluaciones, 0)} `
+      + `(${fmtNum(ventana.n_motion, 0)} motion / ${fmtNum(ventana.n_idle, 0)} idle)`;
+    tr.appendChild(tdEval);
+
+    const tdPredicho = document.createElement("td");
+    tdPredicho.textContent = ventana.predicho || "—";
+    tr.appendChild(tdPredicho);
+
+    const tdVerdad = document.createElement("td");
+    const selector = document.createElement("select");
+    selector.className = "bg-slate-900 border border-slate-700 rounded px-1 py-0.5 text-slate-100";
+    [["sin-dato", "sin-dato"], ["si", "sí, hubo"], ["no", "no hubo"]].forEach(([valor, texto]) => {
+      const opcion = el("option", null, texto);
+      opcion.value = valor;
+      selector.appendChild(opcion);
+    });
+    selector.value = ventana.hubo_movimiento_real || "sin-dato";
+    tdVerdad.appendChild(selector);
+    tr.appendChild(tdVerdad);
+
+    const tdNota = document.createElement("td");
+    const entradaNota = document.createElement("input");
+    entradaNota.type = "text";
+    entradaNota.maxLength = 200;
+    entradaNota.placeholder = "nota (opcional)";
+    entradaNota.value = ventana.nota || "";
+    entradaNota.className = "bg-slate-900 border border-slate-700 rounded px-1 py-0.5 "
+      + "text-slate-100 w-44";
+    tdNota.appendChild(entradaNota);
+    tr.appendChild(tdNota);
+
+    const tdAccion = document.createElement("td");
+    const boton = el("button", "rounded bg-blue-700 hover:bg-blue-600 px-2 py-0.5 text-xs", "guardar");
+    boton.addEventListener("click", () => {
+      guardarMarcaValidacion(ventana, selector.value, entradaNota.value);
+    });
+    tdAccion.appendChild(boton);
+    tr.appendChild(tdAccion);
+
+    cuerpo.appendChild(tr);
+  });
+}
+
+function pintarRegistroSesiones(datos) {
+  const cuerpo = document.querySelector("#tabla-registro-sesiones tbody");
+  cuerpo.replaceChildren();
+  const filas = datos.registro_sesiones || [];
+  if (!filas.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.className = "text-slate-400";
+    td.textContent = "Sin sesiones registradas (usa tools\\session_logger.py start --id S1).";
+    tr.appendChild(td);
+    cuerpo.appendChild(tr);
+    return;
+  }
+  filas.forEach((fila) => {
+    const tr = document.createElement("tr");
+    const tdSesion = document.createElement("td");
+    tdSesion.textContent = fila.sesion;
+    tr.appendChild(tdSesion);
+
+    const tdEstado = document.createElement("td");
+    tdEstado.appendChild(el(
+      "span",
+      fila.estado === "activa" ? "badge-vivo" : "badge-stale",
+      fila.estado === "activa" ? "ACTIVA" : "cerrada",
+    ));
+    tr.appendChild(tdEstado);
+
+    [fmtMs(fila.inicio_ms), fmtMs(fila.fin_ms),
+      (fila.fin_ms === null || fila.fin_ms === undefined)
+        ? "—"
+        : `${fmtNum((Number(fila.fin_ms) - Number(fila.inicio_ms)) / 1000, 1)} s`,
+      fila.nota || "—"].forEach((valor) => {
+      const td = document.createElement("td");
+      td.textContent = String(valor);
+      tr.appendChild(td);
+    });
+    cuerpo.appendChild(tr);
+  });
 }
 
 function cargarValidacion() {

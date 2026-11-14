@@ -135,6 +135,44 @@
 
     <!-- ===================== VALIDACIÓN ===================== -->
     <section id="tab-validacion" class="space-y-4" hidden>
+      <!-- F3: sesión de captura + export (session logger) -->
+      <div class="tarjeta p-3 space-y-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-sm font-semibold">Sesión de captura</h2>
+          <a id="validacion-export" class="ml-auto rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs"
+             href="/api/validacion/export">CSV validación (todas)</a>
+        </div>
+        <p class="text-sm text-slate-200" id="validacion-sesion-activa">sin sesión activa</p>
+        <p class="text-xs text-slate-400">
+          Registra sesiones con <code>tools\session_logger.py start --id S1 --nota "…"</code>
+          (y ciérralas con <code>stop --id S1</code>). Las marcas de abajo se etiquetan
+          con la sesión activa o con <em>manual</em>.
+        </p>
+      </div>
+
+      <!-- F3: ventanas de los últimos 10 min con datos reales -->
+      <div class="tarjeta p-3">
+        <div class="flex flex-wrap items-center gap-2 mb-2">
+          <h2 class="text-sm font-semibold">Ventanas de los últimos 10 min (datos reales)</h2>
+          <span class="ml-auto text-xs text-slate-400" id="validacion-ventanas-info"></span>
+        </div>
+        <p class="text-xs text-slate-400 mb-2">
+          Ventanas por <strong>hora de llegada a la ingesta</strong> (robusto al desfase del
+          reloj del nodo). Marca la verdad terreno manual por ventana: ¿hubo movimiento real?
+          <span class="badge-simulado">idle NO significa sala vacía</span>
+          Solo se listan evaluaciones <code>origen=real</code>.
+        </p>
+        <div class="tabla-scroll">
+          <table class="datos" id="tabla-ventanas">
+            <thead>
+              <tr><th>ventana</th><th>evaluaciones</th><th>predicho</th>
+                  <th>hubo movimiento real</th><th>nota</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="tarjeta p-3">
         <h2 class="text-sm font-semibold mb-2">Matriz de confusión (verdad terreno manual vs predicción de ventana)</h2>
         <p class="text-xs text-slate-400 mb-3" id="validacion-nota"></p>
@@ -148,12 +186,25 @@
       </div>
 
       <div class="tarjeta p-3">
-        <h2 class="text-sm font-semibold mb-2">Sesiones</h2>
+        <h2 class="text-sm font-semibold mb-2">Sesiones marcadas (validacion_sesiones)</h2>
         <div class="tabla-scroll">
           <table class="datos" id="tabla-sesiones">
             <thead>
               <tr><th>sesión</th><th>inicio</th><th>fin</th><th>verdad</th><th>predicho</th>
                   <th>evaluaciones</th><th>celda</th><th>notas</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- F3: registro del session logger -->
+      <div class="tarjeta p-3">
+        <h2 class="text-sm font-semibold mb-2">Registro de sesiones (session logger)</h2>
+        <div class="tabla-scroll">
+          <table class="datos" id="tabla-registro-sesiones">
+            <thead>
+              <tr><th>sesión</th><th>estado</th><th>inicio</th><th>fin</th><th>duración</th><th>nota</th></tr>
             </thead>
             <tbody></tbody>
           </table>
