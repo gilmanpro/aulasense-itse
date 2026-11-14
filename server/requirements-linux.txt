@@ -1,0 +1,18 @@
+# AulaSense server — runtime WSL Debian 13 (trixie) / python3.13 de apt (SPEC §15.1).
+# Espejo de server/requirements.txt con las MISMAS versiones fijadas, salvo:
+#   - bleak  : FUERA. El receptor BLE (server/ble/) es opcional (default n) y no corre en WSL.
+#   - argon2-cffi : AÑADIDO. Hash de la password admin del dashboard (F25-e, Argon2id).
+# Cumple AGENTS.md regla 3: el venv primario es /home/aulasense/venvs/aulasense y NUNCA
+# conviven dos stacks vivos (split-brain prohibido).
+paho-mqtt==2.2.0
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+websockets==17.4
+python-dotenv==1.2.4
+pandas==3.1.1
+scikit-learn==1.9.1
+matplotlib==3.11.2
+requests==2.34.2
+argon2-cffi==25.1.0
+pytest==9.2.0
+httpx==0.28.1

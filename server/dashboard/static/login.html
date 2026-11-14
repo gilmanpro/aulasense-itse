@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>AulaSense — Acceso</title>
+<!--
+  F25-e (SPEC §9.2): página de login text-only, SIN datos del sistema y sin CDN.
+  Todo el CSS es inline (se sirve sin dependencias de red). El POST va por fetch
+  con JSON a /login; los errores se muestran SIEMPRE con el mismo texto genérico
+  (sin distinguir usuario inexistente de password mala).
+-->
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #e2e8f0;
+  }
+  main {
+    width: min(360px, 92vw); padding: 28px 24px; border-radius: 12px;
+    background: #1e293b; border: 1px solid #334155;
+  }
+  h1 { margin: 0 0 4px; font-size: 1.25rem; letter-spacing: .02em; }
+  p.sub { margin: 0 0 20px; font-size: .82rem; color: #94a3b8; }
+  label { display: block; font-size: .8rem; margin: 0 0 6px; color: #cbd5e1; }
+  input {
+    width: 100%; padding: 10px 12px; margin: 0 0 14px; font-size: .95rem;
+    border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0;
+  }
+  input:focus { outline: 2px solid #38bdf8; outline-offset: 1px; }
+  button {
+    width: 100%; padding: 10px 12px; font-size: .95rem; font-weight: 600; cursor: pointer;
+    border: 0; border-radius: 8px; background: #0284c7; color: #f8fafc;
+  }
+  button:disabled { opacity: .6; cursor: progress; }
+  #error {
+    margin: 0 0 14px; padding: 9px 12px; border-radius: 8px; font-size: .82rem;
+    background: #431a1a; border: 1px solid #7f1d1d; color: #fecaca;
+  }
+  #error[hidden] { display: none; }
+  footer { margin-top: 18px; font-size: .72rem; color: #64748b; line-height: 1.4; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AulaSense</h1>
+  <p class="sub">Dashboard local — acceso restringido</p>
+  <form id="form-login" autocomplete="on" method="post" action="/login">
+    <label for="username">Usuario</label>
+    <input id="username" name="username" type="text" autocomplete="username"
+           required maxlength="64" autocapitalize="none" spellcheck="false">
+    <label for="password">Contraseña</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           required maxlength="256">
+    <p id="error" role="alert" hidden></p>
+    <button id="entrar" type="submit">Entrar</button>
+  </form>
+  <footer>
+    Loopback + sesión de 12 h (2 h de inactividad). Tras 5/10/20 fallos el acceso
+    se bloquea temporalmente 1 min / 15 min / 1 h. La contraseña la genera el
+    servidor en <code>claves/.env</code>; para regenerarla, el dueño ejecuta
+    <code>tools/reset_admin.py</code>.
+  </footer>
+</main>
+<script>
+  "use strict";
+  // Login por fetch+JSON: el backend responde 200 {ok:true}, 401 genérico o
+  // 429 con Retry-After. Aquí NO se pinta nada del servidor salvo un texto fijo.
+  const form = document.getElementById("form-login");
+  const error = document.getElementById("error");
+  const boton = document.getElementById("entrar");
+
+  function mostrar(texto) {
+    error.textContent = texto;
+    error.hidden = false;
+  }
+
+  form.addEventListener("submit", async (evento) => {
+    evento.preventDefault();
+    error.hidden = true;
+    boton.disabled = true;
+    try {
+      const respuesta = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value.trim(),
+          password: document.getElementById("password").value,
+        }),
+      });
+      if (respuesta.ok) {
+        window.location.replace("/");
+        return;
+      }
+      if (respuesta.status === 429) {
+        const segundos = Number(respuesta.headers.get("Retry-After") || "60");
+        const espera = Number.isFinite(segundos) && segundos > 0 ? segundos : 60;
+        const texto = espera >= 60
+          ? `${Math.round(espera / 60)} min`
+          : `${Math.ceil(espera)} s`;
+        mostrar(`Demasiados intentos fallidos. Reintenta en ${texto}.`);
+        return;
+      }
+      mostrar("Credenciales inválidas.");
+      document.getElementById("password").value = "";
+    } catch (_fallo) {
+      mostrar("No se pudo contactar con el dashboard local.");
+    } finally {
+      boton.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

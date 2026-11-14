@@ -12,3 +12,7 @@ requests==2.34.2
 bleak==3.0.2
 pytest==9.2.0
 httpx==0.28.1
+# F25-e (D-F25-8): hash Argon2id del dashboard. Opcional en runtime (el default
+# multi-runtime es scrypt stdlib); con argon2-cffi instalado se verifican/escriben
+# hashes `$argon2id$...` (AULASENSE_AUTH_HASH=argon2id). Wheel cp315 verificado.
+argon2-cffi==25.1.0

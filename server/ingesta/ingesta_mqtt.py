@@ -24,6 +24,14 @@ F24 (SPEC §6.1/§7.1): se suscribe ademas ``+/aulasense_config`` (tabla
 el receptor HTTP de imagen (:mod:`receptor_imagen`) como hilo y sus jobs validados
 entran por la MISMA cola que los mensajes MQTT: el writer sigue siendo unico.
 
+F25 (SPEC §6.2/§7.2, D-F25-1): se suscribe ademas ``+/image`` (QoS 0). El callback
+de paho NO parsea ese topic: encola ``(topic, payload CRUDO)`` y el writer unico
+decodifica el envelope (limite 64 KB, base64 estricto, magic JPEG, ``tamano``,
+``sha256``), aplica dedupe por hash, rate-limit 1/10 s, resuelve el FK
+``evento_id`` contra el ``MOVIMIENTO_INICIO`` de la ventana y guarda el archivo +
+fila con ``canal='mqtt'`` y ``vision_estado='pendiente'``. Todo fallo es descarte
++ log: JAMAS una fila invalida (el evento motion es la fuente de verdad).
+
 Secretos: MQTT_PASS solo se pasa a paho; jamas se registra en logs. El token del
 receptor no se imprime (solo su longitud si hiciera falta diagnosticar).
 """
@@ -31,7 +39,10 @@ receptor no se imprime (solo su longitud si hiciera falta diagnosticar).
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -41,6 +52,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +73,8 @@ _DB_DEFECTO = _RAIZ_REPO / "server" / "datos" / "aulasense.db"
 _CSV_DEFECTO = _RAIZ_REPO / "server" / "datos" / "export_evaluaciones.csv"
 
 # Suffix suscritos (SPEC §7). ``aulasense_config`` es el topic F24 de
-# provision/config/captura (SPEC §6.1).
+# provision/config/captura (SPEC §6.1). ``image`` es el transporte MQTT de la
+# foto-evidencia (SPEC §6.2, F25) y se suscribe aparte con QoS 0.
 SUFIJOS_SUSCRITOS: tuple[str, ...] = (
     "motion",
     "health",
@@ -72,6 +85,7 @@ SUFIJOS_SUSCRITOS: tuple[str, ...] = (
     "commands/result",
     "aulasense_temp",
     "aulasense_config",
+    "image",
 )
 
 # Campos del comando read_diagnostics (metricas edge C12, SPEC §6).
@@ -136,6 +150,19 @@ SYNC_VENTANA_MS = 120_000
 COLA_MAX = 20_000
 # Intervalo del sondeo de diagnosticos (SPEC §7).
 INTERVALO_DIAGNOSTICOS_S = 30.0
+
+# --- Decoder de imagenes MQTT (SPEC §6.2/§7.2, F25) ------------------------
+# Tamano maximo del envelope JSON completo (SPEC §6.2) y del JPEG decodificado
+# (mismo tope que el receptor HTTP, SPEC §7.1).
+MAX_ENVELOPE_IMAGEN_BYTES = esquema.MAX_ENVELOPE_IMAGEN_BYTES
+MAX_IMAGEN_BYTES = 64 * 1024
+# Rate-limit de imagenes por device (1 imagen / 10 s, igual que §7.1).
+RATE_IMAGEN_MS = 10_000
+# Ventana del FK evento_id alrededor del ts_ms de la imagen (SPEC §7.2 paso 6).
+VENTANA_IMAGEN_PRE_MS = 15_000
+VENTANA_IMAGEN_POST_MS = 5_000
+# Magic JPEG que debe seguir al b64 decodificado (SPEC §6.2).
+_MAGIC_JPEG = b"\xff\xd8\xff"
 
 
 def ahora_ms() -> int:
@@ -277,7 +304,13 @@ class IngestaWriter:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(esquema.ESQUEMA_SQL)
+        # SPEC §8.2: la migracion F25 la aplica SOLO la ingesta (writer unico).
+        self._migracion_f25 = esquema.migrar_esquema_f25(self._conn)
         self._conn.commit()
+        # Rate-limit de imagenes MQTT por device (epoca ms de la ultima aceptada).
+        self._ultima_imagen_ms: dict[str, int] = {}
+        # Directorio base de datos (perezoso: AULASENSE_DATOS_DIR o padre de la DB).
+        self._datos_dir_cache: Path | None = None
 
         # Cabecera del CSV solo si el archivo es nuevo o esta vacio (idempotente).
         self._csv_es_nuevo = not self.csv_path.exists() or self.csv_path.stat().st_size == 0
@@ -302,6 +335,10 @@ class IngestaWriter:
         kind = resultado["kind"]
         if kind is None:  # p. ej. capabilities: reconocido pero sin tabla destino
             return {**resultado, "accion": "sin_persistencia"}
+        if kind == "image":
+            # El envelope ``image`` lo decodifica el handler F25 (§7.2), que ademas
+            # comprueba b64/magic/tamano/sha256/dedupe/rate.
+            return self.procesar_imagen_mqtt(topic, resultado["datos"], ahora)
 
         partes = esquema.parse_topic(topic, self.topic_prefix)
         if partes is None:
@@ -384,6 +421,253 @@ class IngestaWriter:
             job.resultado.set()
         return {"ok": True, "error": None, "imagen_id": job.imagen_id}
 
+    def procesar_imagen_mqtt(
+        self, topic: str, crudo: Any, now_ms: int | None = None
+    ) -> dict[str, Any]:
+        """Decoder del topic ``image`` (SPEC §7.2, F25): descarte + log o fila.
+
+        ``crudo`` es el payload TAL CUAL lo entrego paho (``bytes``) o, en tests,
+        el dict ya parseado. Pasos: envelope <= 64 KB, JSON, contrato (§6.2),
+        allowlist en vivo, base64 estricto, magic JPEG, ``tamano``, ``sha256``,
+        dedupe por hash, rate-limit 1/10 s, FK ``evento_id`` por ventana y
+        archivo + fila ``canal='mqtt'``/``vision_estado='pendiente'``.
+
+        Nunca lanza por un mensaje invalido: devuelve ``accion`` con el motivo del
+        descarte (``descartado``/``imagen_descartada_*``/``imagen_duplicada``).
+        """
+        ahora = int(now_ms) if now_ms is not None else ahora_ms()
+        payload, error = parsear_envelope_imagen(crudo)
+        if error is not None:
+            LOG.warning("imagen MQTT descartada topic=%s error=%s", topic, error)
+            return {
+                "valido": False,
+                "error": error,
+                "kind": "image",
+                "datos": None,
+                "accion": "descartado",
+            }
+        resultado = esquema.validar(topic, payload)
+        if not resultado["valido"]:
+            LOG.warning(
+                "imagen MQTT descartada topic=%s error=%s", topic, resultado["error"]
+            )
+            return {**resultado, "accion": "descartado"}
+
+        partes = esquema.parse_topic(topic, self.topic_prefix)
+        if partes is None:
+            LOG.warning("imagen MQTT descartada: topic fuera del prefijo %s", topic)
+            return {
+                "valido": False,
+                "error": "topic fuera del prefijo configurado",
+                "kind": "image",
+                "datos": None,
+                "accion": "descartado",
+            }
+        device_id = partes[0]
+
+        with self._lock:
+            estado = self._estado(device_id)
+            try:
+                accion = self._decodificar_imagen(
+                    device_id, resultado["datos"], estado, ahora
+                )
+                self._conn.commit()
+            except sqlite3.Error as exc:  # nunca se cae el writer por una imagen
+                self._conn.rollback()
+                LOG.exception(
+                    "error de SQLite al persistir imagen MQTT device=%s: %s",
+                    device_id,
+                    exc,
+                )
+                return {
+                    "valido": True,
+                    "error": None,
+                    "kind": "image",
+                    "datos": resultado["datos"],
+                    "accion": "error_sqlite",
+                }
+        return {**resultado, "accion": accion}
+
+    def _decodificar_imagen(
+        self,
+        device_id: str,
+        datos: dict[str, Any],
+        estado: EstadoDispositivo,
+        ahora: int,
+    ) -> str:
+        """Pasos 2-7 del decoder (SPEC §7.2). Se ejecuta bajo ``self._lock``.
+
+        Devuelve la accion: ``imagen_mqtt`` si persistio, o
+        ``imagen_descartada_*``/``imagen_duplicada`` con log del motivo.
+        """
+        # 2. Allowlist con refresco EN VIVO (mismo patron que el receptor F24-b1:
+        # en una DB nueva el retained ``device`` puede llegar despues).
+        if not self._dispositivo_conocido(device_id):
+            LOG.warning(
+                "imagen MQTT descartada: device desconocido device=%s", device_id
+            )
+            return "imagen_descartada_device"
+
+        # 3. b64 estricto (sin saltos de linea) -> magic -> tamano -> sha256.
+        try:
+            contenido = base64.b64decode(datos["b64"], validate=True)
+        except (binascii.Error, ValueError):
+            LOG.warning("imagen MQTT descartada: base64 invalido device=%s", device_id)
+            return "imagen_descartada_b64"
+        if not contenido:
+            LOG.warning("imagen MQTT descartada: JPEG vacio device=%s", device_id)
+            return "imagen_descartada_b64"
+        if len(contenido) > MAX_IMAGEN_BYTES:
+            LOG.warning(
+                "imagen MQTT descartada: %d B supera %d B (device=%s)",
+                len(contenido),
+                MAX_IMAGEN_BYTES,
+                device_id,
+            )
+            return "imagen_descartada_tamano"
+        if not contenido.startswith(_MAGIC_JPEG):
+            LOG.warning(
+                "imagen MQTT descartada: sin magic JPEG FFD8FF device=%s", device_id
+            )
+            return "imagen_descartada_magic"
+        if len(contenido) != int(datos["tamano"]):
+            LOG.warning(
+                "imagen MQTT descartada: tamano declarado %s != %d reales device=%s",
+                datos["tamano"],
+                len(contenido),
+                device_id,
+            )
+            return "imagen_descartada_tamano"
+        sha = hashlib.sha256(contenido).hexdigest()
+        if sha != datos["sha256"]:
+            LOG.warning(
+                "imagen MQTT descartada: sha256 no coincide device=%s declarado=%s real=%s",
+                device_id,
+                str(datos["sha256"])[:8],
+                sha[:8],
+            )
+            return "imagen_descartada_sha256"
+
+        # 4. Dedupe por contenido ANTES del rate-limit: cubre reenvios del nodo y
+        # la misma foto por los dos canales (HTTP y MQTT). El unique index
+        # ``idx_img_hash_unico`` es la red de seguridad ante la carrera.
+        if self._imagen_por_hash(sha) is not None:
+            LOG.info(
+                "imagen MQTT duplicada (hash ya persistido) device=%s sha=%s",
+                device_id,
+                sha[:8],
+            )
+            return "imagen_duplicada"
+
+        # 5. Rate-limit 1 imagen/10 s por device (en MQTT no hay 429: descarte+log).
+        ultima = self._ultima_imagen_ms.get(device_id)
+        if ultima is not None and (ahora - ultima) < RATE_IMAGEN_MS:
+            LOG.warning(
+                "imagen MQTT descartada por rate-limit (1/10 s) device=%s", device_id
+            )
+            return "imagen_descartada_rate"
+
+        # 6. R3 (monotono -> epoca) y FK al MOVIMIENTO_INICIO de la ventana.
+        ts_ms, _hora_sinc = self._resolver_ts(estado, int(datos["ts_ms"]), ahora)
+        evento_id = self._onset_en_ventana(device_id, ts_ms)
+
+        # 7. Archivo con el MISMO patron que §7.1 + fila del canal MQTT.
+        destino, relativa = self._ruta_imagen(device_id, ts_ms, sha)
+        try:
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_bytes(contenido)
+        except OSError:
+            LOG.exception(
+                "no se pudo escribir la imagen MQTT en %s (device=%s)",
+                destino,
+                device_id,
+            )
+            return "imagen_descartada_disco"
+
+        ancho, alto = dimensiones_jpeg(contenido)
+        try:
+            self._conn.execute(
+                "INSERT INTO imagenes "
+                "(device_id, ts_ms, ruta, hash_sha256, tamano_bytes, ancho, alto, "
+                " evento_id, imagen_purgada, origen, canal, vision_estado) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'real', 'mqtt', 'pendiente')",
+                (
+                    device_id,
+                    ts_ms,
+                    relativa,
+                    sha,
+                    len(contenido),
+                    ancho,
+                    alto,
+                    evento_id,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # Carrera con el canal HTTP (dos hilos, dos canales, misma foto).
+            _borrar_silencioso(destino)
+            LOG.info(
+                "imagen MQTT duplicada (conflicto del indice unico de hash) device=%s sha=%s",
+                device_id,
+                sha[:8],
+            )
+            return "imagen_duplicada"
+
+        self._ultima_imagen_ms[device_id] = ahora
+        self._upsert_last_seen(device_id, ahora)
+        LOG.info(
+            "imagen MQTT persistida device=%s bytes=%d file=%s evento_id=%s",
+            device_id,
+            len(contenido),
+            relativa,
+            evento_id,
+        )
+        return "imagen_mqtt"
+
+    def _dispositivo_conocido(self, device_id: str) -> bool:
+        """Allowlist SIN tomar ``self._lock`` (se llama ya bajo el lock)."""
+        fila = self._conn.execute(
+            "SELECT 1 FROM dispositivos WHERE device_id = ? LIMIT 1", (device_id,)
+        ).fetchone()
+        return fila is not None
+
+    def _imagen_por_hash(self, sha256_hex: str) -> int | None:
+        """Id de la fila con ese contenido (dedupe cross-canal), si existe."""
+        fila = self._conn.execute(
+            "SELECT id FROM imagenes WHERE hash_sha256 = ? LIMIT 1", (sha256_hex,)
+        ).fetchone()
+        return int(fila[0]) if fila is not None else None
+
+    def _onset_en_ventana(self, device_id: str, ts_ms: int) -> int | None:
+        """``MOVIMIENTO_INICIO`` mas reciente en ``[ts-15 s, ts+5 s]`` (o ``None``)."""
+        fila = self._conn.execute(
+            "SELECT id FROM eventos "
+            "WHERE device_id = ? AND tipo = 'MOVIMIENTO_INICIO' "
+            "AND ts_ms BETWEEN ? AND ? "
+            "ORDER BY ts_ms DESC, id DESC LIMIT 1",
+            (
+                device_id,
+                int(ts_ms) - VENTANA_IMAGEN_PRE_MS,
+                int(ts_ms) + VENTANA_IMAGEN_POST_MS,
+            ),
+        ).fetchone()
+        return int(fila[0]) if fila is not None else None
+
+    def _ruta_imagen(
+        self, device_id: str, ts_ms: int, sha256_hex: str
+    ) -> tuple[Path, str]:
+        """Ruta absoluta + relativa con el patron compartido de SPEC §7.1."""
+        sello = datetime.fromtimestamp(int(ts_ms) / 1000).strftime("%Y%m%d_%H%M%S")
+        nombre = f"{sello}_{sha256_hex[:8]}.jpg"
+        relativa = f"imagenes/{device_id}/{nombre}"
+        return self.datos_dir / "imagenes" / device_id / nombre, relativa
+
+    @property
+    def datos_dir(self) -> Path:
+        """Directorio base de datos (``AULASENSE_DATOS_DIR`` o el padre de la DB)."""
+        if self._datos_dir_cache is None:
+            self._datos_dir_cache = resolver_datos_dir(self)
+        return self._datos_dir_cache
+
     def run_forever(self, cola: "queue.Queue[Any]") -> None:
         """Bucle del hilo writer: consume hasta recibir el centinela ``None``."""
         try:
@@ -418,11 +702,19 @@ class IngestaWriter:
                 cola.task_done()
 
     def _procesar_item(self, item: Any) -> None:
-        """Despacha un item de la cola: mensaje MQTT o job de imagen del receptor."""
+        """Despacha un item de la cola: mensaje MQTT, job HTTP o imagen cruda.
+
+        F25: los mensajes del topic ``image`` llegan como ``(topic, bytes)`` (el
+        callback de paho no los parsea) y van al decoder §7.2, que corre en ESTE
+        hilo: la conexion SQLite del writer sigue siendo la unica.
+        """
         if isinstance(item, JobImagen):
             self.procesar_imagen(item)
             return
         topic, payload = item
+        if isinstance(payload, (bytes, bytearray)):
+            self.procesar_imagen_mqtt(topic, payload)
+            return
         self.procesar(topic, payload)
 
     @property
@@ -809,6 +1101,76 @@ class IngestaWriter:
         self._csv_file.flush()
 
 
+def parsear_envelope_imagen(crudo: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Paso 1 del decoder (SPEC §7.2): tamano del envelope + JSON UTF-8 objeto.
+
+    ``crudo`` es el payload binario que entrego paho o, en tests, el dict ya
+    parseado. Devuelve ``(payload, error)``; con ``error`` no se persiste NADA.
+    """
+    if isinstance(crudo, dict):
+        return crudo, None
+    if not isinstance(crudo, (bytes, bytearray)):
+        return None, "payload de imagen con tipo inesperado (se esperaba JSON)"
+    contenido = bytes(crudo)
+    if len(contenido) > MAX_ENVELOPE_IMAGEN_BYTES:
+        return (
+            None,
+            f"envelope de {len(contenido)} B supera el limite de 64 KB "
+            f"({MAX_ENVELOPE_IMAGEN_BYTES} B)",
+        )
+    try:
+        datos = json.loads(contenido.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "payload de imagen no es JSON UTF-8"
+    if not isinstance(datos, dict):
+        return None, "payload de imagen no es un objeto JSON"
+    return datos, None
+
+
+def _modulo_receptor() -> Any:
+    """Importa ``receptor_imagen`` (modulo plano o paquete); ``None`` si no esta."""
+    try:
+        import receptor_imagen  # type: ignore[import-not-found]
+
+        return receptor_imagen
+    except ImportError:  # pragma: no cover - import como paquete server.ingesta
+        try:
+            from . import receptor_imagen  # type: ignore[no-redef]
+
+            return receptor_imagen
+        except ImportError:
+            return None
+
+
+def resolver_datos_dir(writer: "IngestaWriter") -> Path:
+    """DIR base de datos: reusa el criterio del receptor HTTP (SPEC §7.1).
+
+    ``AULASENSE_DATOS_DIR`` si esta definido; si no, el padre de la DB
+    (``server/datos``). No se reescribe la logica del receptor: se importa.
+    """
+    modulo = _modulo_receptor()
+    if modulo is not None and hasattr(modulo, "resolver_datos_dir"):
+        return modulo.resolver_datos_dir(writer)
+    crudo = os.environ.get("AULASENSE_DATOS_DIR", "").strip()
+    return Path(crudo).expanduser() if crudo else Path(writer.db_path).parent
+
+
+def dimensiones_jpeg(contenido: bytes) -> tuple[int | None, int | None]:
+    """Ancho/alto del JPEG si Pillow esta disponible (mismo helper que §7.1)."""
+    modulo = _modulo_receptor()
+    if modulo is not None and hasattr(modulo, "_dimensiones"):
+        return modulo._dimensiones(contenido)
+    return None, None  # pragma: no cover - sin receptor importable
+
+
+def _borrar_silencioso(ruta: Path) -> None:
+    """Borra un archivo huerfano sin propagar errores (la fila ya se descarto)."""
+    try:
+        ruta.unlink(missing_ok=True)
+    except OSError:  # pragma: no cover - disco ocupado/permisos
+        LOG.warning("no se pudo borrar el archivo huerfano: %s", ruta)
+
+
 def _coaccionar(valor: Any, tipo: str) -> Any:
     """Convierte un valor de diagnostico al tipo de columna o devuelve None."""
     if isinstance(valor, bool):
@@ -853,8 +1215,13 @@ def crear_cliente(
             LOG.error("conexion MQTT rechazada: rc=%s", reason_code)
             return
         for sufijo in SUFIJOS_SUSCRITOS:
+            # ``image`` (F25) se suscribe aparte con QoS 0: el nodo publica QoS 0
+            # y retain=false (SPEC §6.2); QoS 1 no aportaria nada.
+            if sufijo == "image":
+                continue
             client.subscribe(f"{cfg.topic_prefix}/+/{sufijo}", qos=1)
-        LOG.info("MQTT conectado; suscrito a %s/+/{...}", cfg.topic_prefix)
+        client.subscribe(f"{cfg.topic_prefix}/+/image", qos=0)
+        LOG.info("MQTT conectado; suscrito a %s/+/{...} (+ image QoS 0)", cfg.topic_prefix)
 
     def on_disconnect(client, userdata, flags, reason_code, properties=None):
         LOG.warning("MQTT desconectado: rc=%s", reason_code)
@@ -863,6 +1230,15 @@ def crear_cliente(
         # Re-entrega QoS 1: se ignora para no duplicar eventos derivados.
         if getattr(msg, "dup", False):
             LOG.debug("mensaje dup ignorado topic=%s", msg.topic)
+            return
+        # F25 (§7.2): la imagen viaja como JSON+b64 y su decoder (limite de 64 KB,
+        # b64 estricto, magic, tamano, sha256) corre en el writer. Aqui SOLO se
+        # encola el payload CRUDO: el callback no parsea ni escribe.
+        if msg.topic.rsplit("/", 1)[-1] == "image":
+            try:
+                cola.put_nowait((msg.topic, bytes(msg.payload)))
+            except queue.Full:  # pragma: no cover - solo bajo carga extrema
+                LOG.warning("cola llena: se descarta imagen topic=%s", msg.topic)
             return
         try:
             payload = json.loads(msg.payload.decode("utf-8"))

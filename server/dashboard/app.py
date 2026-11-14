@@ -2,7 +2,12 @@
 """Dashboard AulaSense — FastAPI en 127.0.0.1:8000 (SPEC §9).
 
 Reglas de seguridad aplicadas aquí (AGENTS.md, sección "Seguridad de la demo"):
-- bind SIEMPRE ``127.0.0.1`` (nunca 0.0.0.0, sin flag para cambiarlo);
+- bind por defecto ``127.0.0.1`` y configurable SOLO por ``AULASENSE_HOST``/``AULASENSE_PORT``:
+  D-F25-3 reinterpreta el bind — en Windows el default sigue siendo 127.0.0.1 (sin cambio de
+  comportamiento); en WSL Debian el default se sobreescribe a ``0.0.0.0`` **VM-local** (NAT sin
+  portproxy = inalcanzable desde la LAN) y la superficie expuesta en Windows sigue siendo solo
+  ``127.0.0.1`` (portproxy con admin) o ``http://<WSL_IP>:8000`` + ``AULASENSE_ORIGINS_EXTRA``
+  exacto como fallback sin admin. La allowlist de Origin NO cambia;
 - Origin guard en ``/ws`` y ``/internal/evento``: **Origin ausente = permitir**
   (curl/CLI/pytest no mandan Origin). Si el header viene, su ``host[:puerto]`` debe
   coincidir EXACTAMENTE con {``127.0.0.1:8000``, ``localhost:8000``} o con una entrada
@@ -16,6 +21,12 @@ Reglas de seguridad aplicadas aquí (AGENTS.md, sección "Seguridad de la demo")
   404 sin pista), con ``nosniff`` y ``no-store``. El dashboard NUNCA acepta
   uploads (eso es el receptor LAN :8001 de la ingesta); sin Origin guard extra en
   lectura: el bind 127.0.0.1 ES el control (SPEC §9.1);
+- **F25 — login seguro (SPEC §9.2, D-F25-8):** todas las rutas exigen cookie de
+  sesión (`aulasense_sesion`, HttpOnly+SameSite=Lax) salvo `GET/POST /login`,
+  `POST /logout`, estáticos de login y `/internal/*` (Origin guard vigente). El
+  handshake de `/ws` valida la cookie. Lockout progresivo por IP+usuario con
+  `429 + Retry-After`; 401 genérico sin pistas. El bind loopback NO cambia:
+  defensa en profundidad, no sustitución;
 - SQL 100 % parametrizado y ``limite`` siempre clampado.
 
 El writer de producción es la ingesta; este proceso solo lee y, para pruebas,
@@ -29,6 +40,7 @@ import csv
 import io
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import time
@@ -39,7 +51,12 @@ from typing import Any, AsyncIterator, Iterator
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -50,9 +67,15 @@ if str(SERVER_DIR) not in sys.path:
 
 from ingesta.esquema import ESQUEMA_SQL, validar  # noqa: E402
 
+# F25-e (SPEC §9.2): login, sesiones, lockout y bootstrap del admin único.
+from dashboard import auth  # noqa: E402
+
 # --- Constantes del contrato ---------------------------------------------------
-HOST = "127.0.0.1"  # hard-codeado a propósito: el dashboard jamás sale de loopback
-PORT = 8000
+# D-F25-3 reinterpreta el bind: el default de Windows sigue siendo loopback (comportamiento
+# idéntico al de antes); en WSL la unit systemd fija AULASENSE_HOST=0.0.0.0 VM-local (NAT sin
+# portproxy ⇒ inalcanzable desde la LAN) y AULASENSE_ORIGINS_EXTRA cubre el fallback.
+HOST = os.environ.get("AULASENSE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("AULASENSE_PORT", "8000"))
 PUERTO_POR_ESQUEMA = {"http": 80, "https": 443}
 ALLOWLIST_DEFECTO = frozenset({"127.0.0.1:8000", "localhost:8000"})
 TIPOS_EVENTO = (
@@ -308,6 +331,113 @@ def _respuesta_403(detalle: str) -> JSONResponse:
 
 
 # ------------------------------------------------------------------------------
+# F25-e — Login seguro del dashboard (SPEC §9.2, D-F25-8)
+# Defensa en profundidad: bind loopback intacto + sesión obligatoria en todas
+# las rutas salvo /login, /logout, estáticos de login y /internal/* (máquina a
+# máquina local, Origin guard vigente). Auth vive en ``dashboard/auth.py``.
+# ------------------------------------------------------------------------------
+# Rutas exentas de sesión (contrato §9.2). ``/internal/*`` se exime porque lo
+# consume la máquina local (tools/CLI) y ya está protegido por Origin guard.
+def _ruta_libre(metodo: str, ruta: str) -> bool:
+    """¿La ruta no exige sesión? (método exacto, sin comodines de prefijo)."""
+    if ruta == "/login" and metodo in ("GET", "POST"):
+        return True
+    if ruta == "/logout" and metodo == "POST":
+        return True
+    if ruta.startswith("/static/login"):  # login.html y sus recursos
+        return True
+    if ruta == "/internal" or ruta.startswith("/internal/"):
+        return True
+    return False
+
+
+def _es_ruta_auth(ruta: str) -> bool:
+    """Respuestas de auth con cabeceras nosniff/DENY/no-referrer (SPEC §9.2)."""
+    return ruta in ("/login", "/logout")
+
+
+def _respuesta_sin_sesion(ruta: str) -> Response:
+    """Sin sesión: 302 al login para la página, 401 para API/estáticos."""
+    if ruta in ("/", "/index.html"):
+        return RedirectResponse(url="/login", status_code=302, headers=auth.CABECERAS_AUTH)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "sesión requerida"},
+        headers=auth.CABECERAS_AUTH,
+    )
+
+
+def _ip_cliente(request: Request) -> str:
+    """IP del cliente para el lockout (loopback: 127.0.0.1 / ::1 / testclient)."""
+    return (request.client.host if request.client else "") or "local"
+
+
+# Hash señuelo: usuario inexistente y password mala cuestan lo mismo (sin pistas
+# de temporización sobre qué usuario existe). Se calcula una vez, por pereza.
+_HASH_SENUELO: str | None = None
+
+
+def _hash_senuelo() -> str:
+    global _HASH_SENUELO
+    if _HASH_SENUELO is None:
+        _HASH_SENUELO = auth.hash_password(secrets.token_hex(16))
+    return _HASH_SENUELO
+
+
+def _abrir_sesion(token: str | None) -> dict[str, Any] | None:
+    """Valida la cookie contra la BD (expiración absoluta + idle sliding)."""
+    if not token:
+        return None
+    con = _conectar()
+    try:
+        return auth.validar_sesion(con, token)
+    except sqlite3.Error:  # DB bloqueada: se trata como "sin sesión"
+        return None
+    finally:
+        con.close()
+
+
+def _intento_login(
+    ip: str, usuario: str, password: str, user_agent: str | None
+) -> dict[str, Any]:
+    """Un intento de login completo (sync: se ejecuta en un hilo aparte).
+
+    Orden: lockout vigente → verificación → registro del intento → sesión.
+    401 genérico: el llamador no distingue usuario inexistente de password mala.
+    """
+    con = _conectar()
+    try:
+        restante = auth.bloqueo_restante_ms(con, ip, usuario)
+        if restante > 0:
+            return {"estado": "bloqueado", "restante_ms": restante}
+        fila = auth.obtener_usuario(con, usuario)
+        # Siempre se verifica un hash real (señuelo si el usuario no existe).
+        hash_ref = fila["pass_hash"] if fila else _hash_senuelo()
+        ok = auth.verificar_password(password, hash_ref) and fila is not None
+        auth.registrar_intento(con, ip, usuario, ok)
+        if not ok:
+            return {"estado": "fallo"}
+        # Éxito: limpieza oportunista (sesiones expiradas + intentos >24 h).
+        auth.limpiar_sesiones(con)
+        auth.podar_intentos(con)
+        token = auth.crear_sesion(con, int(fila["id"]), ip, user_agent)
+        return {"estado": "ok", "token": token, "usuario": fila["username"]}
+    finally:
+        con.close()
+
+
+def _cerrar_sesion(token: str | None) -> None:
+    """Borra la sesión de la BD (logout)."""
+    if not token:
+        return
+    con = _conectar()
+    try:
+        auth.borrar_sesion(con, token)
+    finally:
+        con.close()
+
+
+# ------------------------------------------------------------------------------
 # Lecturas para los endpoints
 # ------------------------------------------------------------------------------
 def _snapshot_dispositivos() -> list[dict[str, Any]]:
@@ -478,7 +608,13 @@ async def _bucle_ingesta() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    _conectar().close()  # crea/valida el esquema al arrancar
+    con = _conectar()  # crea/valida el esquema al arrancar
+    try:
+        # F25-e: entorno (.env + claves/.env), tablas de auth, limpieza de
+        # sesiones expiradas y bootstrap idempotente del admin único.
+        auth.preparar(con)
+    finally:
+        con.close()
     tarea = asyncio.create_task(_bucle_ingesta())
     try:
         yield
@@ -491,6 +627,104 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="AulaSense dashboard", version="1.0", lifespan=lifespan)
+
+
+# ------------------------------------------------------------------------------
+# F25-e — Middleware de sesión (SPEC §9.2) y endpoints de login/logout
+# ------------------------------------------------------------------------------
+@app.middleware("http")
+async def guardia_sesion(request: Request, call_next):
+    """Exige sesión válida en TODAS las rutas salvo las exentas (§9.2)."""
+    ruta = request.url.path
+    metodo = request.method.upper()
+    if _ruta_libre(metodo, ruta):
+        respuesta = await call_next(request)
+    else:
+        sesion = await asyncio.to_thread(_abrir_sesion, request.cookies.get(auth.NOMBRE_COOKIE))
+        if sesion is None:
+            return _respuesta_sin_sesion(ruta)
+        request.state.sesion = sesion
+        respuesta = await call_next(request)
+    if _es_ruta_auth(ruta):
+        for clave, valor in auth.CABECERAS_AUTH.items():
+            respuesta.headers.setdefault(clave, valor)
+    return respuesta
+
+
+class Credenciales(BaseModel):
+    """Cuerpo del POST /login (JSON; límites para no procesar payloads enormes)."""
+
+    username: str = Field(default="", max_length=64)
+    password: str = Field(default="", max_length=256)
+
+
+@app.get("/login", include_in_schema=False)
+def login_pagina() -> FileResponse:
+    """Página de login text-only (sin datos del sistema, SPEC §9.2)."""
+    return FileResponse(
+        STATIC_DIR / "login.html", media_type="text/html", headers=auth.CABECERAS_AUTH
+    )
+
+
+@app.post("/login")
+async def login_credenciales(credenciales: Credenciales, request: Request) -> Response:
+    """Login JSON: 200 + cookie, 401 genérico, 429 + Retry-After si hay lockout."""
+    if not _origen_permitido(request.headers.get("origin")):
+        return _respuesta_403("Origin no permitido")
+    ip = _ip_cliente(request)
+    usuario = (credenciales.username or "").strip()
+    resultado = await asyncio.to_thread(
+        _intento_login,
+        ip,
+        usuario,
+        credenciales.password or "",
+        request.headers.get("user-agent"),
+    )
+    estado = resultado.get("estado")
+    if estado == "bloqueado":
+        cabeceras = dict(auth.CABECERAS_AUTH)
+        cabeceras["Retry-After"] = str(auth.segundos_retry_after(int(resultado["restante_ms"])))
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "demasiados intentos fallidos; reintenta más tarde"},
+            headers=cabeceras,
+        )
+    if estado != "ok":
+        # 401 GENÉRICO: mismo cuerpo/tiempo para usuario inexistente y password mala.
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "credenciales inválidas"},
+            headers=auth.CABECERAS_AUTH,
+        )
+    respuesta = JSONResponse(
+        status_code=200,
+        content={"ok": True, "usuario": resultado["usuario"]},
+        headers=auth.CABECERAS_AUTH,
+    )
+    # Flags exactas de §9.2: HttpOnly, SameSite=Lax, Path=/, Max-Age=43200.
+    # ``Secure`` omitido CON JUSTIFICACIÓN: http en loopback (localhost es secure
+    # context para el navegador); activarlo si algún día se sirve por TLS.
+    respuesta.set_cookie(
+        key=auth.NOMBRE_COOKIE,
+        value=str(resultado["token"]),
+        max_age=auth.MAX_EDAD_S,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+    return respuesta
+
+
+@app.post("/logout")
+async def logout(request: Request) -> Response:
+    """Cierra la sesión: borra la fila en BD y la cookie (SPEC §9.2)."""
+    if not _origen_permitido(request.headers.get("origin")):
+        return _respuesta_403("Origin no permitido")
+    await asyncio.to_thread(_cerrar_sesion, request.cookies.get(auth.NOMBRE_COOKIE))
+    respuesta = JSONResponse(status_code=200, content={"ok": True}, headers=auth.CABECERAS_AUTH)
+    respuesta.delete_cookie(key=auth.NOMBRE_COOKIE, path="/")
+    return respuesta
 
 
 # ------------------------------------------------------------------------------
@@ -1392,8 +1626,13 @@ async def internal_evento(evento: EventoSintetico, request: Request) -> JSONResp
 # ------------------------------------------------------------------------------
 @app.websocket("/ws")
 async def ws_live(ws: WebSocket) -> None:
-    """Push live; rechaza el handshake si el Origin no está permitido (nunca accept)."""
+    """Push live; rechaza el handshake sin Origin permitido o sin sesión válida."""
     if not _origen_permitido(ws.headers.get("origin")):
+        await ws.close(code=1008)  # antes de accept ⇒ respuesta HTTP 403
+        return
+    # F25-e (§9.2): el handshake WS también exige la cookie de sesión.
+    sesion = await asyncio.to_thread(_abrir_sesion, ws.cookies.get(auth.NOMBRE_COOKIE))
+    if sesion is None:
         await ws.close(code=1008)  # antes de accept ⇒ respuesta HTTP 403
         return
     await ws.accept()
@@ -1418,5 +1657,6 @@ async def ws_live(ws: WebSocket) -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    # Bind SIEMPRE loopback y sin flag de override (AGENTS.md, D10).
+    # Bind por defecto loopback (D-F25-3: en WSL la unit systemd fija AULASENSE_HOST=0.0.0.0
+    # VM-local; en Windows el default 127.0.0.1 se mantiene intacto).
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

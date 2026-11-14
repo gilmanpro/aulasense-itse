@@ -38,8 +38,8 @@ JPEG_MINIMO = b"\xff\xd8\xff\xe0" + b"\x00" * 14 + b"\xff\xd9"
 
 
 @pytest.fixture()
-def cliente(tmp_path, monkeypatch):
-    """TestClient con DB temporal y sin allowlist extra heredada del entorno."""
+def cliente(tmp_path, monkeypatch, credenciales_tmp, iniciar_sesion):
+    """TestClient con DB temporal, login REAL (§9.2) y sin allowlist heredada."""
     monkeypatch.setenv("AULASENSE_DB", str(tmp_path / "aulasense_test.db"))
     monkeypatch.delenv("AULASENSE_ORIGINS_EXTRA", raising=False)
 
@@ -48,14 +48,16 @@ def cliente(tmp_path, monkeypatch):
     from dashboard.app import app
 
     with TestClient(app) as test_client:
-        # Primer request: garantiza esquema creado antes de inserciones directas.
+        # F25-e: la sesión es REAL (POST /login → cookie), no auth desactivada.
+        iniciar_sesion(test_client, credenciales_tmp["password"])
+        # Primer request autenticado: garantiza esquema creado antes de inserciones.
         assert test_client.get("/api/resumen").status_code == 200
         yield test_client
 
 
 @pytest.fixture()
-def galeria(tmp_path, monkeypatch):
-    """TestClient con DB y base de imágenes temporales (``AULASENSE_DATOS_DIR``)."""
+def galeria(tmp_path, monkeypatch, credenciales_tmp, iniciar_sesion):
+    """TestClient logueado con DB y base de imágenes temporales (``AULASENSE_DATOS_DIR``)."""
     datos = tmp_path / "datos"
     datos.mkdir()
     monkeypatch.setenv("AULASENSE_DB", str(tmp_path / "aulasense_galeria.db"))
@@ -67,6 +69,8 @@ def galeria(tmp_path, monkeypatch):
     from dashboard.app import app
 
     with TestClient(app) as test_client:
+        # F25-e: sesión real (cookie) antes de tocar la API.
+        iniciar_sesion(test_client, credenciales_tmp["password"])
         # Primer request: la app crea el esquema base y la migración de §8.1.
         assert test_client.get("/api/resumen").status_code == 200
         yield test_client, datos

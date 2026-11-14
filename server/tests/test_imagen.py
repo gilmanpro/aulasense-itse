@@ -337,7 +337,9 @@ def test_evento_id_fk_resuelto_y_sin_evento_null(entorno):
     assert fila == [(evento_id,)]
 
     # Segundo device (sin FK): la fila sale con evento_id null.
-    sin_evento = _post(entorno, _jpeg(), device=DEV2, ts_ms=1500)
+    # F25-d1: el unique index idx_img_hash_unico (§8.2) deduplica por contenido, así que
+    # esta segunda foto usa dimensiones distintas → hash distinto → fila nueva legitima.
+    sin_evento = _post(entorno, _jpeg(160, 120), device=DEV2, ts_ms=1500)
     assert sin_evento.status_code == 201, sin_evento.text
     fila = _consultar(
         entorno.db, "SELECT evento_id FROM imagenes WHERE id = ?", (sin_evento.json()["imagen_id"],)

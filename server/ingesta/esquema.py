@@ -5,6 +5,9 @@ Interfaz publica (la consumen la ingesta, el dashboard y los tests):
 - ``validar(topic, payload)`` -> dict con ``valido``/``error``/``kind``/``datos``.
 - ``parse_topic(topic, topic_prefix)`` -> ``(device_id, suffix)`` o ``None``.
 - ``ESQUEMA_SQL`` -> DDL literal de SPEC §8 (tablas + indices, idempotente).
+- ``migrar_esquema_f25(conn)`` -> migracion idempotente de SPEC §8.2 (F25).
+- ``nombre_tabla_sesiones_login(conn)`` -> nombre real de la tabla de sesiones de
+  login (``sesiones`` o ``sesiones_auth`` si la F3 ya ocupa el nombre).
 
 Reglas de diseno:
 - Nunca se lanza una excepcion por payload malformado: tipo errado o rango fuera
@@ -15,8 +18,12 @@ Reglas de diseno:
 
 from __future__ import annotations
 
+import logging
 import re
+import sqlite3
 from typing import Any, Callable
+
+LOG = logging.getLogger("aulasense.esquema")
 
 # Prefijo contractual del broker compartido (SPEC §6).
 TOPIC_PREFIX_DEFECTO = "aulasense/v1/devices"
@@ -34,6 +41,7 @@ SUFFIX_VALIDOS: tuple[str, ...] = (
     "commands/result",
     "aulasense_temp",
     "aulasense_config",
+    "image",
 )
 
 # Tipos que se persisten (interfaz fijada por el coordinador).
@@ -47,6 +55,7 @@ KINDS_VALIDOS: tuple[str, ...] = (
     "commands_result",
     "aulasense_temp",
     "aulasense_config",
+    "image",
 )
 
 # Mapa suffix del topic -> kind logico devuelto por ``validar``.
@@ -60,6 +69,7 @@ _SUFFIX_A_KIND: dict[str, str] = {
     "commands/result": "commands_result",
     "aulasense_temp": "aulasense_temp",
     "aulasense_config": "aulasense_config",
+    "image": "image",
 }
 
 # Eventos de provision/config/captura del parche F24 (SPEC §6.1/§8.1).
@@ -73,6 +83,20 @@ EVENTOS_CONFIG: tuple[str, ...] = (
 
 _ID_HEX16 = re.compile(r"^[0-9a-f]{16}$")
 _COMMAND_ID = re.compile(r"^[\x20-\x7E]{1,64}$")
+
+# --- Contrato del topic ``image`` (SPEC §6.2, F25) --------------------------
+
+# Version del envelope que entiende esta ingesta (desconocida -> descarte).
+VERSION_ENVELOPE_IMAGEN = 1
+# Motivos aceptados hoy: solo la foto del onset.
+MOTIVOS_IMAGEN: tuple[str, ...] = ("onset",)
+# Tamano MAXIMO del envelope JSON completo (SPEC §6.2).
+MAX_ENVELOPE_IMAGEN_BYTES = 64 * 1024
+# Tope del base64 segun el firmware (SPEC §3.2.1 / AULASENSE_IMAGEN_MQTT_MAX_B64).
+MAX_B64_IMAGEN_CHARS = 16384
+# Base64 estandar ESTRICTO: alfabeto + hasta 2 '=' finales (sin saltos de linea).
+_RE_B64_ESTRICTO = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+_RE_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 # Campos que NUNCA deben viajar por MQTT (privacidad del contrato, SPEC §6 wifi).
 _CAMPOS_PRIVADOS = ("ssid", "bssid", "ip", "ip_address", "sta_ip")
@@ -303,6 +327,53 @@ def _validar_aulasense_config(p: dict[str, Any]) -> str | None:
     return None
 
 
+def _validar_image(p: dict[str, Any], topic: str) -> str | None:
+    """Envelope del topic ``image`` (SPEC §6.2): estructura + base64 estricto.
+
+    Solo valida el CONTRATO del envelope (tipos, rangos, alfabeto b64). La
+    decodificacion real, el magic JPEG, el ``tamano`` y el ``sha256`` los
+    comprueba el decoder de la ingesta (SPEC §7.2, pasos 3-7), que es el unico
+    que tiene el contenido decodificado.
+    """
+    version = p.get("v")
+    if not _es_int(version):
+        return "image.v debe ser entero"
+    if version != VERSION_ENVELOPE_IMAGEN:
+        return (
+            f"image.v desconocida ({version}); esta ingesta entiende "
+            f"v={VERSION_ENVELOPE_IMAGEN}"
+        )
+    device_id = p.get("device_id")
+    if not _es_hex16(device_id):
+        return "image.device_id debe ser 16 hex lowercase"
+    partes = parse_topic(topic)
+    if partes is not None and partes[0] != device_id:
+        return "image.device_id no coincide con el topic"
+    ts = p.get("ts_ms")
+    if not _es_int(ts):
+        return "image.ts_ms debe ser entero"
+    if ts < 0:
+        return "image.ts_ms no puede ser negativo"
+    if p.get("motivo") not in MOTIVOS_IMAGEN:
+        return "image.motivo debe ser " + "|".join(MOTIVOS_IMAGEN)
+    tamano = p.get("tamano")
+    if not _es_int(tamano):
+        return "image.tamano debe ser entero"
+    if tamano <= 0:
+        return "image.tamano debe ser positivo"
+    sha = p.get("sha256")
+    if not _es_str(sha) or _RE_SHA256.fullmatch(sha) is None:
+        return "image.sha256 debe ser 64 hex lowercase"
+    b64 = p.get("b64")
+    if not _es_str(b64) or not b64:
+        return "image.b64 debe ser texto no vacio"
+    if len(b64) > MAX_B64_IMAGEN_CHARS:
+        return f"image.b64 supera {MAX_B64_IMAGEN_CHARS} caracteres"
+    if len(b64) % 4 != 0 or _RE_B64_ESTRICTO.fullmatch(b64) is None:
+        return "image.b64 no es base64 estandar estricto (sin saltos de linea)"
+    return None
+
+
 # Marcadores de nombre que delatan un secreto dentro de ``aulasense_config``.
 _MARCAS_SECRETO = ("ssid", "pass", "password", "token")
 # Sufijos que SI se permiten: solo longitudes/flags, nunca el valor.
@@ -408,6 +479,8 @@ def validar(topic: str, payload: dict) -> dict[str, Any]:
         fallo = _validar_commands_result(payload)
     elif kind == "aulasense_config":
         fallo = _validar_aulasense_config(payload)
+    elif kind == "image":
+        fallo = _validar_image(payload, topic)
     else:  # aulasense_temp
         fallo = _validar_aulasense_temp(payload)
 
@@ -509,3 +582,189 @@ CREATE TABLE IF NOT EXISTS config_eventos (
 );
 CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
 """
+
+
+# --- Migracion F25 (SPEC §8.2) ---------------------------------------------
+#
+# SOLO la ingesta aplica este DDL (writer unico). Todo es idempotente:
+# - columnas de ``imagenes``: se comprueba ``pragma table_info`` antes de cada
+#   ``ALTER TABLE`` (SQLite no tiene ``ADD COLUMN IF NOT EXISTS``);
+# - indices y tablas: ``IF NOT EXISTS``.
+# Las filas F24 existentes quedan con ``canal='http'`` y ``vision_estado='pendiente'``
+# (los DEFAULT de las columnas nuevas): el worker de vision las describe en su
+# primera pasada (SPEC §8.2, notas de integridad).
+
+# Columnas nuevas de ``imagenes``: (nombre, DDL para ``ALTER TABLE``).
+COLUMNAS_F25_IMAGENES: tuple[tuple[str, str], ...] = (
+    ("canal", "canal TEXT NOT NULL DEFAULT 'http' CHECK(canal IN ('http','mqtt'))"),
+    ("descripcion", "descripcion TEXT"),
+    ("etiquetas", "etiquetas TEXT"),
+    (
+        "vision_estado",
+        "vision_estado TEXT NOT NULL DEFAULT 'pendiente' "
+        "CHECK(vision_estado IN ('pendiente','procesando','hecho','error','omitido'))",
+    ),
+    ("vision_modelo", "vision_modelo TEXT"),
+    ("vision_ts_ms", "vision_ts_ms INTEGER"),
+    ("vision_tokens", "vision_tokens INTEGER"),
+)
+
+# Nombre canonico de la tabla de sesiones de login (SPEC §8.2/§9.2).
+TABLA_SESIONES_LOGIN = "sesiones"
+# Alternativa cuando la F3 (tools/session_logger.py) YA ocupa ``sesiones`` con
+# otro esquema (tabla de log de sesiones de captura): sin esto el
+# ``CREATE TABLE IF NOT EXISTS sesiones`` seria un no-op silencioso y el login
+# del dashboard no tendria donde guardar el SHA-256 del token.
+TABLA_SESIONES_LOGIN_ALT = "sesiones_auth"
+
+_DDL_SESIONES_LOGIN = """
+CREATE TABLE IF NOT EXISTS {tabla} (
+  token_hash TEXT PRIMARY KEY,                 -- SHA-256 del token de cookie (el token NO se guarda)
+  user_id INTEGER NOT NULL REFERENCES usuarios(id),
+  creado_en_ms INTEGER NOT NULL,
+  ultimo_uso_ms INTEGER NOT NULL,              -- sliding: inactividad 2 h
+  expira_en_ms INTEGER NOT NULL,               -- absoluta: 12 h
+  ip TEXT, user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sesiones_expira ON {tabla}(expira_en_ms);
+"""
+
+# Login del dashboard (D-F25-8) y presupuesto/auditoria de vision (D-F25-6).
+_DDL_F25_AUTH = """
+CREATE TABLE IF NOT EXISTS usuarios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL UNIQUE,
+  pass_hash TEXT NOT NULL,                     -- argon2id (o scrypt fallback), formato autodescriptivo
+  creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+  ultimo_login_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS intentos_login (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip TEXT NOT NULL, username TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL, exito INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_intentos_ip_user_ts ON intentos_login(ip, username, ts_ms);
+CREATE TABLE IF NOT EXISTS vision_uso (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts_ms INTEGER NOT NULL, imagen_id INTEGER REFERENCES imagenes(id),
+  modelo TEXT NOT NULL, tokens_in INTEGER, tokens_out INTEGER,
+  modo TEXT NOT NULL CHECK(modo IN ('A','B')),  -- A=daemon sk-*, B=agente-mediado TP
+  resultado TEXT NOT NULL CHECK(resultado IN ('hecho','error','tope'))
+);
+CREATE INDEX IF NOT EXISTS idx_vision_uso_ts ON vision_uso(ts_ms);
+"""
+
+
+def columnas_tabla(conn: sqlite3.Connection, tabla: str) -> set[str] | None:
+    """Columnas actuales de ``tabla`` (``None`` si la tabla no existe).
+
+    El nombre llega por parámetro porque ``PRAGMA`` no admite placeholders; se
+    valida contra un identificador estricto antes de interpolarlo.
+    """
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tabla) is None:
+        raise ValueError(f"nombre de tabla invalido: {tabla!r}")
+    try:
+        filas = conn.execute(f"PRAGMA table_info({tabla})").fetchall()
+    except sqlite3.Error:  # pragma: no cover - DB corrupta/cerrada
+        return None
+    if not filas:
+        return None
+    return {str(fila[1]) for fila in filas}
+
+
+def nombre_tabla_sesiones_login(conn: sqlite3.Connection) -> str:
+    """Nombre real de la tabla de sesiones de login en esta DB (SPEC §8.2).
+
+    Devuelve ``sesiones`` si es libre (o ya es la de login) y ``sesiones_auth``
+    cuando la F3 ya creo ``sesiones`` con el esquema del session logger. El
+    dashboard (F25-e) debe resolverlo con esta funcion, no asumir el nombre.
+    """
+    columnas = columnas_tabla(conn, TABLA_SESIONES_LOGIN)
+    if columnas is None or "token_hash" in columnas:
+        return TABLA_SESIONES_LOGIN
+    return TABLA_SESIONES_LOGIN_ALT
+
+
+def _asegurar_indice_hash_unico(conn: sqlite3.Connection) -> int:
+    """Crea ``idx_img_hash_unico`` (dedupe cross-canal) saneando duplicados F24.
+
+    El indice es UNIQUE sobre ``hash_sha256``: si una DB F24 ya tuviera el mismo
+    contenido dos veces (reenvio HTTP manual), el ``CREATE`` fallaria. Se
+    conserva la fila MAS ANTIGUA de cada hash y se borran las copias exactas
+    (misma foto), dejando el dataset sin filas repetidas. Devuelve cuantas filas
+    se descartaron por esta causa (0 en el caso normal).
+    """
+    duplicados = conn.execute(
+        "SELECT COUNT(*) FROM ("
+        " SELECT hash_sha256 FROM imagenes GROUP BY hash_sha256 HAVING COUNT(*) > 1"
+        ")"
+    ).fetchone()
+    descartadas = 0
+    if duplicados and int(duplicados[0]) > 0:
+        LOG.warning(
+            "migracion F25: %s hashes duplicados en imagenes; se conserva la fila "
+            "mas antigua de cada uno",
+            int(duplicados[0]),
+        )
+        cursor = conn.execute(
+            "DELETE FROM imagenes WHERE id NOT IN ("
+            " SELECT MIN(id) FROM imagenes GROUP BY hash_sha256"
+            ")"
+        )
+        descartadas = int(cursor.rowcount or 0)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_img_hash_unico ON imagenes(hash_sha256)"
+    )
+    return descartadas
+
+
+def migrar_esquema_f25(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Aplica el esquema extendido F25 de SPEC §8.2 (idempotente, doble pasada OK).
+
+    Devuelve un resumen utilizable por logs/tests: columnas anadidas en esta
+    pasada, nombre de la tabla de sesiones de login y filas de imagen descartadas
+    por dedupe previo al indice unico.
+    """
+    resumen: dict[str, Any] = {
+        "columnas_nuevas": [],
+        "tabla_sesiones_login": TABLA_SESIONES_LOGIN,
+        "imagenes_duplicadas_descartadas": 0,
+    }
+
+    columnas = columnas_tabla(conn, "imagenes")
+    if columnas is None:
+        # Sin tabla ``imagenes`` no hay nada que migrar: ``ESQUEMA_SQL`` la crea.
+        LOG.warning("migracion F25: tabla imagenes inexistente; se omite")
+        columnas = set()
+
+    for nombre, ddl in COLUMNAS_F25_IMAGENES:
+        if nombre in columnas:
+            continue
+        conn.execute(f"ALTER TABLE imagenes ADD COLUMN {ddl}")
+        resumen["columnas_nuevas"].append(nombre)
+
+    if columnas_tabla(conn, "imagenes") is not None:
+        resumen["imagenes_duplicadas_descartadas"] = _asegurar_indice_hash_unico(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_img_vision_estado ON imagenes(vision_estado)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal)")
+
+    # --- Login del dashboard y presupuesto de vision (D-F25-8/D-F25-6) ------
+    conn.executescript(_DDL_F25_AUTH)
+
+    columnas_sesiones = columnas_tabla(conn, TABLA_SESIONES_LOGIN)
+    if columnas_sesiones is not None and "token_hash" not in columnas_sesiones:
+        LOG.warning(
+            "migracion F25: la tabla 'sesiones' ya existe con otro esquema "
+            "(session logger F3); las sesiones de login viven en '%s'",
+            TABLA_SESIONES_LOGIN_ALT,
+        )
+        tabla_sesiones = TABLA_SESIONES_LOGIN_ALT
+    else:
+        tabla_sesiones = TABLA_SESIONES_LOGIN
+    conn.executescript(_DDL_SESIONES_LOGIN.format(tabla=tabla_sesiones))
+    resumen["tabla_sesiones_login"] = tabla_sesiones
+
+    conn.commit()
+    return resumen
