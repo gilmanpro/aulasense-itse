@@ -1,0 +1,69 @@
+1
+00:00:00,000 --> 00:00:04,000
+Conducir con sueño causa
+miles de accidentes.
+
+2
+00:00:04,000 --> 00:00:08,000
+Empezamos intentando detectarlo
+con una cámara.
+
+3
+00:00:08,000 --> 00:00:11,600
+Pero la cámara nunca detectó
+un rostro real:
+
+4
+00:00:11,600 --> 00:00:15,000
+mala luz, ángulo y encuadre.
+
+5
+00:00:15,000 --> 00:00:19,000
+Invertimos el enfoque: el movimiento
+altera las ondas Wi-Fi.
+
+6
+00:00:19,000 --> 00:00:23,000
+El CSI convierte al router
+en un sensor invisible.
+
+7
+00:00:23,000 --> 00:00:26,500
+Una red neuronal de 529 parámetros
+
+8
+00:00:26,500 --> 00:00:30,000
+decide en el chip cada 250 ms.
+
+9
+00:00:30,000 --> 00:00:34,000
+Cada evento viaja por MQTT al servidor,
+
+10
+00:00:34,000 --> 00:00:38,000
+y se muestra en un tablero en vivo.
+
+11
+00:00:38,000 --> 00:00:41,500
+Como evidencia, una foto
+que la IA describe,
+
+12
+00:00:41,500 --> 00:00:45,000
+todo tras un login local.
+
+13
+00:00:45,000 --> 00:00:49,000
+Miles de lecturas reales alimentan
+
+14
+00:00:49,000 --> 00:00:53,000
+un modelo predictivo del aula.
+
+15
+00:00:53,000 --> 00:00:57,000
+Detecta movimiento, no presencia.
+
+16
+00:00:57,000 --> 00:01:01,000
+AulaSense: el proyecto ITSE de costo cero.
