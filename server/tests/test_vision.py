@@ -144,6 +144,7 @@ def entorno_vision_aislado(tmp_path, monkeypatch):
         "AULASENSE_VISION_MAX_DIA",
         "AULASENSE_VISION_MAX_HORA",
         "AULASENSE_VISION_MODO",
+        "AULASENSE_VISION_ORDEN",
         "AULASENSE_DB",
         "AULASENSE_DATOS_DIR",
     ):
@@ -182,6 +183,23 @@ def _crear_db(tmp_path: Path, *, migrada: bool = True, hash_unico: bool = True) 
     return db
 
 
+def _jpeg_minimo() -> bytes:
+    """JPEG valido minimo para las pruebas (pasa la validacion local del worker).
+
+    Con Pillow disponible se genera un JPEG real de 320x240; sin Pillow se usan
+    bytes con marcadores SOI/EOI (el worker delega entonces en el modelo).
+    """
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:  # pragma: no cover - entorno sin Pillow
+        return b"\xff\xd8\xff\xe0prueba\xff\xd9"
+    buffer = io.BytesIO()
+    Image.new("RGB", (320, 240), (110, 110, 110)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
 def _imagen(
     db: Path,
     *,
@@ -197,7 +215,7 @@ def _imagen(
     ruta = ruta or f"imagenes/{device}/{hash_sha256}.jpg"
     archivo = datos_dir / ruta
     archivo.parent.mkdir(parents=True, exist_ok=True)
-    archivo.write_bytes(b"\xff\xd8\xff\xe0" + hash_sha256.encode() + b"\xff\xd9")
+    archivo.write_bytes(_jpeg_minimo())
 
     con = sqlite3.connect(db)
     try:
@@ -516,6 +534,102 @@ def test_dedupe_hash_una_imagen_nunca_dos_veces(tmp_path, monkeypatch):
     assert _fila_imagen(db, primera)["vision_estado"] == "hecho"
     assert _fila_imagen(db, copia)["vision_estado"] == "omitido"
     assert [f[5] for f in _filas_uso(db)] == ["hecho"]
+
+
+# ------------------------------------------------------------------------------
+# Orden de la cola (asc FIFO default / desc ids mas nuevas primero)
+# ------------------------------------------------------------------------------
+def test_orden_desc_prioriza_las_ids_mas_nuevas(tmp_path, monkeypatch):
+    """``--orden desc`` con cupo parcial describe las ids MAS NUEVAS primero."""
+    db = _crear_db(tmp_path)
+    vieja = _imagen(db, hash_sha256="h1", ruta="imagenes/a/1.jpg")
+    media = _imagen(db, hash_sha256="h2", ruta="imagenes/a/2.jpg")
+    nueva = _imagen(db, hash_sha256="h3", ruta="imagenes/a/3.jpg")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", CLAVE_PRUEBA)
+    llamadas = _instalar_api(monkeypatch, [RespuestaFake(200, _cuerpo())])
+
+    codigo = vision_describe.main(
+        ["--once", "--db", str(db), "--limit", "2", "--orden", "desc"]
+    )
+
+    assert codigo == 0
+    assert len(llamadas) == 2
+    assert _fila_imagen(db, nueva)["vision_estado"] == "hecho"
+    assert _fila_imagen(db, media)["vision_estado"] == "hecho"
+    assert _fila_imagen(db, vieja)["vision_estado"] == "pendiente"
+
+
+def test_orden_default_es_fifo_y_orden_invalido_cae_a_asc(monkeypatch):
+    """Default (sin flag ni env) = asc; un valor invalido en el env cae a asc."""
+    monkeypatch.delenv("AULASENSE_VISION_ORDEN", raising=False)
+    assert _config(Path("aulasense.db")).orden == "asc"
+    monkeypatch.setenv("AULASENSE_VISION_ORDEN", "desc")
+    assert _config(Path("aulasense.db")).orden == "desc"
+    monkeypatch.setenv("AULASENSE_VISION_ORDEN", "aleatorio")
+    assert _config(Path("aulasense.db")).orden == "asc"
+
+
+# ------------------------------------------------------------------------------
+# Validacion local del JPEG (0 Credits si el frame esta corrupto)
+# ------------------------------------------------------------------------------
+def test_jpeg_ilegible_no_llama_a_la_api(tmp_path, monkeypatch, capsys):
+    """Un JPEG truncado/corrupto se rechaza localmente: 0 llamadas, fila 'error'."""
+    db = _crear_db(tmp_path)
+    imagen_id = _imagen(db)
+    # Corrompe el archivo: conserva SOI/EOI (pasa el chequeo de marcadores) pero
+    # el cuerpo no decodifica -> mismo sintoma que el frame roto del ESP32.
+    archivo = db.parent / "imagenes" / "aabbccddeeff" / "hash-1.jpg"
+    archivo.write_bytes(b"\xff\xd8\xff\xe0" + b"basura-no-jpeg" * 40 + b"\xff\xd9")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", CLAVE_PRUEBA)
+    llamadas = _instalar_api(monkeypatch, [RespuestaFake(200, _cuerpo())])
+
+    codigo = vision_describe.main(["--once", "--db", str(db), "--limit", "5"])
+    salida = capsys.readouterr()
+
+    assert codigo == 0
+    assert llamadas == []  # cero llamadas a la API
+    fila = _fila_imagen(db, imagen_id)
+    assert fila["vision_estado"] == "error"
+    assert fila["descripcion"] is None
+    assert _filas_uso(db) == []  # ni siquiera se registra uso (no hubo llamada)
+    assert "cero Credits" in salida.err
+
+
+def test_jpeg_truncado_con_eoi_se_acepta_en_modo_tolerante():
+    """Escaneo truncado con cabecera/EOI validos: se acepta (2o intento tolerante).
+
+    Es la clase de fallo de los ids 29/30/55 en la BD real: el frame llega
+    completo en bytes pero el escaneo entropico esta cortado; el modelo si lo
+    describe, asi que la validacion local no debe bloquearlo.
+    """
+    pytest.importorskip("PIL")
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (320, 240), (90, 120, 150)).save(buffer, format="JPEG")
+    valido = buffer.getvalue()
+    cortado = valido[: int(len(valido) * 0.75)] + b"\xff\xd9"
+    ok, motivo = cliente.jpeg_utilizable(cortado)
+    assert ok is True, motivo
+
+
+def test_jpeg_utilizable_acepta_jpeg_minimo_valido():
+    """Un JPEG 1x1 real pasa la validacion (Pillow disponible en ambos runtimes)."""
+    pytest.importorskip("PIL")
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (120, 120, 120)).save(buffer, format="JPEG")
+    ok, motivo = cliente.jpeg_utilizable(buffer.getvalue())
+    assert ok is True
+    assert motivo == ""
+    ok2, motivo2 = cliente.jpeg_utilizable(b"no-es-jpeg")
+    assert ok2 is False
+    assert motivo2
 
 
 # ------------------------------------------------------------------------------

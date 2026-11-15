@@ -53,12 +53,19 @@ Rate limits y presupuesto (D-F25-6)
 * Dedupe por ``hash_sha256``: una imagen nunca se describe dos veces (el unique
   index de §8.2 lo impone entre canales; aqui ademas se deduplica dentro de la
   pasada y contra filas ya ``hecho`` por robustez con DB heredadas).
+* Validacion LOCAL del JPEG (Pillow, dependencia opcional): un frame corrupto
+  del ESP32-S3 (el modelo responde ``HTTP 400 'image format is illegal'``) se
+  detecta ANTES de la llamada; la fila queda ``error`` con **0 Credits** y no
+  consume cupo de los topes.
 * Reintentos: backoff exponencial maximo 2 (10 s / 30 s) POR MODELO; HTTP 429
   respeta ``Retry-After`` (acotado a 120 s). HTTP 5xx/red -> siguiente modelo de
   la cadena; 4xx no recuperable -> siguiente modelo. Si la cadena entera falla,
   la fila queda ``vision_estado='error'`` (reintetable en otra pasada, sin bucle).
 * Presupuesto: se registran los ``usage`` REALES de la respuesta
   (``tokens_in``/``tokens_out``) por imagen en ``vision_uso`` -> auditable.
+* Orden de la cola: ``AULASENSE_VISION_ORDEN`` (o ``--orden``) = ``asc`` (FIFO,
+  default) | ``desc`` (ids MAS NUEVAS primero). Con cupo parcial, ``desc``
+  prioriza la actividad reciente de la galeria; el resto queda ``pendiente``.
 
 Interrumpibilidad
 -----------------
@@ -116,6 +123,11 @@ FALLBACKS_DEFECTO: tuple[str, ...] = ("qwen3.6-flash", "auto")
 MAX_DIA_DEFECTO = 120
 MAX_HORA_DEFECTO = 20
 LIMITE_DEFECTO = 10
+# Orden de la cola: ``asc`` (FIFO, default historico) | ``desc`` (ids MAS NUEVAS
+# primero: la actividad reciente es lo que se quiere ver descrito en la galeria
+# cuando el cupo de la pasada no alcanza para toda la cola).
+ORDEN_DEFECTO = "asc"
+ORDENES_VALIDOS: tuple[str, ...] = ("asc", "desc")
 MAX_TOKENS_SALIDA = 200  # salida acotada (SPEC §7.3): ~150 tokens reales
 TEMPERATURA = 0.2
 TIMEOUT_S = 60.0
@@ -223,6 +235,7 @@ class ConfigVision:
     max_hora: int = MAX_HORA_DEFECTO
     modo: str = "B"
     limite: int = LIMITE_DEFECTO
+    orden: str = ORDEN_DEFECTO  # "asc" (FIFO) | "desc" (ids mas nuevas primero)
     bandera_stop: Path = BANDERA_STOP_DEFECTO
     timeout: float = TIMEOUT_S
     prompt: str = PROMPT_VISION
@@ -266,6 +279,7 @@ class ResumenPasada:
     hechas: int = 0
     errores: int = 0
     omitidas: int = 0
+    ilegibles: int = 0  # JPEG que no decodifica: 'error' sin llamar a la API
     tope: str | None = None  # "dia" | "hora"
     parada: str | None = None  # "senal" | "bandera"
     idle: bool = False
@@ -422,6 +436,7 @@ def construir_config(
     max_hora: int | None = None,
     modo: str | None = None,
     limite: int | None = None,
+    orden: str | None = None,
 ) -> ConfigVision:
     """Resuelve la configuracion: flags > entorno > ``.env`` > defaults.
 
@@ -461,6 +476,11 @@ def construir_config(
         or BANDERA_STOP_DEFECTO
     ).expanduser()
 
+    orden_final = (orden or valor_env("AULASENSE_VISION_ORDEN", ORDEN_DEFECTO)).strip().lower()
+    if orden_final not in ORDENES_VALIDOS:
+        log("WARN", f"AULASENSE_VISION_ORDEN={orden_final!r} invalido; se usa {ORDEN_DEFECTO}")
+        orden_final = ORDEN_DEFECTO
+
     return ConfigVision(
         db_path=db_path.expanduser(),
         datos_dir=datos_dir.expanduser(),
@@ -471,6 +491,7 @@ def construir_config(
         max_hora=max(0, int(max_hora_final)),
         modo=modo_final,
         limite=max(1, int(limite if limite is not None else LIMITE_DEFECTO)),
+        orden=orden_final,
         bandera_stop=bandera,
     )
 
@@ -613,13 +634,18 @@ def ruta_imagen(datos_dir: Path, ruta_relativa: str) -> Path | None:
 
 
 def seleccionar_pendientes(
-    con: sqlite3.Connection, limite: int
+    con: sqlite3.Connection, limite: int, orden: str = ORDEN_DEFECTO
 ) -> list[dict[str, Any]]:
-    """Filas a procesar: ``pendiente``/``error`` (retry) y no purgadas."""
+    """Filas a procesar: ``pendiente``/``error`` (retry) y no purgadas.
+
+    ``orden`` = ``asc`` (FIFO, default) | ``desc`` (ids mas nuevas primero; la
+    actividad reciente manda cuando el cupo de la pasada es menor que la cola).
+    """
+    sentido = "DESC" if str(orden).strip().lower() == "desc" else "ASC"
     filas = con.execute(
         "SELECT id, ruta, hash_sha256 FROM imagenes "
         "WHERE vision_estado IN ('pendiente','error') AND imagen_purgada = 0 "
-        "ORDER BY id LIMIT ?",
+        f"ORDER BY id {sentido} LIMIT ?",
         (int(limite),),
     ).fetchall()
     return [
@@ -704,7 +730,61 @@ def _dormir(segundos: float) -> None:
 
 def data_uri_jpeg(archivo: Path) -> str:
     """data-URI base64 del JPEG (QVGA ~10 KB viaja inline, SPEC D-F25-4)."""
-    return "data:image/jpeg;base64," + base64.b64encode(archivo.read_bytes()).decode("ascii")
+    return data_uri_jpeg_bytes(archivo.read_bytes())
+
+
+def data_uri_jpeg_bytes(datos: bytes) -> str:
+    """data-URI base64 de unos bytes JPEG ya leidos del disco."""
+    return "data:image/jpeg;base64," + base64.b64encode(datos).decode("ascii")
+
+
+def jpeg_utilizable(datos: bytes) -> tuple[bool, str]:
+    """Valida LOCALMENTE el JPEG antes de gastar una llamada (presupuesto D-F25-6).
+
+    El ESP32-S3 puede dejar frames a medio escribir (JPEG truncado/corrupto): el
+    modelo responde entonces ``HTTP 400 invalid_parameter_error / 'The image
+    format is illegal and cannot be opened'``. Detectarlo aqui cuesta 0 Credits y
+    evita consumir cupo del tope horario/diario.
+
+    * Sin Pillow instalado -> no se puede verificar: se delega al modelo (True).
+    * Dos etapas: decodificacion ESTRICTA y, si falla, segundo intento con
+      ``LOAD_TRUNCATED_IMAGES`` (escaneo truncado pero con cabecera valida: el
+      modelo y otros decodificadores lo aceptan). Solo se descarta lo que no
+      abre en ninguna de las dos.
+    * Devuelve ``(True, "")`` o ``(False, motivo)``.
+    """
+    if not datos:
+        return False, "archivo vacio"
+    if not datos.startswith(b"\xff\xd8"):
+        return False, "no empieza con SOI JPEG (ffd8)"
+    if not datos.rstrip(b"\x00").endswith(b"\xff\xd9"):
+        return False, "sin EOI JPEG (ffd9): frame truncado"
+    try:
+        import io
+
+        from PIL import Image, ImageFile  # dependencia opcional (matplotlib la trae)
+    except ImportError:  # pragma: no cover - entorno sin Pillow
+        return True, ""
+    try:
+        with Image.open(io.BytesIO(datos)) as imagen:
+            imagen.load()
+    except Exception:  # noqa: BLE001 - PIL lanza tipos variados
+        # Segundo intento TOLERANTE: el ESP32 puede dejar el escaneo entropico
+        # truncado conservando cabecera y EOI; muchos decodificadores (y la API)
+        # lo aceptan. Solo se descarta si tampoco asi abre.
+        anterior = ImageFile.LOAD_TRUNCATED_IMAGES
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        try:
+            with Image.open(io.BytesIO(datos)) as imagen:
+                imagen.load()
+                if imagen.size[0] > 0 and imagen.size[1] > 0:
+                    return True, ""
+        except Exception:  # noqa: BLE001
+            return False, "JPEG corrupto (no decodifica ni en modo tolerante)"
+        finally:
+            ImageFile.LOAD_TRUNCATED_IMAGES = anterior
+        return False, "JPEG corrupto (no decodifica ni en modo tolerante)"
+    return True, ""
 
 
 def construir_payload(modelo: str, data_uri: str, prompt: str = PROMPT_VISION) -> dict:
@@ -1016,7 +1096,7 @@ def procesar_pasada(
             "(pasada anterior interrumpida)",
         )
 
-    pendientes = seleccionar_pendientes(con, cfg.limite)
+    pendientes = seleccionar_pendientes(con, cfg.limite, cfg.orden)
     if not pendientes:
         log("INFO", "cola vacia: no hay imagenes pendientes de describir")
         return resumen
@@ -1081,13 +1161,29 @@ def procesar_pasada(
 
         _marcar_estado(con, imagen_id, "procesando")
         try:
-            uri = data_uri_jpeg(archivo)
+            crudo = archivo.read_bytes()
         except OSError as exc:
             # Fallo LOCAL de lectura: tampoco consume presupuesto.
             _guardar_error(con, imagen_id, modelo=cfg.modelo, ts_ms=ahora_ms())
             resumen.errores += 1
             log("WARN", f"imagen {imagen_id}: no se pudo leer ({exc}); marcada 'error'")
             continue
+
+        # Validacion LOCAL del JPEG: un frame corrupto se rechaza aqui con 0
+        # Credits (el modelo devolveria HTTP 400 y consumiria cupo del tope).
+        ok_jpeg, motivo_jpeg = jpeg_utilizable(crudo)
+        if not ok_jpeg:
+            _guardar_error(con, imagen_id, modelo=cfg.modelo, ts_ms=ahora_ms())
+            resumen.errores += 1
+            resumen.ilegibles += 1
+            log(
+                "WARN",
+                f"imagen {imagen_id}: {motivo_jpeg}; marcada 'error' SIN llamar a la "
+                "API (cero Credits)",
+            )
+            continue
+
+        uri = data_uri_jpeg_bytes(crudo)
 
         respuesta = llamar_vision(cfg, clave, uri, dormir=dormir)
         ts_ms = ahora_ms()
@@ -1143,8 +1239,8 @@ def _log_resumen(resumen: ResumenPasada) -> None:
     log(
         "INFO",
         f"pasada terminada: hechas={resumen.hechas} errores={resumen.errores} "
-        f"omitidas={resumen.omitidas} tope={resumen.tope or 'no'} "
-        f"parada={resumen.parada or 'no'}",
+        f"omitidas={resumen.omitidas} ilegibles={resumen.ilegibles} "
+        f"tope={resumen.tope or 'no'} parada={resumen.parada or 'no'}",
     )
 
 
@@ -1235,7 +1331,7 @@ def listar_pendientes(cfg: ConfigVision) -> dict[str, Any]:
         disponibles = min(cfg.max_dia - dia, cfg.max_hora - hora, cfg.limite)
         imagenes: list[dict[str, Any]] = []
         if tope is None and disponibles > 0:
-            for fila in seleccionar_pendientes(con, disponibles):
+            for fila in seleccionar_pendientes(con, disponibles, cfg.orden):
                 archivo = ruta_imagen(cfg.datos_dir, fila["ruta"])
                 imagenes.append(
                     {
@@ -1261,6 +1357,7 @@ def listar_pendientes(cfg: ConfigVision) -> dict[str, Any]:
                 "usadas_hora": hora,
             },
             "limite": cfg.limite,
+            "orden": cfg.orden,
             "motivo": "tope" if tope is not None else None,
             "imagenes": imagenes,
         }

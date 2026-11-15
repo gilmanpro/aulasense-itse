@@ -10,6 +10,7 @@ Modo B (DEFAULT, agente-mediado; admite key del Token Plan ``sk-sp-``)::
 
     # A) pasada directa lanzada por un agente interactivo:
     server\\.venv\\Scripts\\python.exe tools\\vision_describe.py --once --limit 30
+    #    (--orden desc prioriza las ids MAS NUEVAS; default asc = FIFO)
 
     # B) superficie agente-mediada (el agente describe con su skill y aplica):
     server\\.venv\\Scripts\\python.exe tools\\vision_describe.py vision_pending --limit 30 > .tmp\\vision_pending.json
@@ -141,6 +142,12 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help=f"segundos entre pasadas del --loop (default {cliente.INTERVALO_LOOP_S:.0f})",
     )
+    ap.add_argument(
+        "--orden",
+        choices=cliente.ORDENES_VALIDOS,
+        default=None,
+        help="orden de la cola: asc (FIFO, default) | desc (ids MAS NUEVAS primero)",
+    )
     return ap
 
 
@@ -155,6 +162,7 @@ def _config(args: argparse.Namespace) -> cliente.ConfigVision:
         max_hora=args.max_hora,
         modo=args.modo,
         limite=args.limit,
+        orden=args.orden,
     )
 
 
