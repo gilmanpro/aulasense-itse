@@ -516,7 +516,6 @@ valores), `STA_RECONECTADO` (`via=portal`). Los tres ya están en `EVENTOS_CONFI
 emiten cuando MQTT reconecta; si no, quedan solo en serial con log honesto).
 
 ### 13.6 Riesgos aceptados (documentados, evalúa el gate F24-e0/e y el gate seguridad)
-
 - **Red auto-curada con AP arriba:** en modo AP puro el STA no puede reconectar solo (radio
   única, E3). Si el router revive, el nodo vuelve con: (a) POST del portal aunque las
   credenciales sean idénticas (siempre re-intenta STA), (b) reboot (el BOOT_CHECK y el
@@ -528,4 +527,17 @@ emiten cuando MQTT reconecta; si no, quedan solo en serial con log honesto).
 - **Contador por desconexión:** 3 blips de red sin IP entre medianías suben el AP (umbral
   pesimista por diseño: el disparo falso es benigno — el portal no estorba y el flujo E3
   reconecta en cuanto la red responde).
+
+### 13.7 Estado verificado en disco/placa (flash v2, 2026-11-15)
+
+Bin `effa314f28e86e79abcf81361de629a0a056190a008a4ceb3ce93bd0411f9a24` (1,407,872 B) flasheada
+COM6 intento 1 (log `iot2\aulasense\.tmp\f24d_flash_v2_raw.log`); **readback `verify_flash`
+digest matched**; post-checks PASS: sensing 200, mqtt connected + outbox 32768, ingesta viva
+(telemetría 3 s). El disparo E2→portal E3-E5 en vivo queda **pendiente de ventana natural**
+(caída real del router / demo): la red actual está además EN canal 1, así que el AP fallback
+no tendrá conflicto cross-canal. **Cómo leer el token (humanos):** tras
+`SoftAP AULASENSE-CFG-xxxx ARRIBADO` en el monitor serial aparece la línea
+`AulaSense CFG URL: http://192.168.4.1/cfg/<token>` — abrirla desde un dispositivo anclado al
+AP. El token no se expone por ninguna otra vía (ni MQTT ni diagnostics): es capacidad local,
+igual que la pass del portal.
 
