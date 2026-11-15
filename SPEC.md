@@ -267,7 +267,7 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
 
 ### 6.1 Extensiones F24 al contrato MQTT (aditivas, no rompen el nativo)
 - **Campo opcional `ia_imagen` en `motion`** (solo si `AULASENSE_IA_IMAGEN=y` y la inferencia de la imagen del onset completó): `"ia_imagen":{"persona":bool,"score":float}`. Presente SOLO en la evaluación de onset con inferencia lista; ausente en el resto (la ingesta tolera ausencia → null). **No es la foto** (la foto va por HTTP §7.1); es el resultado analizable persona/no-persona.
-- **Topic nuevo `aulasense_config`** (no retained): `{"timestamp_ms":int,"evento":"AP_FALLBACK|CFG_GUARDADA|STA_RECONECTADO|IMAGEN_GATE_OFF|IMAGEN_DESCARTE","detalle":str≤120}`. **detalle SIN secretos** (solo longitudes/flags, p.ej. "ssid_len=12 pass_len=0", NUNCA el SSID/pass). La ingesta lo valida → tabla `config_eventos` (§8.1). Cubre "eventos de provision/config" del big data (D-F24-7).
+- **Topic nuevo `aulasense_config`** (no retained): `{"timestamp_ms":int,"evento":"AP_FALLBACK|CFG_GUARDADA|STA_RECONECTADO|IMAGEN_ON|IMAGEN_GATE_OFF|IMAGEN_DESCARTE","detalle":str≤120}`. **detalle SIN secretos** (solo longitudes/flags, p.ej. "ssid_len=12 pass_len=0", NUNCA el SSID/pass). La ingesta lo valida → tabla `config_eventos` (§8.1). Cubre "eventos de provision/config" del big data (D-F24-7).
 - **Validador (`esquema.py`):** tolera `ia_imagen` opcional en motion (tipo errado → 422/log); valida `aulasense_config` (evento en enum, detalle ≤120, sin campos de secreto). Retrocompatible con F2 (los topics nativos no cambian).
 
 ### 6.2 Topic `image` F25 (contrato del transporte MQTT de imágenes, D-F25-1 — fases F25-c/d1)
@@ -496,13 +496,19 @@ CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
 CREATE TABLE IF NOT EXISTS config_eventos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
-  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
+  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_ON','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
   detalle TEXT,                           -- ≤120 chars, SIN secretos (solo longitudes/flags)
   origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
   recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
 ```
+
+> **Enum vigente (drift R3/R8 cerrado 2026-11-15):** `EVENTOS_CONFIG` incluye `IMAGEN_ON`
+> (`esquema.py:76-83`) y el CHECK de BD nuevas lo lista (`esquema.py:593`); **la migración R8
+> reconstruye `config_eventos` al arrancar la ingesta conservando filas e ids (idempotente:
+> `esquema.py:740-779`; validado sobre copia de BD: 7 filas, segunda corrida no toca nada)** —
+> SQLite no permite ALTER de un CHECK, por eso se rebuilda la tabla.
 SQL siempre parametrizado; límites en `limite`/`device_id`; writer único (la ingesta, incluido el receptor imagen §7.1 que encola). Migraciones idempotentes (`ALTER TABLE`/`CREATE TABLE IF NOT EXISTS` solo lo corre la ingesta). **La purga (§7.1) hace UPDATE imagen_purgada=1, NUNCA DELETE de la fila** → integridad referencial y dataset preservados (gate bd).
 
 ### 8.2 Esquema extendido F25 (migración idempotente, solo la ingesta la aplica — fase F25-d1)
