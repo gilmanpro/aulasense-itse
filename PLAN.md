@@ -1085,3 +1085,55 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
   → imagen MQTT en galería <5 s → búsqueda por texto → stop. <5 min de setup.
 - **GATE:** los 7 especialistas con criterios F25 (ver checklist v25) + auditor-externo opcional.
 - **F7:** commit final (manos propias del orquestador) + cierre_v25.md + REPORTE DE TODO al usuario.
+
+### 12.8 ANOTACIÓN de estado post-ejecución (2026-11-15, auditoría documental — NO reescribe la historia; annotate sobre el texto de §§11–12)
+
+Evidencia por renglón en `iot2/.tmp/` y `aulasense/.tmp/` (bitácoras citadas). Estados a efectos del
+checklist v25 (quedan `[x]`/`[ ]` a verificación del orquestador, única mano que lo edita):
+
+- **F24-d · provisioning AP + portal privado — EJECUTADA.** Portal + AP en árbol y binarios
+  (`app_provision.c/.h` + README §13/§13.7 procedimiento humano del token, commit 5076bb2/b17940f).
+  Flash definitivo v2 **hecho y verificado bit-a-bit** (readback `verify_flash` digest `effa314f`,
+  único `ninja flash` del día a las ~14:0x; `aulasense/.tmp/f24d_flash_v2.md` — zanja el conflicto de
+  flashes de la jornada: el "reflash ajeno 13:36" fue un hash mid-write, no existió). **Criterios
+  E2–E5 en vivo: PENDIENTE-ventana-natural** (el disparo real exige caída del router; no-destructivo
+  no disponible — modo corto cumplido al 100 %). NO tocar el `app_provision.*` del árbol: divergencia
+  pasajera main↔parche ya reconciliada con diff cero (§3 `f24d_reconciliacion.md`).
+- **F24-e0 · SPIKE visión — CERRADO con veredicto GO-COSTO condicional, RE-ENCUADRE:** el gate
+  original medía esp-dl EN PLACA; por orden de no tocar la placa (dataset en vuelo), el spike midió
+  el worker en BACKEND WSL (`debian-aulasense`): SSD-MobilenetV1 0,184 s/img, pps 97,9 vs 97,4, sin
+  caídas; RAM pico 223 MB (<50 %); funcionalidad pobre con los QVGA actuales (10/327 ≥0,45). El gate
+  en-placa quedó **NO medido** (documentado, `iot2/.tmp/estado-ejecutor-e0.md` + `f24e0_spike.md`).
+  El hallazgo lateral (22/54 JPEG rotas) derivó en la causa raíz jpegqc → Fix F/Fix S.
+- **F24-e · visión en-chip — NO LANZADA.** Default n intacto; la capa de visión que sí existe es la
+  server-side Qwen (F25-d2, modo B cerrado). Si el orquestador quiere el gate en-placa, es despacho
+  nuevo; mientras, SPEC §3.4 sigue describe-gated y el "si no cabe, se abandona documentado" NO se ha
+  probado en placa (honesto).
+- **Fix F + Fix S (jpegqc, fuera del mapa original — 2026-11-15):** Fix F flasheado (xclk 10 MHz +
+  `jpeg_sintaxis_ok()` pre-hash + host N2; bin `effa314f` en placa, espejos parche↔main diff cero) y
+  Fix S desplegado (decoder `_jpeg_estructura_ok` → `imagen_descartada_estructura`; fix del alias
+  `sys.modules` que rompía TODO upload HTTP desde F24-b1). Suite 177 verde en ambos runtimes
+  (`iot2/.tmp/f25f_bitacora.md`). QC post-flash con movimiento real: PENDIENTE (sala vacía en la
+  ventana; sentencia lista `f25f_qc_ronda2.sh`).
+- **F25-c · imagen MQTT — EJECUTADA** (commit 644518f + re-flasheo Fix F): `canal='mqtt'` puebla BD
+  y galería; outbox 32768 verificado en vivo (`outbox_capacity_bytes`); retain=false y sha256 OK.
+- **F25-d1 · decoder — EJECUTADA y ENDURECIDA hoy** (b99e185 → caee935). F25-d2 · worker —
+  **EJECUTADA con cierre modo B** (5ae57a7): orden asc/desc, validación JPEG de dos etapas,
+  presupuesto respetado; resultado real: 34 hechas / 20 error (irrecuperables de origen pre-Fix F,
+  coste $0 en re-pasadas) / 1 omitido; incidente honesto 2.972 tokens por doble proceso → regla
+  AGENTS 16 extendida. F25-d3 · búsqueda — EJECUTADA (3e422e6). **N2 receptor :8001 re-habilitado**
+  en `debian-aulasense` (bind NAT, fire-test 201) con caveat de ruteo LAN (README_wsl §Receptor).
+- **F25-e · login — EJECUTADA** (b99e185; portal `/cfg` humano en README firmware §13.7 — nota: es
+  el token del portal, no la sesión del dashboard). **F25-f1..f5 — EJECUTADAS** (diagrama C4, póster,
+  guion+SRT, video ensamblado 65,96 s, publicación VPS 77a08d0: `:10062` vigente sin admin).
+- **F24-d/e0/e/f — F24-f2 consolidado:** el pipeline base F5a lee BD canónica + `dataset/sesion_*/`
+  directamente; `analysis/dataset/consolidado.csv` **no está en disco hoy** (regenerable con
+  `export_consolida.py`; el texto de SPEC §7/PLAN "consolidado" sigue vigente como herramienta).
+- **F5a · EDA+modelo — EJECUTADA** (7807e8b + e06cb60): pipeline base v f5a-1.1 + `eda.py`/
+  `modelo_ocupacion.py` v f5a-2.0, runner único `analysis/run_analisis.ps1`, 11 figuras, 18 tests,
+  determinismo byte-a-byte sobre snapshot (`--db`, modo=ro). **Desviaciones anotadas:** figuras en
+  `docs/analisis/graficos/` (no `assets/`, texto viejo L232); runner en `analysis/`. Recall 0,8788
+  (29/33) íntegro; **flag ts_ms dump-99-vs-BD-92 CERRADO** con frase definitiva para F6a en
+  `iot2/.tmp/flag_ts_cierre.md` (dos relojes: `ts_ms` R3 + `recibido_en` — SPEC §6).
+- **F4 · sesiones:** S1 (F4S1B) PUBLICADA con GT pasivo corroborado (e3ba4b5). **S2/S3: MAÑANA**
+  (autorizado; aportan tramos idle → FPR/precision dejan de ser recall-only/piso).

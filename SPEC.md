@@ -136,6 +136,17 @@ Módulo NUEVO añadido al app Native (disjunto de app_feedback; comparte Kconfig
 - **Criterio de prueba (F25-c):** ≥3 imágenes reales `canal='mqtt'` en BD+galería (onset→galería
   <5 s); retain=false verificado (un suscriptor tardío NO recibe fotos viejas); sha256 coincide;
   `csi_accepted_pps` no cae >10 % vs F1c; el parche outbox queda documentado y el build lo aplica.
+- **Fix F (jpegqc 2026-11-15, flasheado — contrato de captura actualizado):** causa raíz = byte-loss
+  de 16 B por overflow GDMA en la captura (OV3660→PSRAM octal bajo carga CSI+WiFi,
+  `iot2/.tmp/jpegqc_causa_raiz.md`). Cambios en `app_imagen.c`: (1) `xclk_freq_hz` 20→**10 MHz**
+  (divide la ráfaga DVP; captura ~2× más lenta, irrelevante a 1 foto/onset con cooldown 15 s);
+  (2) `jpeg_sintaxis_ok()` post-memcpy **antes de hashear/publicar** (SOI@0 + EOI `FFD9` en los
+  últimos 4 B + SOF antes del primer SOS en walk ~800 B): frame malo → NO sube, evento
+  `IMAGEN_DESCARTE "byte-loss en captura"` + contador, el EVENTO no se toca y el cooldown no se marca;
+  (3) `CONFIG_AULASENSE_UPLOAD_HOST` repunteado a `172.26.159.208:8001` (caveat LAN en §15). El hash
+  del envelope se calcula sobre el JPEG ya validado (antes nacían hashes coherentes de bytes rotos).
+  Criterio post-flash: 0 fotos rotas nuevas persistidas (n reducido hasta la primera sesión con
+  movimiento — re-chequeo `.tmp/f25f_qc_ronda2.sh`).
 
 ### 3.3 Parche `app_provision.c` (AP fallback + ruta privada, D-F24-4 — fase F24-d)
 Módulo NUEVO, calco del patrón endurecido DriveGuard (`archive/dashcam-ia/firmware/main/app_portal.c`, lectura para inspiración, no copia ciega). **Nativo primero (verificado §3): Native NO trae AP → módulo propio aditivo.**
@@ -238,7 +249,19 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
 | `image` | **no** | **parche F25 (§6.2):** foto-evidencia del onset en JSON con base64 (QoS 0, retain=false, NO-reemplazable) |
 
 - **Comandos:** publicar en `commands/request`: `{"command_id","command","fields"}`. Comandos: `update_device`, `update_sensing`, `recalibrate`, `read_diagnostics`, `check_ota`, `start_ota`.
-- **Reloj (crítico, R3):** `timestamp_ms` es reloj MONÓTONO del dispositivo (ms desde boot), NO época. La ingesta mapea: `epoca_boot = now_pc_ms − timestamp_ms`; `evaluacion.ts_ms = epoca_boot + timestamp_ms`; `hora_sinc=1` si fresca; re-estimar al reboot; fallback `recibido_en`.
+- **Reloj (crítico, R3):** `timestamp_ms` es reloj MONÓTONO del dispositivo (ms desde boot), NO época.
+  La ingesta mapea: `epoca_boot = now_pc_ms − timestamp_ms`; `evaluacion.ts_ms = epoca_boot +
+  timestamp_ms`; `hora_sinc=1` si fresca; re-estimar al reboot; fallback `recibido_en`.
+- **Dos relojes por fila (contrato de forense, cierre 2026-11-15):** además de `ts_ms` (época R3, que
+  el re-anchor PUEDE desplazar en reingresos del outbox tras reboot del nodo), cada fila guarda
+  `recibido_en` (reloj PARED del PC-servidor en el instante de llegada, `DEFAULT datetime('now')`,
+  inmutable). Regla práctica: un evento legítimo llega segundos después de su `ts_ms`; una
+  divergencia `recibido_en − ts_ms` de minutos + `ts_ms` con seg:seg idéntico a `recibido_en` indica
+  **re-anchor/replay** (outbox entregado en reconexión posterior). Por diseño, al detectar retroceso
+  de época la ingesta invalida los bordes pendientes (`ingesta_mqtt.py:884-887`): un
+  `MOVIMIENTO_INICIO` en cola durante una caída puede NO quedar como INICIO en la BD (efecto
+  documentado en el cierre del flag dump-99-vs-BD-92, `iot2/.tmp/flag_ts_cierre.md`; las métricas no
+  se afectan — el recall se calcula sobre `evaluaciones` dentro de tramos GT, no sobre `eventos`).
 - **Métricas edge (C12, D4):** ingesta publica `read_diagnostics` cada 30 s → fila en `telemetria` (campos: detection_avg_us/max_us, runtime_load_percent, free_memory_kb, minimum_free_memory_kb, cpu_frequency_mhz, csi_accepted_pps, csi_callback_pps, generator_pps, traffic_tx_pps, traffic_rx_pps, wifi_rssi_dbm, wifi_channel, csi_hw_error_total, csi_occupancy, mqtt).
 - **Imágenes por MQTT (F25, D-F25-1 — REVOCA la regla D-F24-1/6 "imágenes NUNCA por MQTT" por orden del dueño 2026-11-14):** el canal PRIMARIO de la foto-evidencia es el topic `image` (§6.2, JSON con b64, QoS 0, retain=false) al broker autenticado; HTTP POST al servidor local (§7.1) queda como canal ALTERNATIVO. Viabilidad: Mosquitto `message_size_limit` default 0 (todo mensaje MQTT válido, máx 256 MB) y `max_packet_size` default 2 MB (man mosquitto.conf, 2026-11-14); probe empírico F25-a. El campo opcional `ia_imagen` (resultado persona, no la foto) sigue como estaba.
 
@@ -273,8 +296,12 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   - `sha256`: hash del contenido JPEG; **dedupe** (unique index parcial, §8.2) y verificación de
     integridad (mismatch → descarte).
   - `b64`: JPEG magic `FFD8FF` tras decodificar (si no → descarte). QVGA 320×240 esperado.
-  - `origen` (OPCIONAL): `"real" | "sintetico"`; default `"real"` si ausente. Permite fire-tests
-    etiquetados sin pueblar el dataset real (C13); el decoder (ingesta §7.2) lo honra cuando exista.
+  - `origen` (OPCIONAL): `"real" | "sintetico"`; default `"real"` si ausente. Diseñado para
+    fire-tests etiquetados sin pueblar el dataset real (C13). **Estado real (verificado 2026-11-15,
+    post-caee935): el decoder NO lo honra todavía** — el INSERT del canal MQTT fija `origen='real'`
+    (`ingesta_mqtt.py:678`) y el validador no lo lee; es **contrato futuro documentado** (§7.2), no
+    presente. El fire-test HTTP de 2026-11-15 lo confirmó: la fila entró `origen='real'` (el endpoint
+    en runtime no expone `allow_sintetico`) y se marcó después `vision_estado='omitido'`.
 - **Validación en ingesta (§7.2):** todo fallo → descarte + log + (opcional) métrica; NUNCA se
   escribe una fila inválida. El evento motion ya llegó por su topic: la imagen es accesoria.
 - **Privacidad:** broker autenticado (electiva publica / srv-electiva suscribe), prefijo aislado,
@@ -306,9 +333,16 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   1. Parsea el envelope §6.2 (JSON ≤64 KB; `v` desconocida → descarte+log).
   2. Valida `device_id` (16 hex, coincide con topic, allowlist con refresco en vivo), `motivo="onset"`,
      `ts_ms` entero (mapeo R3 monótono→época con la misma lógica de motion).
-  3. Decodifica b64 (estricto, sin saltos); verifica magic JPEG `FFD8FF`, `tamano` == bytes
-     decodificados, `sha256` == hash del contenido. Cualquier fallo → **descarte + log** (nunca fila
-     inválida; el evento motion es la fuente de verdad).
+  3. Decodifica b64 (estricto, sin saltos); verifica magic JPEG `FFD8FF`, **sintaxis estructural
+     mínima (Fix S, desplegado 2026-11-15)**: SOI@0 + EOI `FFD9` en los últimos 4 B + segment-walk
+     que exige marcador SOF antes del primer SOS (ventana 2 KB) — el byte-loss en captura
+     (`iot2/.tmp/jpegqc_causa_raiz.md`) deja magic válido con huecos de 16 B que este walk delata →
+     acción `imagen_descartada_estructura` con log (sha8 para auditoría); luego `tamano` == bytes
+     decodificados y `sha256` == hash del contenido. Cualquier fallo → **descarte + log** (nunca fila
+     inválida; el evento motion es la fuente de verdad). **Limitación aceptada:** un hueco colocado
+     enteramente dentro de la entropy data no es detectable barato aquí — ese último filtro lo pone
+     la validación local del worker de visión (§7.3, `jpeg_utilizable`) y, en el firmware, el
+     `jpeg_sintaxis_ok()` post-captura del Fix F (rechaza antes de hashear/publicar).
   4. **Dedupe:** si `hash_sha256` ya existe en `imagenes` → skip idempotente + log (cubre reintentos
      y doble canal HTTP+MQTT de la misma foto).
   5. **Rate-limit** 1 imagen/10 s por device (igual que §7.1; en MQTT no hay 429 → descarte+log).
@@ -320,9 +354,10 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
      `vision_estado='pendiente'` (§8.2), `origen='real'`.
 - **Writer único preservado:** el decoder NO abre otra conexión SQLite; todo pasa por la cola
   existente (mismo patrón que el receptor HTTP §7.1).
-- **`origen` (espejo del contrato §6.2):** el decoder lee `origen` del envelope si está presente
-  (default `'real'` si ausente); como el código actual escribe `'real'` fijo en el INSERT
-  `canal='mqtt'`, honrar el campo es **contrato futuro documentado** (sin cambios de código).
+- **`origen` (espejo del contrato §6.2):** **aún NO implementado** — el INSERT del canal MQTT fija
+  `origen='real'` (`ingesta_mqtt.py:678`, verificado post-caee935 el 2026-11-15); leer el campo del
+  envelope cuando el firmware lo emita es **contrato futuro documentado** (sin cambios de código por
+  ahora). El fire-test de la placa/receptor sigue marcándose a posteriori con `vision_estado='omitido'`.
 - **Tests (F25-d1, ≥10):** b64 válido→archivo+fila canal='mqtt'; b64 corrupto→descarte; sha256
   mismatch→descarte; tamano incoherente→descarte; JSON >64 KB→descarte; device desconocido→descarte;
   dedupe hash→no duplica; FK por ventana onset; rate-limit→descarte; `v` desconocida→descarte;
@@ -357,6 +392,20 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   garantiza también entre pasadas).
 - **Reintentos:** backoff exponencial máx 2 (10 s/30 s); HTTP 429 → respetar `Retry-After`; error
   persistente → `vision_estado='error'` (reintetable en otra pasada, NO bucle infinito).
+- **QC local de dos etapas (Fix S complementario, desplegado 2026-11-15):** antes de gastar Credits,
+  el worker valida el JPEG con `jpeg_utilizable()` (PIL estricto → reintento tolerante
+  `LOAD_TRUNCATED_IMAGES`); ilegible en ambas → **descarte local sin llamada** (`ResumenPasada.
+  ilegibles`, coste $0) y la fila queda/queda re-encolada en `'error'`. El worker es el último filtro
+  que el walk estructural del decoder no puede cubrir (huecos dentro de la entropy data).
+- **Sin estado terminal de QC (contrato cerrado 2026-11-15):** el CHECK de `vision_estado` (§8.2)
+  **NO ganó estado nuevo** — sigue `('pendiente','procesando','hecho','error','omitido')`. Las fotos
+  irreparables de origen (corrupción en captura pre-Fix F) **quedan en `'error'`** de forma
+  permanente y honesta: reejecutarlas es gratis (saltadas por el QC local). `'omitido'` se usa para
+  artefactos de test que NO deben consumirse (p. ej. el fire-test del receptor :8001, id 56). No
+  existe ni `descartada` ni `qc_fallida`. Cierre modo B: **34 hechas · 20 error · 1 omitido** (reales;
+  evidencia `iot2/.tmp/f25_vision_pasada2.md`). **Unicidad de pasada:** no hay lock entre instancias —
+  solo una pasada a la vez por BD, lanzada y esperada dentro del turno del agente (incidente real:
+  2 procesos solapados, 3 re-descripciones, 2.972 tokens perdidos).
 - **Interruptible:** SIGTERM/SIGINT → termina la imagen en curso, marca estado y sale limpio;
   `--stop` pide parada vía archivo bandera en `.tmp/`; reanudable (el estado vive en BD).
 - **Escritura en BD:** UPDATE corto SOLO de columnas `vision_*`/`descripcion`/`etiquetas` con
@@ -644,7 +693,9 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
   (claves tiene prioridad para auth/IA).
 - **Visión (§7.3):** `AULASENSE_VISION_MAX_DIA=120`, `AULASENSE_VISION_MAX_HORA=20`,
   `AULASENSE_VISION_MODELO=qwen3.8-flash` (cadena de fallback en código), `AULASENSE_VISION_MODO=A|B`
-  (B default con TP; el daemon rechaza sk-sp- en cualquier caso).
+  (B default con TP; el daemon rechaza sk-sp- en cualquier caso), `AULASENSE_VISION_ORDEN=asc|desc`
+  (F25-d2 pasada 2: orden de la cola; `asc` default FIFO, `desc` prioriza ids nuevas; inválido → WARN + asc;
+  también flag `--orden` del CLI).
 - **WSL (§15):** `AULASENSE_DB` (ruta canónica tras cutover: `~/aulasense-datos/aulasense.db` en WSL;
   en Windows fallback `server/datos/aulasense.db`), `AULASENSE_DATOS_DIR` (base de imagenes/exports;
   ya soportadas por F24-b), `AULASENSE_BIND_HOST` (SOLO dentro de WSL: `0.0.0.0` VM-local; en Windows
@@ -738,6 +789,14 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
   listenaddress=127.0.0.1 listenport=8000 connectaddress=WSL_IP connectport=8000; requiere admin;
   sin admin imprime la URL fallback http://WSL_IP:8000 y sugiere ORIGINS_EXTRA). El receptor :8001
   LAN es OPT-IN (portproxy listenaddress=IP_LAN + regla firewall; con MQTT primario no hace falta).
+  **Estado 2026-11-15 (F25f):** en la distro `debian-aulasense` el receptor está **re-habilitado** con
+  bind exacto de la IP NAT de la VM (`AULASENSE_UPLOAD_HOST=172.26.159.208` en el `.env` de la distro;
+  LISTEN + fire-test 201 verificados) — caveat: la IP NAT no es enrutable desde la LAN del aula, así
+  que para que la ESP32 lo use como N2 real falta el portproxy admin `IP_LAN:8001→WSL_IP:8001` o
+  repunter el `CONFIG_AULASENSE_UPLOAD_HOST` del nodo (decisión del dueño; detalle y bug del alias
+  `sys.modules` resuelto en `server/deploy/README_wsl.md`). El Debian original sigue con `:8001`
+  desactivado. Publicación externa vigente: VPS `http://167.114.169.134:10062` (túnel SSH auto-start
+  CLI local; no requiere admin).
 - **Cutover (b2, deps F24-c completa + b1 + d1):** parar stack Windows (stop_demo.ps1; verificar
   puertos 8000/8001 libres) → copiar `server/datos/aulasense.db` (+wal/shm tras checkpoint) y
   `server/datos/imagenes/` a `~/aulasense-datos/` → **verificar conteos de filas por tabla

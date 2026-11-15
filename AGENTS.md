@@ -58,6 +58,13 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
    Sin fallback a otro python. **F25: el runtime PRIMARIO del server es el venv linux de WSL Debian**
    (`~/venvs/aulasense`, python3.13 de apt, `server/requirements-linux.txt` — argon2-cffi incluido,
    bleak fuera). Ambos runtimes deben pasar pytest; NUNCA dos stacks vivos a la vez (split-brain).
+   **F25f (2026-11-15): la distro canónica de datos/análisis es `debian-aulasense`** (dashboard
+   interno :8100, publicación VPS :10062; BD `/home/aulasense/aulasense-datos/aulasense.db`).
+   **NO existe el CLI `sqlite3` en las distros**: toda consulta a la BD WSL va por SOLO-LECTURA con
+   el `python3` del venv y URI `file:...?mode=ro` (patrón `analysis/analizar_dataset.py` y los
+   forenses `.tmp/`); prohibido invocar `sqlite3` directo y prohibido ESCRIBIR por esa vía
+   (invariante writer único). PowerShell rompe heredocs/quotes largos: escribir el script a fichero
+   y ejecutarlo vía stdin/ruta bajo `/mnt/c`.
 4. **Sin Docker.** El server corre nativo: **F25 = WSL Debian 13 (nativo linux, systemd, NO Docker)**
    como runtime primario; Windows nativo como fallback. (El CLI de ESPectre ofrece Docker como
    fallback de build; **NO se usa** — ruta primaria `eim run idf.py`.) La VM WSL es compartida con
@@ -124,7 +131,19 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
     **Paso 0 de medición real** antes de lotes (1 llamada/clip de prueba → registrar `usage`/consumo
     en `.tmp/`). CERO promesas de coste sin medir (patrón E10). Video: ≤8 clips 480P 5 s, clip de
     prueba medido ANTES del lote; si el consumo es anómalo → parar y reportar. ToS del Token Plan
-    respetados (regla 13): nada de backends autónomos con key `sk-sp-`.
+    respetados (regla 13): nada de backends autónomos con key `sk-sp-`. **Una pasada de visión a la
+    vez (regla nacida de incidente, 2026-11-15):** el worker NO tiene lock entre instancias sobre la
+    misma BD — solo puede haber UN `vision_describe.py` vivo por BD, y cada pasada se LANZA Y ESPERA
+    dentro del turno del agente (prohibido dejarlas en background entre turnos); el incidente de dos
+    procesos solapados costó 3 descripciones duplicadas y 2.972 tokens.
+17. **Espejo `parche_aulasense` ↔ `main/` con DIFF CERO (obligatorio):** todo archivo del parche
+    (`app_imagen.*`, `app_provision.*`, `app_feedback.*`, `Kconfig.projbuild`, `CMakeLists.txt`)
+    debe quedar IDÉNTICO entre `firmware/parche_aulasense/` y el árbol vivo
+    `firmware/espectre/src/cpp/frontend/native/app/main/` al cerrar cualquier tarea de placa
+    (verificar con diff/hash; `f24d_reconciliacion.md` §3 es el patrón). Los ficheros sin espejo por
+    convención (p. ej. `app_main.cpp`) llevan sus enganches DOCUMENTADOS en el README del parche.
+    Dos sesiones editando el mismo árbol/ninja sin coordinar = razas de build y hashes de bin leídos
+    mid-write (incidente documentado 2026-11-15): una sola sesión dueña de COM6 y del árbol a la vez.
 
 ## Seguridad de la demo (modelo de amenaza — no regresar estos controles, heredados E7)
 - **Dashboard SOLO en `127.0.0.1` + LOGIN (F25: loopback+auth, defensa en profundidad).** Guard de
