@@ -1,0 +1,292 @@
+{"tipo": "cabecera", "sesion": "F4S1B", "proyecto": "aulasense F4 sesion 1 de 3", "modo": "PASIVA CON CORROBORACION FOTOGRAFICA (intento 2, ventana reconstruida)", "desviacion": "el logger en vivo se arranco con el aula ya vacia (12:14, intento 1 -> registro_F4S1.jsonl, 100% idle). Esta sesion reutiliza las capturas REALES ya persistidas hoy 10:54-12:12 (evaluaciones/eventos/imagenes origen=real, no se modifica nada de ellas) y aplica la misma metodologia GT fotografica. Las marcas motion derivan SOLO de fotos reales; los huecos sin foto quedan sin-dato. Fuentes: imagenes/eventos/evaluaciones de la BD canonia WSL.", "metodo_gt": "foto onset -> ventana [ts-5s, ts+20s], union de tramos, fuente='pasivo_foto_corroborada'"}
+{"tipo": "foto", "id": 3, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758069502, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4733, "imagen_purgada": 0}
+{"tipo": "foto", "id": 4, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758117782, "canal": "mqtt", "evento_id": 578, "origen": "real", "tamano_bytes": 2286, "imagen_purgada": 0}
+{"tipo": "foto", "id": 5, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758177746, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2523, "imagen_purgada": 0}
+{"tipo": "foto", "id": 6, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758194323, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2190, "imagen_purgada": 0}
+{"tipo": "foto", "id": 7, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758230069, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2096, "imagen_purgada": 0}
+{"tipo": "foto", "id": 8, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758255595, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2289, "imagen_purgada": 0}
+{"tipo": "foto", "id": 9, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758272870, "canal": "mqtt", "evento_id": 592, "origen": "real", "tamano_bytes": 2610, "imagen_purgada": 0}
+{"tipo": "foto", "id": 10, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758311733, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2292, "imagen_purgada": 0}
+{"tipo": "foto", "id": 11, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758335922, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2244, "imagen_purgada": 0}
+{"tipo": "foto", "id": 12, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758360695, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 2511, "imagen_purgada": 0}
+{"tipo": "foto", "id": 13, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758378935, "canal": "mqtt", "evento_id": 606, "origen": "real", "tamano_bytes": 2454, "imagen_purgada": 0}
+{"tipo": "foto", "id": 14, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758397030, "canal": "mqtt", "evento_id": 612, "origen": "real", "tamano_bytes": 2995, "imagen_purgada": 0}
+{"tipo": "foto", "id": 15, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758415033, "canal": "mqtt", "evento_id": 616, "origen": "real", "tamano_bytes": 3732, "imagen_purgada": 0}
+{"tipo": "foto", "id": 16, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758453167, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4233, "imagen_purgada": 0}
+{"tipo": "foto", "id": 17, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758553342, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4788, "imagen_purgada": 0}
+{"tipo": "foto", "id": 18, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758611815, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4516, "imagen_purgada": 0}
+{"tipo": "foto", "id": 19, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758662480, "canal": "mqtt", "evento_id": 628, "origen": "real", "tamano_bytes": 4755, "imagen_purgada": 0}
+{"tipo": "foto", "id": 20, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758706855, "canal": "mqtt", "evento_id": 632, "origen": "real", "tamano_bytes": 4522, "imagen_purgada": 0}
+{"tipo": "foto", "id": 21, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758762198, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3826, "imagen_purgada": 0}
+{"tipo": "foto", "id": 22, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758782342, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 5070, "imagen_purgada": 0}
+{"tipo": "foto", "id": 23, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758803669, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4729, "imagen_purgada": 0}
+{"tipo": "foto", "id": 24, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758850577, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4878, "imagen_purgada": 0}
+{"tipo": "foto", "id": 25, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758989562, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4338, "imagen_purgada": 0}
+{"tipo": "foto", "id": 26, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759053460, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4970, "imagen_purgada": 0}
+{"tipo": "foto", "id": 27, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759111208, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3226, "imagen_purgada": 0}
+{"tipo": "foto", "id": 28, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759131066, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4634, "imagen_purgada": 0}
+{"tipo": "foto", "id": 29, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759150373, "canal": "mqtt", "evento_id": 660, "origen": "real", "tamano_bytes": 4725, "imagen_purgada": 0}
+{"tipo": "foto", "id": 30, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759167042, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3993, "imagen_purgada": 0}
+{"tipo": "foto", "id": 31, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759195417, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3550, "imagen_purgada": 0}
+{"tipo": "foto", "id": 32, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759246179, "canal": "mqtt", "evento_id": 674, "origen": "real", "tamano_bytes": 4720, "imagen_purgada": 0}
+{"tipo": "foto", "id": 33, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759266807, "canal": "mqtt", "evento_id": 680, "origen": "real", "tamano_bytes": 4011, "imagen_purgada": 0}
+{"tipo": "foto", "id": 34, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759291512, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3987, "imagen_purgada": 0}
+{"tipo": "foto", "id": 35, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759320606, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4288, "imagen_purgada": 0}
+{"tipo": "foto", "id": 36, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759336060, "canal": "mqtt", "evento_id": 694, "origen": "real", "tamano_bytes": 4325, "imagen_purgada": 0}
+{"tipo": "foto", "id": 37, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759354620, "canal": "mqtt", "evento_id": 698, "origen": "real", "tamano_bytes": 4807, "imagen_purgada": 0}
+{"tipo": "foto", "id": 38, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759390918, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3943, "imagen_purgada": 0}
+{"tipo": "foto", "id": 39, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759431070, "canal": "mqtt", "evento_id": 708, "origen": "real", "tamano_bytes": 3594, "imagen_purgada": 0}
+{"tipo": "foto", "id": 40, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759459433, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4211, "imagen_purgada": 0}
+{"tipo": "foto", "id": 41, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759514033, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4255, "imagen_purgada": 0}
+{"tipo": "foto", "id": 42, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759544940, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3427, "imagen_purgada": 0}
+{"tipo": "foto", "id": 43, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759562466, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3190, "imagen_purgada": 0}
+{"tipo": "foto", "id": 44, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759645131, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3753, "imagen_purgada": 0}
+{"tipo": "foto", "id": 45, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759662674, "canal": "mqtt", "evento_id": 728, "origen": "real", "tamano_bytes": 4371, "imagen_purgada": 0}
+{"tipo": "foto", "id": 46, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759693553, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4100, "imagen_purgada": 0}
+{"tipo": "foto", "id": 47, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759739636, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3951, "imagen_purgada": 0}
+{"tipo": "foto", "id": 48, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759925782, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4004, "imagen_purgada": 0}
+{"tipo": "foto", "id": 49, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759944104, "canal": "mqtt", "evento_id": 746, "origen": "real", "tamano_bytes": 3695, "imagen_purgada": 0}
+{"tipo": "foto", "id": 50, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759976298, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4022, "imagen_purgada": 0}
+{"tipo": "foto", "id": 51, "device_id": "2e6f0c909e30673e", "ts_ms": 1794760026158, "canal": "mqtt", "evento_id": 752, "origen": "real", "tamano_bytes": 3307, "imagen_purgada": 0}
+{"tipo": "foto", "id": 52, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761774104, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3942, "imagen_purgada": 0}
+{"tipo": "foto", "id": 53, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761789474, "canal": "mqtt", "evento_id": 758, "origen": "real", "tamano_bytes": 4286, "imagen_purgada": 0}
+{"tipo": "foto", "id": 54, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761809570, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3439, "imagen_purgada": 0}
+{"tipo": "foto", "id": 55, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762036238, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3942, "imagen_purgada": 0}
+{"tipo": "foto", "id": 56, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762062956, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 4692, "imagen_purgada": 0}
+{"tipo": "foto", "id": 57, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762323135, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3366, "imagen_purgada": 0}
+{"tipo": "foto", "id": 58, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762713884, "canal": "mqtt", "evento_id": null, "origen": "real", "tamano_bytes": 3512, "imagen_purgada": 0}
+{"tipo": "MOVIMIENTO_INICIO", "id": 575, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758069498, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "NODO_OFFLINE", "id": 576, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758104578, "score": null, "duracion_ms": null, "origen": "real"}
+{"tipo": "NODO_ONLINE", "id": 577, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758114313, "score": null, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 578, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758117780, "score": 0.999394, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 579, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758119333, "score": 4.62522e-06, "duracion_ms": 1553, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 580, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758121625, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 581, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758124730, "score": 6.0572e-08, "duracion_ms": 3105, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 582, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758177744, "score": 0.999622, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 583, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758178610, "score": 0.000509679, "duracion_ms": 866, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 584, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758194322, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 585, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758205393, "score": 0.00603842, "duracion_ms": 11071, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 586, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758230066, "score": 0.999993, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 587, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758236522, "score": 0.0, "duracion_ms": 6456, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 588, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758255593, "score": 0.997739, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 589, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758256361, "score": 1.89801e-05, "duracion_ms": 768, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 590, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758259976, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 591, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758261244, "score": 6.22286e-05, "duracion_ms": 1268, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 592, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758272868, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 593, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758274670, "score": 0.00270572, "duracion_ms": 1802, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 594, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758275972, "score": 0.998928, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 595, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758276984, "score": 0.000395889, "duracion_ms": 1012, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 596, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758280312, "score": 0.999972, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 597, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758282353, "score": 4.86023e-09, "duracion_ms": 2041, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 598, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758285479, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 599, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758292122, "score": 3.67018e-07, "duracion_ms": 6643, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 600, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758311732, "score": 0.999957, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 601, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758318967, "score": 0.00012984, "duracion_ms": 7235, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 602, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758335921, "score": 0.999928, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 603, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758339573, "score": 0.0786601, "duracion_ms": 3652, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 604, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758360693, "score": 0.949462, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 605, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758363003, "score": 0.147922, "duracion_ms": 2310, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 606, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758366359, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 607, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758376385, "score": 0.00613575, "duracion_ms": 10026, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 608, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758378933, "score": 0.999996, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 609, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758383362, "score": 0.129214, "duracion_ms": 4429, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 610, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758388257, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 611, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758389817, "score": 0.00809208, "duracion_ms": 1560, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 612, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758392899, "score": 0.999722, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 613, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758394461, "score": 3.05184e-07, "duracion_ms": 1562, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 614, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758397029, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 615, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758403977, "score": 0.00161999, "duracion_ms": 6948, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 616, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758408602, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 617, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758414002, "score": 0.474269, "duracion_ms": 5400, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 618, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758415031, "score": 0.999957, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 619, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758416822, "score": 0.000194949, "duracion_ms": 1791, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 620, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758453164, "score": 0.754518, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 621, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758454445, "score": 0.0, "duracion_ms": 1281, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 622, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758553340, "score": 0.999982, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 623, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758555638, "score": 6.25241e-05, "duracion_ms": 2298, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 624, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758611813, "score": 0.688782, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 625, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758612581, "score": 0.0113706, "duracion_ms": 768, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 626, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758614357, "score": 0.979212, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 627, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758615134, "score": 0.0, "duracion_ms": 777, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 628, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758662478, "score": 0.999997, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 629, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758664008, "score": 2.42774e-07, "duracion_ms": 1530, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 630, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758668442, "score": 0.972003, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 631, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758669201, "score": 0.0, "duracion_ms": 759, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 632, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758706853, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 633, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758707872, "score": 6.69005e-06, "duracion_ms": 1019, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 634, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758710681, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 635, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758711963, "score": 4.19565e-05, "duracion_ms": 1282, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 636, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758714032, "score": 0.994342, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 637, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758715815, "score": 0.000140882, "duracion_ms": 1783, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 638, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758762197, "score": 0.990239, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 639, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758766556, "score": 1.39311e-08, "duracion_ms": 4359, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 640, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758782340, "score": 0.999938, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 641, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758783107, "score": 4.21787e-05, "duracion_ms": 767, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 642, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758803667, "score": 0.999993, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 643, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758804952, "score": 0.000290445, "duracion_ms": 1285, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 644, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758807258, "score": 0.999846, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 645, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758808284, "score": 0.0, "duracion_ms": 1026, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 646, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758850576, "score": 0.999796, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 647, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758851345, "score": 2.16518e-09, "duracion_ms": 769, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 648, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758861110, "score": 0.998538, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 649, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758861863, "score": 0.0363476, "duracion_ms": 753, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 650, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758989560, "score": 0.996039, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 651, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758992999, "score": 0.00296496, "duracion_ms": 3439, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 652, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758994016, "score": 0.999232, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 653, "device_id": "2e6f0c909e30673e", "ts_ms": 1794758995538, "score": 3.13616e-07, "duracion_ms": 1522, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 654, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759053458, "score": 0.585651, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 655, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759054229, "score": 0.000391758, "duracion_ms": 771, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 656, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759111207, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 657, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759111978, "score": 2.37576e-06, "duracion_ms": 771, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 658, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759131063, "score": 0.974084, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 659, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759131825, "score": 0.177318, "duracion_ms": 762, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 660, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759143676, "score": 0.997206, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 661, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759145989, "score": 1.23444e-07, "duracion_ms": 2313, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 662, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759150371, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 663, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759151916, "score": 4.28089e-05, "duracion_ms": 1545, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 664, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759167040, "score": 0.999996, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 665, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759172248, "score": 0.000712734, "duracion_ms": 5208, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 666, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759175836, "score": 0.999983, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 667, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759179714, "score": 2.26388e-06, "duracion_ms": 3878, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 668, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759195416, "score": 0.999988, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 669, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759197498, "score": 0.181991, "duracion_ms": 2082, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 670, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759198776, "score": 0.99723, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 671, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759201341, "score": 0.059989, "duracion_ms": 2565, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 672, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759202346, "score": 0.994768, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 673, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759203179, "score": 0.148739, "duracion_ms": 833, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 674, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759246177, "score": 0.99999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 675, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759250530, "score": 0.00333043, "duracion_ms": 4353, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 676, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759251818, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 677, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759254623, "score": 0.0110398, "duracion_ms": 2805, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 678, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759255709, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 679, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759257254, "score": 6.62715e-06, "duracion_ms": 1545, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 680, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759258259, "score": 0.999997, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 681, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759259280, "score": 5.63718e-05, "duracion_ms": 1021, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 682, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759266804, "score": 0.999215, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 683, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759269606, "score": 0.000215293, "duracion_ms": 2802, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 684, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759271646, "score": 0.941716, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 685, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759274698, "score": 5.27888e-09, "duracion_ms": 3052, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 686, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759291510, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 687, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759293572, "score": 0.0, "duracion_ms": 2062, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 688, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759303059, "score": 0.99814, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 689, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759306879, "score": 0.000445831, "duracion_ms": 3820, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 690, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759320605, "score": 0.989188, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 691, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759322899, "score": 2.18565e-08, "duracion_ms": 2294, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 692, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759330144, "score": 0.745582, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 693, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759330917, "score": 0.0673742, "duracion_ms": 773, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 694, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759331943, "score": 0.999009, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 695, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759333480, "score": 0.0, "duracion_ms": 1537, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 696, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759336059, "score": 0.831984, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 697, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759337317, "score": 0.00018631, "duracion_ms": 1258, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 698, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759346115, "score": 0.997154, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 699, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759346875, "score": 6.53659e-07, "duracion_ms": 760, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 700, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759354618, "score": 0.999599, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 701, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759355899, "score": 2.4622e-06, "duracion_ms": 1281, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 702, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759357188, "score": 0.99998, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 703, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759363609, "score": 0.00494104, "duracion_ms": 6421, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 704, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759390917, "score": 0.962085, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 705, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759393508, "score": 0.00710997, "duracion_ms": 2591, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 706, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759397109, "score": 0.999008, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 707, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759398915, "score": 0.0322655, "duracion_ms": 1806, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 708, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759431067, "score": 0.784964, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 709, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759432855, "score": 6.52456e-06, "duracion_ms": 1788, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 710, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759434643, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 711, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759437819, "score": 0.195475, "duracion_ms": 3176, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 712, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759459431, "score": 0.999883, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 713, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759460693, "score": 0.0304165, "duracion_ms": 1262, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 714, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759514032, "score": 0.654132, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 715, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759519965, "score": 8.46429e-07, "duracion_ms": 5933, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 716, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759528001, "score": 0.955515, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 717, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759529286, "score": 0.0, "duracion_ms": 1285, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 718, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759544937, "score": 0.90069, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 719, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759546216, "score": 0.0748719, "duracion_ms": 1279, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 720, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759562465, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 721, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759563248, "score": 1.70235e-07, "duracion_ms": 783, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 722, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759569437, "score": 0.875641, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 723, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759573578, "score": 0.358717, "duracion_ms": 4141, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 724, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759645129, "score": 0.999961, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 725, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759647972, "score": 1.25652e-05, "duracion_ms": 2843, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 726, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759648992, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 727, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759650316, "score": 0.0036895, "duracion_ms": 1324, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 728, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759660102, "score": 0.998916, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 729, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759661139, "score": 0.000346546, "duracion_ms": 1037, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 730, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759662672, "score": 0.999939, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 731, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759664468, "score": 0.0, "duracion_ms": 1796, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 732, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759693551, "score": 0.999999, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 733, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759696377, "score": 3.5712e-06, "duracion_ms": 2826, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 734, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759698169, "score": 0.9932, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 735, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759699482, "score": 9.2138e-05, "duracion_ms": 1313, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 736, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759739634, "score": 0.999997, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 737, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759741174, "score": 0.00459261, "duracion_ms": 1540, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 738, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759748635, "score": 0.999996, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 739, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759750682, "score": 0.0473446, "duracion_ms": 2047, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 740, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759925781, "score": 0.999645, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 741, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759927063, "score": 0.0276896, "duracion_ms": 1282, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 742, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759928085, "score": 0.999834, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 743, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759928841, "score": 1.02469e-06, "duracion_ms": 756, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 744, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759930921, "score": 0.999883, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 745, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759935321, "score": 0.000915281, "duracion_ms": 4400, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 746, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759936622, "score": 0.946792, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 747, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759943072, "score": 0.00137279, "duracion_ms": 6450, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 748, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759944102, "score": 0.993747, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 749, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759951567, "score": 1.67288e-08, "duracion_ms": 7465, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 750, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759976296, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 751, "device_id": "2e6f0c909e30673e", "ts_ms": 1794759978864, "score": 0.0164084, "duracion_ms": 2568, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 752, "device_id": "2e6f0c909e30673e", "ts_ms": 1794760026156, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 753, "device_id": "2e6f0c909e30673e", "ts_ms": 1794760027537, "score": 0.00226118, "duracion_ms": 1381, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 754, "device_id": "2e6f0c909e30673e", "ts_ms": 1794760028543, "score": 0.809583, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 755, "device_id": "2e6f0c909e30673e", "ts_ms": 1794760029577, "score": 0.00819829, "duracion_ms": 1034, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 756, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761774102, "score": 0.854147, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 757, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761775629, "score": 0.0189255, "duracion_ms": 1527, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 758, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761777720, "score": 0.974789, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 759, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761778479, "score": 0.000441907, "duracion_ms": 759, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 760, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761789472, "score": 0.75943, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 761, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761790775, "score": 2.42529e-05, "duracion_ms": 1303, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 762, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761809567, "score": 1.0, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 763, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761812130, "score": 0.00106458, "duracion_ms": 2563, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 764, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761821693, "score": 0.664824, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 765, "device_id": "2e6f0c909e30673e", "ts_ms": 1794761822710, "score": 0.0767998, "duracion_ms": 1017, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 766, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762036237, "score": 0.999995, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 767, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762048051, "score": 0.0208529, "duracion_ms": 11814, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 768, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762062954, "score": 0.998846, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 769, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762073581, "score": 0.0996439, "duracion_ms": 10627, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 770, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762323134, "score": 0.972585, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 771, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762329346, "score": 0.000166682, "duracion_ms": 6212, "origen": "real"}
+{"tipo": "MOVIMIENTO_INICIO", "id": 772, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762713882, "score": 0.934082, "duracion_ms": null, "origen": "real"}
+{"tipo": "MOVIMIENTO_FIN", "id": 773, "device_id": "2e6f0c909e30673e", "ts_ms": 1794762725454, "score": 0.00885725, "duracion_ms": 11572, "origen": "real"}
+{"tipo": "gt", "inicio_ms": 1794758064502, "fin_ms": 1794758089502, "fotos": [3], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758112782, "fin_ms": 1794758137782, "fotos": [4], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758172746, "fin_ms": 1794758214323, "fotos": [5, 6], "duracion_ms": 41577}
+{"tipo": "gt", "inicio_ms": 1794758225069, "fin_ms": 1794758250069, "fotos": [7], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758250595, "fin_ms": 1794758292870, "fotos": [8, 9], "duracion_ms": 42275}
+{"tipo": "gt", "inicio_ms": 1794758306733, "fin_ms": 1794758435033, "fotos": [10, 11, 12, 13, 14, 15], "duracion_ms": 128300}
+{"tipo": "gt", "inicio_ms": 1794758448167, "fin_ms": 1794758473167, "fotos": [16], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758548342, "fin_ms": 1794758573342, "fotos": [17], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758606815, "fin_ms": 1794758631815, "fotos": [18], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758657480, "fin_ms": 1794758682480, "fotos": [19], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758701855, "fin_ms": 1794758726855, "fotos": [20], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758757198, "fin_ms": 1794758823669, "fotos": [21, 22, 23], "duracion_ms": 66471}
+{"tipo": "gt", "inicio_ms": 1794758845577, "fin_ms": 1794758870577, "fotos": [24], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794758984562, "fin_ms": 1794759009562, "fotos": [25], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759048460, "fin_ms": 1794759073460, "fotos": [26], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759106208, "fin_ms": 1794759187042, "fotos": [27, 28, 29, 30], "duracion_ms": 80834}
+{"tipo": "gt", "inicio_ms": 1794759190417, "fin_ms": 1794759215417, "fotos": [31], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759241179, "fin_ms": 1794759311512, "fotos": [32, 33, 34], "duracion_ms": 70333}
+{"tipo": "gt", "inicio_ms": 1794759315606, "fin_ms": 1794759374620, "fotos": [35, 36, 37], "duracion_ms": 59014}
+{"tipo": "gt", "inicio_ms": 1794759385918, "fin_ms": 1794759410918, "fotos": [38], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759426070, "fin_ms": 1794759451070, "fotos": [39], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759454433, "fin_ms": 1794759479433, "fotos": [40], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759509033, "fin_ms": 1794759534033, "fotos": [41], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759539940, "fin_ms": 1794759582466, "fotos": [42, 43], "duracion_ms": 42526}
+{"tipo": "gt", "inicio_ms": 1794759640131, "fin_ms": 1794759682674, "fotos": [44, 45], "duracion_ms": 42543}
+{"tipo": "gt", "inicio_ms": 1794759688553, "fin_ms": 1794759713553, "fotos": [46], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759734636, "fin_ms": 1794759759636, "fotos": [47], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794759920782, "fin_ms": 1794759964104, "fotos": [48, 49], "duracion_ms": 43322}
+{"tipo": "gt", "inicio_ms": 1794759971298, "fin_ms": 1794759996298, "fotos": [50], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794760021158, "fin_ms": 1794760046158, "fotos": [51], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794761769104, "fin_ms": 1794761829570, "fotos": [52, 53, 54], "duracion_ms": 60466}
+{"tipo": "gt", "inicio_ms": 1794762031238, "fin_ms": 1794762056238, "fotos": [55], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794762057956, "fin_ms": 1794762082956, "fotos": [56], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794762318135, "fin_ms": 1794762343135, "fotos": [57], "duracion_ms": 25000}
+{"tipo": "gt", "inicio_ms": 1794762708884, "fin_ms": 1794762733884, "fotos": [58], "duracion_ms": 25000}
+{"tipo": "resumen", "sesion": "F4S1B", "intent": 2, "ventana": {"inicio_ms": 1794758040000, "fin_ms": 1794762750000, "inicio": "2026-11-15 10:54:00", "fin": "2026-11-15 12:12:30", "duracion_min": 78.5}, "evals_reales": 17913, "evals_motion": 1064, "evals_idle": 16849, "pct_motion_evals": 5.94, "pps_medio": 3.8, "score_motion": {"n": 1064, "min": 0.0, "p25": 0.59921, "mediana": 0.999232, "p75": 0.999999, "p95": 1.0, "max": 1.0, "media": 0.7561}, "eventos_reales": 199, "onsets": 99, "movimiento_fin": 98, "onsets_con_foto_20s": 99, "fotos_en_ventana": 56, "fotos_con_onset_20s": 56, "fotos_canal_mqtt": 56, "fotos_canal_http": 0, "marcas_gt_motion": 35, "gt_cobertura_pct_ventana": 27.1, "motion_detectado_ms_acum": 274927, "modo_gt": "pasiva con corroboracion fotografica (ventana reconstruida post-hoc; cero etiquetas inventadas; cero sintetico)"}
