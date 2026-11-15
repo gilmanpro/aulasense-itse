@@ -1,0 +1,366 @@
+{
+  "dataset": {
+    "n_filas_entrenables": 116,
+    "n_filas_omitidas": 2,
+    "n_ventanas_eval": 118,
+    "nota": "ventanas consecutivas (sin huecos de nodo offline); target = >=1 evaluacion motion en la ventana SIGUIENTE (misma regla del indicador, metodo del pipeline base)",
+    "omitidas_ejemplos": [
+      {
+        "motivo": "no hay ventana consecutiva t+10min (hueco)",
+        "t_ms": 1794718800000
+      },
+      {
+        "motivo": "no hay ventana consecutiva t+10min (hueco)",
+        "t_ms": 1794772800000
+      }
+    ]
+  },
+  "definiciones": {
+    "features": [
+      "hora_sin",
+      "hora_cos",
+      "dia_semana",
+      "actividad_movil",
+      "frac_score_umb",
+      "score_medio",
+      "pps_eval",
+      "die_temp_c",
+      "runtime_load_pct",
+      "rssi_dbm",
+      "csi_pps",
+      "tiene_imagen",
+      "n_fotos",
+      "frac_ia_persona",
+      "hora_provision",
+      "clima_temp_c",
+      "clima_humedad_pct",
+      "clima_viento_kmh"
+    ],
+    "indicador": "ventana 10 min OCUPADA si >=1 evaluacion state='motion' (metodo del pipeline base; idle != sala vacia — AGENTS 11)",
+    "origen": "SOLO origen='real' (AGENTS 10)",
+    "target_modelo": "motion (>=1 evaluacion) en la ventana SIGUIENTE de 10 min (SPEC §10 / PLAN F5a)"
+  },
+  "entrenamiento": {
+    "baseline": {
+      "accuracy": 0.75,
+      "modelo": "mayoria-clase-train",
+      "nota": "baseline sin features: clase mayoritaria del train"
+    },
+    "modelos": {
+      "decision_tree": {
+        "accuracy": 0.75,
+        "f1": 0.5714,
+        "feature_importances": {
+          "actividad_movil": 0.0,
+          "clima_humedad_pct": 0.0,
+          "clima_temp_c": 0.0,
+          "clima_viento_kmh": 0.0,
+          "csi_pps": 0.0,
+          "dia_semana": 0.0,
+          "die_temp_c": 0.0,
+          "frac_ia_persona": 0.0,
+          "frac_score_umb": 0.6912,
+          "hora_cos": 0.0,
+          "hora_provision": 0.0,
+          "hora_sin": 0.0,
+          "n_fotos": 0.0,
+          "pps_eval": 0.0112,
+          "rssi_dbm": 0.2534,
+          "runtime_load_pct": 0.0442,
+          "score_medio": 0.0,
+          "tiene_imagen": 0.0
+        },
+        "n_test": 24,
+        "n_train": 92,
+        "positivos_test": 6,
+        "positivos_train": 19,
+        "precision": 0.5,
+        "recall": 0.6667,
+        "roc_auc": 0.7222
+      },
+      "logistic_regression": {
+        "accuracy": 0.7917,
+        "coef_abs": {
+          "actividad_movil": 0.3088,
+          "clima_humedad_pct": 0.0,
+          "clima_temp_c": 0.0,
+          "clima_viento_kmh": 0.0,
+          "csi_pps": 0.9583,
+          "dia_semana": 0.4702,
+          "die_temp_c": 0.5064,
+          "frac_ia_persona": 0.0,
+          "frac_score_umb": 0.7944,
+          "hora_cos": 0.4157,
+          "hora_provision": 0.0,
+          "hora_sin": 0.6185,
+          "n_fotos": 0.0015,
+          "pps_eval": 0.4452,
+          "rssi_dbm": 0.0835,
+          "runtime_load_pct": 0.5453,
+          "score_medio": 0.8429,
+          "tiene_imagen": 0.0015
+        },
+        "f1": 0.5455,
+        "n_test": 24,
+        "n_train": 92,
+        "positivos_test": 6,
+        "positivos_train": 19,
+        "precision": 0.6,
+        "recall": 0.5,
+        "roc_auc": 0.6944
+      }
+    },
+    "nota_honest_e10": "dataset corto (una manana de actividad + huecos offline); las metricas se reportan CON tamano muestral y NO se promete accuracy dependiente de dataset largo (leccion E10). El target es movimiento futuro (ocupacion dinamica), no presencia.",
+    "split": "temporal 80/20 (orden cronologico por t_ms, sin shuffle)"
+  },
+  "figuras": [
+    "docs/analisis/graficos/ocupacion_pr_umbral.png",
+    "docs/analisis/graficos/ocupacion_modelo_vs_gt.png",
+    "docs/analisis/graficos/ocupacion_feature_importance.png"
+  ],
+  "generado_utc": "2026-11-15T20:04:19+00:00",
+  "hash_inputs": {
+    "MODELO": "dbb9323c4934fcfae76f9d51691ecfb8c02a60b300da2e4cc492a79ab3cef97e",
+    "PIPELINE": "287d9d761c1f2050cf484d5442e528f394f1b5af1c929e3eecbdc6f90b06e4c8",
+    "dataset/sesion_1/registro_F4S1.jsonl": "2d3132960649b6273777ffbd1f399dd748d71826783e5de453d5a49bebd39aad",
+    "dataset/sesion_1/registro_F4S1B.jsonl": "425561dd1fdabfad2553b861759622f79033011d667cc294de04d9ac6aaee8eb",
+    "docs/validacion_sesion1.csv": "ee0cc521ce264198d3c18bea0f320f91ff64ef5a8786760206f2ae1483acf21b"
+  },
+  "modelo_version": "f5a-2.0",
+  "validacion_gt": {
+    "curva_pr_por_umbral": [
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.05
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.1
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.15
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.2
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.25
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.3
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.35
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.4
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.45
+      },
+      {
+        "f1": 0.1812,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 256,
+        "precision": null,
+        "precision_piso": 0.1018,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.5
+      },
+      {
+        "f1": 0.183,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 253,
+        "precision": null,
+        "precision_piso": 0.1028,
+        "recall": 0.8286,
+        "tramos_cubiertos": 29,
+        "tramos_perdidos": 6,
+        "umbral": 0.55
+      },
+      {
+        "f1": 0.1789,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 250,
+        "precision": null,
+        "precision_piso": 0.1007,
+        "recall": 0.8,
+        "tramos_cubiertos": 28,
+        "tramos_perdidos": 7,
+        "umbral": 0.6
+      },
+      {
+        "f1": 0.1789,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 250,
+        "precision": null,
+        "precision_piso": 0.1007,
+        "recall": 0.8,
+        "tramos_cubiertos": 28,
+        "tramos_perdidos": 7,
+        "umbral": 0.65
+      },
+      {
+        "f1": 0.1818,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 245,
+        "precision": null,
+        "precision_piso": 0.1026,
+        "recall": 0.8,
+        "tramos_cubiertos": 28,
+        "tramos_perdidos": 7,
+        "umbral": 0.7
+      },
+      {
+        "f1": 0.1842,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 241,
+        "precision": null,
+        "precision_piso": 0.1041,
+        "recall": 0.8,
+        "tramos_cubiertos": 28,
+        "tramos_perdidos": 7,
+        "umbral": 0.75
+      },
+      {
+        "f1": 0.1806,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 237,
+        "precision": null,
+        "precision_piso": 0.1023,
+        "recall": 0.7714,
+        "tramos_cubiertos": 27,
+        "tramos_perdidos": 8,
+        "umbral": 0.8
+      },
+      {
+        "f1": 0.1824,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 234,
+        "precision": null,
+        "precision_piso": 0.1034,
+        "recall": 0.7714,
+        "tramos_cubiertos": 27,
+        "tramos_perdidos": 8,
+        "umbral": 0.85
+      },
+      {
+        "f1": 0.1869,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 227,
+        "precision": null,
+        "precision_piso": 0.1063,
+        "recall": 0.7714,
+        "tramos_cubiertos": 27,
+        "tramos_perdidos": 8,
+        "umbral": 0.9
+      },
+      {
+        "f1": 0.1901,
+        "onsets_en_idle_gt": 0,
+        "onsets_fuera_gt": 222,
+        "precision": null,
+        "precision_piso": 0.1084,
+        "recall": 0.7714,
+        "tramos_cubiertos": 27,
+        "tramos_perdidos": 8,
+        "umbral": 0.95
+      }
+    ],
+    "indicador_cobertura_pct": 97.1429,
+    "mejor_umbral_f1": {
+      "f1": 0.1901,
+      "onsets_en_idle_gt": 0,
+      "onsets_fuera_gt": 222,
+      "precision": null,
+      "precision_piso": 0.1084,
+      "recall": 0.7714,
+      "tramos_cubiertos": 27,
+      "tramos_perdidos": 8,
+      "umbral": 0.95
+    },
+    "n_tramos_gt_idle": 0,
+    "n_tramos_gt_motion": 35,
+    "nota": "P/R a nivel TRAMOS GT con margen ±20 s (cooldown de evidencia F24). precision_piso es un PISO honesto: los onsets fuera de tramos GT caen en zonas sin-dato (GT pasivo no marca idle), no en idle confirmado. La precision REAL se computa sola en cuanto el CSV tenga tramos idle (sesiones activas S2/S3, autodescubiertas por glob): el codigo ya cuenta onsets_dentro de tramos idle como FP real (hook activo, sin cambio de codigo al llegar S2/S3).",
+    "tramos_gt_no_cubiertos": [
+      {
+        "fin_ms": 1794761829570,
+        "inicio_ms": 1794761769104,
+        "motivo": "sin ventana ocupada encima",
+        "sesion": "F4S1B"
+      }
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # Informe de metricas F5a — pipeline f5a-1.1
 
-- Generado (UTC): 2026-11-15T19:29:01+00:00
+- Generado (UTC): 2026-11-15T20:03:54+00:00
 - Hash de inputs (determinismo): 287d9d761c1f2050cf484d5442e528f394f1b5af1c929e3eecbdc6f90b06e4c8 (script) — ver analisis.json completo
 
 ## Metricas por sesion
