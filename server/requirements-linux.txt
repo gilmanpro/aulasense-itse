@@ -1,7 +1,13 @@
 # AulaSense server — runtime WSL Debian 13 (trixie) / python3.13 de apt (SPEC §15.1).
-# Espejo de server/requirements.txt con las MISMAS versiones fijadas, salvo:
-#   - bleak  : FUERA. El receptor BLE (server/ble/) es opcional (default n) y no corre en WSL.
-#   - argon2-cffi : AÑADIDO. Hash de la password admin del dashboard (F25-e, Argon2id).
+# Espejo de server/requirements.txt con las MISMAS versiones fijadas. Correcciones 2026-11-15
+# (auditoria de dependencias): la UNICA diferencia real era bleak, y bleak quedo RETIRADO tambien
+# del espejo Windows (declarado-no-usado: server/ble/receptor_ble.py nunca existio), asi que los
+# dos manifiestos tienen HOY el mismo conjunto. argon2-cffi YA NO es diferencia: esta en ambos
+# desde F25-e. Los unicos deltas que quedan son de plataforma y los cubre el cierre transitivo
+# (uvloop solo linux / colorama solo Windows): ver requirements-linux.lock.txt y
+# requirements-win.lock.txt.
+#   - bleak  : FUERA (y fuera tambien de requirements.txt desde 2026-11-15). El receptor BLE
+#              (server/ble/) es opcional (default n) y no corre en WSL.
 # Cumple AGENTS.md regla 3: el venv primario es /home/aulasense/venvs/aulasense y NUNCA
 # conviven dos stacks vivos (split-brain prohibido).
 paho-mqtt==2.2.0

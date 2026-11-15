@@ -9,7 +9,12 @@ pandas==3.1.1
 scikit-learn==1.9.1
 matplotlib==3.11.2
 requests==2.34.2
-bleak==3.0.2
+# bleak RETIRADO 2026-11-15 (auditoría de dependencias): declarado-no-usado. El modulo que lo
+# importaba (server/ble/receptor_ble.py) nunca se implemento — server/ble/ solo tiene .gitkeep,
+# AULASENSE_BLE sigue en n con guarda #error en app_feedback.c:137-138 (gate R7) y ni codigo ni
+# tests importan bleak. Arrastraba 9 paquetes winrt_* al venv. requirements-linux.txt ya lo
+# tenia fuera. Si F3/C11 activa BLE: `server\.venv\Scripts\python.exe -m pip install bleak==3.1.0`
+# y reimplementar el receptor antes de re-declararlo aqui.
 pytest==9.2.0
 httpx==0.28.1
 # F25-e (D-F25-8): hash Argon2id del dashboard. Opcional en runtime (el default

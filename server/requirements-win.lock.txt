@@ -1,0 +1,73 @@
+# Lock Windows (runtime de fallback, AGENTS.md regla 3) — Python 3.15.2 (C:\Python315).
+# CIERRE EXACTO observado en `server\.venv\Lib\site-packages` el 2026-11-15 (inspeccion in situ,
+# no resuelto por pip-compile): cada version abajo es la que YA tienen instalada los dos runtimes
+# que pasaron la suite (178 server + 18 analysis). Cero vulnerabilidades: auditado contra OSV
+# (api.osv.dev, 55 paquetes PyPI) — 0 hallazgos, ninguna severidad.
+#
+# Para regenerar/validar desde un manifiesto (requiere shell, el auditor no pudo ejecutarlo):
+#   server\.venv\Scripts\python.exe -m pip install --dry-run -r server/requirements-win.lock.txt
+#   server\.venv\Scripts\python.exe -m pip freeze | Sort-Object            # debe cuadrar con esto
+#
+# Reglas de uso:
+#   - Este fichero FIJA el cierre transitivo; server/requirements.txt sigue siendo el manifiesto
+#     leible (deps directas). Cambiar el manifiesto => regenerar este lock en el mismo commit.
+#   - NO incluye bleak ni los 9 paquetes winrt_* (retirados 2026-11-15: declarado-no-usado;
+#     quedan aun instalados en el venv hasta un `pip uninstall bleak` explicito).
+#   - NO incluye `pip` (se gestiona el solo).
+
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+argon2-cffi==25.1.0                     # directa (F25-e, Argon2id)
+argon2-cffi-bindings==26.2.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.1
+cloudpickle==3.1.2
+colorama==0.4.6                         # pytest, marcador sys_platform == "win32"
+contourpy==1.4.0
+cycler==0.12.1
+fastapi==0.162.0                        # directa
+fonttools==4.68.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.9.0                        # uvicorn[standard]
+httpx==0.28.1                           # directa (TestClient de fastapi/starlette)
+idna==3.20
+iniconfig==2.3.1
+joblib==1.6.0
+kiwisolver==1.5.1
+matplotlib==3.11.2                      # directa
+narwhals==2.28.0
+numpy==2.5.4
+opentelemetry-api==1.45.2               # requerido por fastapi>=0.162 (linea base, no extra)
+packaging==26.3
+paho-mqtt==2.2.0                        # directa
+pandas==3.1.1                           # directa
+pillow==13.0.0                          # la usan `from PIL import Image` (analysis/analizar_dataset.py:489,
+                                        # server/tests/test_imagen.py:54, test_imagen_mqtt.py:60, test_vision.py:195/608/623)
+                                        # vía matplotlib>=9; fijada aqui de forma explicita porque el
+                                        # import es directo (ver propuesta en el reporte)
+pluggy==1.7.0
+pycparser==3.12
+pydantic==2.14.3
+pydantic-core==2.50.4
+pygments==2.21.0
+pyparsing==3.3.3
+pytest==9.2.0                           # directa (suite)
+python-dateutil==4.0.0
+python-dotenv==1.2.4                    # directa
+pyyaml==6.0.3
+requests==2.34.2                        # directa
+scikit-learn==1.9.1                     # directa
+scipy==1.18.1
+starlette==1.10.0
+threadpoolctl==3.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+tzdata==2026.6
+urllib3==2.8.0
+uvicorn==0.54.0                         # directa (uvicorn[standard])
+watchfiles==1.3.0                       # uvicorn[standard]
+websockets==17.4                        # directa (WS del dashboard, via uvicorn[standard])

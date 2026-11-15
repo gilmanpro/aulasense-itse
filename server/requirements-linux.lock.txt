@@ -1,0 +1,75 @@
+# Lock Linux (runtime PRIMARIO del server, F25 — WSL Debian 13 / python3.13 de apt).
+# CIERRE EXACTO observado en ~/venvs/aulasense/lib/python3.13/site-packages dentro de la distro
+# el 2026-11-15 (inspeccion in situ por el auditor; NO resuelto por pip-compile): cada version es
+# la que YA tienen instalada los dos runtimes que pasaron la suite. Cero vulnerabilidades OSV
+# (api.osv.dev, 55 paquetes PyPI) — 0 hallazgos.
+#
+# Para regenerar/validar desde dentro de la distro (el auditor no tuvo shell, queda pendiente):
+#   wsl -d Debian -- ~/venvs/aulasense/bin/python -m pip install --dry-run -r server/requirements-linux.lock.txt
+#   wsl -d Debian -- ~/venvs/aulasense/bin/pip freeze | sort
+#
+# Diferencias reales frente a requirements-win.lock.txt (ambas por marcadores de plataforma,
+# no por deriva): AQUI uvloop (sys_platform != "win32") y NO colorama (sys_platform == "win32").
+# bleak/winrt_* no existen aqui: ya estaban fuera de requirements-linux.txt.
+#
+# HALLAZGO (fuera del cierre, pero del mismo venv): el `pip` de ~/venvs/aulasense es 25.1.1 y
+# arrastra 12 avisos en OSV (GHSA-4xh5-x5gv-qwph, GHSA-58qw-9mgm-455v, GHSA-jp4c-xjxw-mgf9,
+# GHSA-qwm4-qh6w-59xr, GHSA-wf93-45jw-7689 = MODERATE; GHSA-6vgw-5pg2-w6jp = LOW; + 6 PYSEC).
+# Todos se cierran con pip >= 26.2.2 (la version que ya tiene el venv Windows, auditada limpia).
+# Accion pendiente (el auditor no tiene shell):
+#   wsl -d Debian -- ~/venvs/aulasense/bin/python -m pip install -U "pip==26.2.2"
+
+annotated-doc==0.0.6
+annotated-types==0.8.0
+anyio==4.16.0
+argon2-cffi==25.1.0                     # directa (F25-e, Argon2id)
+argon2-cffi-bindings==26.2.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.1
+cloudpickle==3.1.2
+contourpy==1.4.0
+cycler==0.12.1
+fastapi==0.162.0                        # directa
+fonttools==4.68.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.9.0                        # uvicorn[standard]
+httpx==0.28.1                           # directa (TestClient de fastapi/starlette)
+idna==3.20
+iniconfig==2.3.1
+joblib==1.6.0
+kiwisolver==1.5.1
+matplotlib==3.11.2                      # directa
+narwhals==2.28.0
+numpy==2.5.4
+opentelemetry-api==1.45.2               # requerido por fastapi>=0.162 (linea base, no extra)
+packaging==26.3
+paho-mqtt==2.2.0                        # directa
+pandas==3.1.1                           # directa
+pillow==13.0.0                          # import directo (`from PIL import Image`) via matplotlib>=9;
+                                        # fijada explicita (ver propuesta en el reporte)
+pluggy==1.7.0
+pycparser==3.12
+pydantic==2.14.3
+pydantic-core==2.50.4
+pygments==2.21.0
+pyparsing==3.3.3
+pytest==9.2.0                           # directa (suite en runtime WSL, AGENTS regla 3)
+python-dateutil==4.0.0
+python-dotenv==1.2.4                    # directa
+pyyaml==6.0.3
+requests==2.34.2                        # directa
+scikit-learn==1.9.1                     # directa
+scipy==1.18.1
+starlette==1.10.0
+threadpoolctl==3.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+tzdata==2026.6
+urllib3==2.8.0
+uvicorn==0.54.0                         # directa (uvicorn[standard])
+uvloop==0.23.0                          # uvicorn[standard], sys_platform != "win32"
+watchfiles==1.3.0                       # uvicorn[standard]
+websockets==17.4                        # directa (WS del dashboard, via uvicorn[standard])
