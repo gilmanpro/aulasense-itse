@@ -298,10 +298,11 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   - `b64`: JPEG magic `FFD8FF` tras decodificar (si no → descarte). QVGA 320×240 esperado.
   - `origen` (OPCIONAL): `"real" | "sintetico"`; default `"real"` si ausente. Diseñado para
     fire-tests etiquetados sin pueblar el dataset real (C13). **Estado real (verificado 2026-11-15,
-    post-caee935): el decoder NO lo honra todavía** — el INSERT del canal MQTT fija `origen='real'`
-    (`ingesta_mqtt.py:678`) y el validador no lo lee; es **contrato futuro documentado** (§7.2), no
-    presente. El fire-test HTTP de 2026-11-15 lo confirmó: la fila entró `origen='real'` (el endpoint
-    en runtime no expone `allow_sintetico`) y se marcó después `vision_estado='omitido'`.
+    post-`origen_desde_envelope`): el decoder honra `origen`** — ausente/`null`→`'real'`;
+    `'sintetico'`→`'sintetico'`; otro valor→`'real'` + WARNING **sin descartar el mensaje**
+    (`ingesta_mqtt.py:680`,677-698/1224-1256). El nodo nunca emite el campo; limitación: MQTT 3.1.1
+    no discierne el emisor por mensaje, residual aceptado porque el dataset filtra `origen=real` y el
+    canal sintetico oficial sigue siendo `POST /internal/evento` (§7.2).
 - **Validación en ingesta (§7.2):** todo fallo → descarte + log + (opcional) métrica; NUNCA se
   escribe una fila inválida. El evento motion ya llegó por su topic: la imagen es accesoria.
 - **Privacidad:** broker autenticado (electiva publica / srv-electiva suscribe), prefijo aislado,
@@ -351,13 +352,14 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
      la imagen queda igual asociada por device+ts).
   7. Guarda el archivo con el MISMO patrón §7.1 (`datos/imagenes/<device>/<yyyymmdd_HHMMSS>_<sha8>.jpg`,
      base `AULASENSE_DATOS_DIR`/`AULASENSE_DB`) + fila `imagenes` con **`canal='mqtt'`**,
-     `vision_estado='pendiente'` (§8.2), `origen='real'`.
+     `vision_estado='pendiente'` (§8.2), `origen = origen_desde_envelope(datos)` (honra el campo opcional del envelope, ver §6.2).
 - **Writer único preservado:** el decoder NO abre otra conexión SQLite; todo pasa por la cola
   existente (mismo patrón que el receptor HTTP §7.1).
-- **`origen` (espejo del contrato §6.2):** **aún NO implementado** — el INSERT del canal MQTT fija
-  `origen='real'` (`ingesta_mqtt.py:678`, verificado post-caee935 el 2026-11-15); leer el campo del
-  envelope cuando el firmware lo emita es **contrato futuro documentado** (sin cambios de código por
-  ahora). El fire-test de la placa/receptor sigue marcándose a posteriori con `vision_estado='omitido'`.
+- **`origen` (espejo del contrato §6.2):** **IMPLEMENTADO** (`origen_desde_envelope`, verificado
+  2026-11-15): el decoder honra `origen` — ausente/`null`→`'real'`; `'sintetico'`→`'sintetico'`; otro
+  valor→`'real'` + WARNING sin descartar el mensaje (`ingesta_mqtt.py:680`,677-698/1224-1256). El nodo
+  nunca emite el campo; limitación: MQTT 3.1.1 no discierne el emisor por mensaje, residual aceptado
+  porque el dataset filtra `origen=real` y el canal sintetico oficial sigue siendo `POST /internal/evento`.
 - **Tests (F25-d1, ≥10):** b64 válido→archivo+fila canal='mqtt'; b64 corrupto→descarte; sha256
   mismatch→descarte; tamano incoherente→descarte; JSON >64 KB→descarte; device desconocido→descarte;
   dedupe hash→no duplica; FK por ventana onset; rate-limit→descarte; `v` desconocida→descarte;
