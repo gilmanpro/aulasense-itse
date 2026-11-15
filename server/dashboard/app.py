@@ -413,6 +413,60 @@ def _respuesta_403(detalle: str) -> JSONResponse:
 
 
 # ------------------------------------------------------------------------------
+# Guard de FUENTE para /internal/* (auditoria 2026-11-15)
+# ------------------------------------------------------------------------------
+# El Origin guard es inoperante contra clientes NO-navegador (curl/CLI: sin header
+# => permitir). Con el dashboard publicado por tunel (167.114.169.134:10062) eso
+# hacia de ``POST /internal/evento`` un endpoint de ESCRITURA alcanzable sin
+# autenticacion desde internet (verificado: 422 del handler sin sesion). Cierre:
+# la FUENTE directa (``request.client.host``) debe ser loopback (o el host
+# sintactico "testclient" de pytest) o estar en ``AULASENSE_INTERNAL_HOSTS``
+# (lista exacta separada por comas; si la variable esta DEFINIDA, SUSTITUYE al
+# default, minimo privilegio). El tunel SSH+portproxy llega con el gateway NAT
+# (172.26.x.x), NO loopback => queda fuera del default y el endpoint publico
+# responde 403. La ingesta real entra por MQTT, no por /internal.
+FUENTES_INTERNAS_DEFECTO = frozenset(
+    {"127.0.0.1", "::1", "::ffff:127.0.0.1", "testclient"}
+)
+
+
+def _fuente_interna_permitida(ip: str | None) -> bool:
+    """True si la IP origen puede usar ``/internal/*`` (ver comentario arriba)."""
+    crudo = os.environ.get("AULASENSE_INTERNAL_HOSTS")
+    if crudo is None:
+        permitidas: set[str] = set(FUENTES_INTERNAS_DEFECTO)
+    else:
+        permitidas = {pieza.strip().lower() for pieza in crudo.split(",") if pieza.strip()}
+    return (ip or "").strip().lower() in permitidas
+
+
+# ------------------------------------------------------------------------------
+# Cabeceras de seguridad GLOBALES (auditoria 2026-11-15)
+# ------------------------------------------------------------------------------
+# ANTES solo las rutas de auth recibian CABECERAS_AUTH; la pagina autenticada y la
+# API se servian sin XFO/nosniff/Referrer-Policy/CSP. Se aplican por setdefault
+# (no pisan los valores por-route ya fijados). CSP: la UI usa CDNs (Tailwind JIT
+# exige 'unsafe-eval'; el <style> y los style-attrs exigen 'unsafe-inline' solo en
+# style-src) y WebSocket al propio host; NADA de 'unsafe-inline' en script-src ni
+# de origins ajenos en connect-src.
+CSP_DASHBOARD = (
+    "default-src 'self'; "
+    "script-src 'self' https://cdn.tailwindcss.com https://cdn.jsdelivr.net 'unsafe-eval'; "
+    "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+    "img-src 'self' data:; "
+    "connect-src 'self' ws: wss:; "
+    "font-src 'self' data:; "
+    "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+)
+CABECERAS_GLOBALES = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": CSP_DASHBOARD,
+}
+
+
+# ------------------------------------------------------------------------------
 # F25-e — Login seguro del dashboard (SPEC §9.2, D-F25-8)
 # Defensa en profundidad: bind loopback intacto + sesión obligatoria en todas
 # las rutas salvo /login, /logout, estáticos de login y /internal/* (máquina a
@@ -730,6 +784,10 @@ async def guardia_sesion(request: Request, call_next):
     if _es_ruta_auth(ruta):
         for clave, valor in auth.CABECERAS_AUTH.items():
             respuesta.headers.setdefault(clave, valor)
+    # Auditoria 2026-11-15: cabeceras de seguridad en TODAS las respuestas
+    # (setdefault: no pisan los valores por-route ya fijados, p. ej. no-store).
+    for clave, valor in CABECERAS_GLOBALES.items():
+        respuesta.headers.setdefault(clave, valor)
     return respuesta
 
 
@@ -784,8 +842,12 @@ async def login_credenciales(credenciales: Credenciales, request: Request) -> Re
         headers=auth.CABECERAS_AUTH,
     )
     # Flags exactas de §9.2: HttpOnly, SameSite=Lax, Path=/, Max-Age=43200.
-    # ``Secure`` omitido CON JUSTIFICACIÓN: http en loopback (localhost es secure
-    # context para el navegador); activarlo si algún día se sirve por TLS.
+    # ``Secure``: OFF por defecto con JUSTIFICACION — http en loopback (localhost
+    # es secure context para el navegador). ACTIVAR con
+    # ``AULASENSE_COOKIE_SECURE=1`` cuando se sirva por TLS (auditoria
+    # 2026-11-15: la publicacion por tunel sin TLS expone la cookie a robo por
+    # MITM en el trayecto publico; el flag sin TLS Romperia el acceso, por eso
+    # es opt-in y va junto con el certificado del VPS — accion humana pendiente).
     respuesta.set_cookie(
         key=auth.NOMBRE_COOKIE,
         value=str(resultado["token"]),
@@ -793,7 +855,8 @@ async def login_credenciales(credenciales: Credenciales, request: Request) -> Re
         path="/",
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=auth.valor_env("AULASENSE_COOKIE_SECURE", "").strip().lower()
+        in ("1", "true", "yes", "on"),
     )
     return respuesta
 
@@ -1724,9 +1787,15 @@ async def internal_evento(evento: EventoSintetico, request: Request) -> JSONResp
     Origin guard: header ausente = permitir (curl/CLI/pytest); presente y no
     allowlist = 403. El payload se valida con el MISMO validador de la ingesta y el
     topic sintético se construye con el prefijo MQTT configurado.
+
+    Guard de fuente (auditoria 2026-11-15): ademas del Origin, la IP origen debe
+    ser local (``_fuente_interna_permitida``); la inyeccion sintetica es una
+    capacidad de maquina-a-maquina local, NO un endpoint publico.
     """
     if not _origen_permitido(request.headers.get("origin")):
         return _respuesta_403("Origin no permitido")
+    if not _fuente_interna_permitida(_ip_cliente(request)):
+        return _respuesta_403("fuente no local")
     if evento.kind not in TIPOS_SINTETICOS:
         raise HTTPException(
             status_code=422,
