@@ -1,0 +1,27 @@
+# Configuracion de la suite AulaSense (raiz del proyecto). Creada en F8 (2026-11-15)
+# para unificar las TRES suites en una sola invocacion desde la raiz.
+#
+# OJO — por que NO hay flags de cobertura aqui: medido en este repo (2026-11-15),
+# meter `--cov`/`--cov-fail-under` en `addopts` ROMPE invocaciones legitimas y
+# cotidianas:
+#   1) CORRIDAS PARCIALES: `pytest server/tests` da TOTAL 77 % y
+#      `pytest analysis/tests` TOTAL 42 % (el umbral 78 solo tiene sentido sobre el
+#      arbol completo) -> el gate pondria en rojo corridas que hoy salen verdes;
+#   2) RUNTIME WSL (debian-aulasense, venv ~/venvs/aulasense, AGENTS regla 3) NO
+#      tiene pytest-cov instalado -> `pytest server/tests -q` fallaria con
+#      "unrecognized arguments: --cov=server".
+# El gate vive en script aparte: `powershell tools/coverage_gate.ps1`
+# (= pytest --cov=server --cov=analysis --cov-report=term --cov-fail-under=78).
+# Medido el 2026-11-15 sobre las 299 pruebas: 86 % TOTAL (7722 stmts / 1055 miss),
+# umbral 78 -> 8 pp de margen. Evidencia completa: .tmp/f8_coverage.md.
+[tool.pytest.ini_options]
+testpaths = ["server/tests", "analysis/tests", "tools/tests"]
+
+# Coverage config (la usan tanto el gate como cualquier `--cov` manual).
+[tool.coverage.run]
+source = ["server", "analysis"]
+parallel = false
+
+[tool.coverage.report]
+fail_under = 78
+skip_empty = true

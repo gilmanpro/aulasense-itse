@@ -1,6 +1,10 @@
 # Temporales (regla dura: siempre en .tmp/, nunca %TEMP%/AppData)
 .tmp/
 *.log
+# Artefactos de cobertura (F8: gate en tools/coverage_gate.ps1)
+.coverage
+.coverage.*
+htmlcov/
 
 # Secretos (NUNCA commitear claves reales)
 .env
