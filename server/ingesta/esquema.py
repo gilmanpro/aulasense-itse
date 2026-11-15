@@ -77,6 +77,7 @@ EVENTOS_CONFIG: tuple[str, ...] = (
     "AP_FALLBACK",
     "CFG_GUARDADA",
     "STA_RECONECTADO",
+    "IMAGEN_ON",
     "IMAGEN_GATE_OFF",
     "IMAGEN_DESCARTE",
 )
@@ -513,6 +514,13 @@ CREATE TABLE IF NOT EXISTS eventos (
   recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_eventos_ts ON eventos(ts_ms);
+-- Rendimiento (revision 2026-11-15): las consultas por dispositivo mas frecuentes
+-- (onset-en-ventana del decoder §7.2, ultimo evento y conteo 24 h del snapshot
+-- /api/dispositivos, /api/eventos?device_id=) filtran device_id + rango ts_ms +
+-- ORDER BY ts_ms DESC. Con solo idx_eventos_ts, SQLite escanea el indice temporal
+-- y descarta filas de otros devices (O(N_eventos)); este cubre las cuatro con un
+-- seek compuesto. IF NOT EXISTS -> idempotente (doble pasada OK).
+CREATE INDEX IF NOT EXISTS idx_eventos_dev_ts ON eventos(device_id, ts_ms);
 CREATE TABLE IF NOT EXISTS telemetria (
   id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
   detection_avg_us REAL, detection_max_us REAL, runtime_load_percent REAL,
@@ -522,6 +530,13 @@ CREATE TABLE IF NOT EXISTS telemetria (
   detector TEXT, threshold REAL, traffic_generator_mode TEXT, die_temp_c REAL,
   origen TEXT NOT NULL DEFAULT 'real', recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Rendimiento (revision 2026-11-15): telemetria NO tenia ningun indice. El
+-- snapshot /api/dispositivos (ultima fila por device) y /api/telemetria?device_id=
+-- ordenan (device_id, ts_ms DESC); el MAX(ts_ms) de /api/resumen escanea toda la
+-- tabla sin idx_telem_ts. Con el sondeo de diagnosticos cada 30 s la tabla crece
+-- ~2.9k filas/dia: estas dos consultas pasarian de O(N) a O(log N + k).
+CREATE INDEX IF NOT EXISTS idx_telem_dev_ts ON telemetria(device_id, ts_ms);
+CREATE INDEX IF NOT EXISTS idx_telem_ts ON telemetria(ts_ms);
 CREATE TABLE IF NOT EXISTS validacion_sesiones (
   id INTEGER PRIMARY KEY AUTOINCREMENT, sesion TEXT NOT NULL,
   inicio_ms INTEGER NOT NULL, fin_ms INTEGER NOT NULL,
@@ -575,7 +590,7 @@ CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
 CREATE TABLE IF NOT EXISTS config_eventos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
-  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
+  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_ON','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
   detalle TEXT,                           -- ≤120 chars, SIN secretos (solo longitudes/flags)
   origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
   recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
@@ -718,6 +733,53 @@ def _asegurar_indice_hash_unico(conn: sqlite3.Connection) -> int:
     return descartadas
 
 
+# DDL de ``config_eventos`` para la reconstruccion R8: el CHECK se genera desde
+# ``EVENTOS_CONFIG`` (fuente unica). El literal de ``ESQUEMA_SQL`` tambien se
+# actualizo (BD nuevas), pero SQLite no permite ALTER de un CHECK: las BD ya
+# creadas en produccion se reconstruyen con ESTE DDL.
+_DDL_CONFIG_EVENTOS = """
+CREATE TABLE config_eventos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
+  tipo TEXT NOT NULL CHECK(tipo IN ({tipos})),
+  detalle TEXT,
+  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
+  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
+);
+""".format(tipos=",".join(f"'{tipo}'" for tipo in EVENTOS_CONFIG))
+
+
+def _migrar_config_eventos_enum(conn: sqlite3.Connection) -> bool:
+    """R8: pone al dia el CHECK de ``config_eventos.tipo`` (``IMAGEN_ON`` incluido).
+
+    SQLite no permite modificar un CHECK: se copia la tabla tal cual, se recrea
+    con el enum vigente de ``EVENTOS_CONFIG`` (fuente unica) y se restauran las
+    filas con sus ids. Idempotente: si el CHECK ya lista todos los eventos, no
+    toca nada. Devuelve ``True`` solo cuando reconstruyo la tabla.
+    """
+    fila = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_eventos'"
+    ).fetchone()
+    if fila is None or not fila[0]:
+        return False
+    if all(f"'{tipo}'" in fila[0] for tipo in EVENTOS_CONFIG):
+        return False
+    LOG.info("migracion R8: se reconstruye config_eventos con el enum vigente")
+    conn.execute("ALTER TABLE config_eventos RENAME TO config_eventos_legacy")
+    conn.execute(_DDL_CONFIG_EVENTOS)
+    conn.execute(
+        "INSERT INTO config_eventos "
+        "(id, device_id, ts_ms, tipo, detalle, origen, recibido_en) "
+        "SELECT id, device_id, ts_ms, tipo, detalle, origen, recibido_en "
+        "FROM config_eventos_legacy"
+    )
+    conn.execute("DROP TABLE config_eventos_legacy")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms)"
+    )
+    return True
+
+
 def migrar_esquema_f25(conn: sqlite3.Connection) -> dict[str, Any]:
     """Aplica el esquema extendido F25 de SPEC §8.2 (idempotente, doble pasada OK).
 
@@ -729,6 +791,7 @@ def migrar_esquema_f25(conn: sqlite3.Connection) -> dict[str, Any]:
         "columnas_nuevas": [],
         "tabla_sesiones_login": TABLA_SESIONES_LOGIN,
         "imagenes_duplicadas_descartadas": 0,
+        "config_eventos_reconstruida": False,
     }
 
     columnas = columnas_tabla(conn, "imagenes")
@@ -749,6 +812,26 @@ def migrar_esquema_f25(conn: sqlite3.Connection) -> dict[str, Any]:
             "CREATE INDEX IF NOT EXISTS idx_img_vision_estado ON imagenes(vision_estado)"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal)")
+
+    # Indices de consultas frecuentes (revision de rendimiento 2026-11-15):
+    # cubren el decoder §7.2 (onset-en-ventana), el snapshot /api/dispositivos,
+    # /api/eventos?device_id=, /api/telemetria?device_id= y el MAX(ts_ms) de
+    # /api/resumen. Guardados por existencia de tabla como el resto de la
+    # migracion (los tests F24 pueden invocar esta funcion con BD parcial donde
+    # eventos/telemetria no existen; CREATE INDEX sobre tabla inexistente fallaria
+    # incluso con IF NOT EXISTS). Idempotente: doble pasada OK.
+    if columnas_tabla(conn, "eventos") is not None:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_eventos_dev_ts ON eventos(device_id, ts_ms)"
+        )
+    if columnas_tabla(conn, "telemetria") is not None:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telem_dev_ts ON telemetria(device_id, ts_ms)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_telem_ts ON telemetria(ts_ms)")
+
+    # --- R8: enum de ``config_eventos.tipo`` al dia (IMAGEN_ON) -------------
+    resumen["config_eventos_reconstruida"] = _migrar_config_eventos_enum(conn)
 
     # --- Login del dashboard y presupuesto de vision (D-F25-8/D-F25-6) ------
     conn.executescript(_DDL_F25_AUTH)

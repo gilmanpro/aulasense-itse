@@ -48,6 +48,7 @@ import base64
 import binascii
 import csv
 import hashlib
+import io
 import json
 import logging
 import os
@@ -1257,40 +1258,40 @@ def origen_desde_envelope(datos: dict[str, Any]) -> str:
     return "real"
 
 
-def _modulo_receptor() -> Any:
-    """Importa ``receptor_imagen`` (modulo plano o paquete); ``None`` si no esta."""
-    try:
-        import receptor_imagen  # type: ignore[import-not-found]
-
-        return receptor_imagen
-    except ImportError:  # pragma: no cover - import como paquete server.ingesta
-        try:
-            from . import receptor_imagen  # type: ignore[no-redef]
-
-            return receptor_imagen
-        except ImportError:
-            return None
+# R3 (gate de arquitectura 2026-11-15): las dos funciones siguientes son
+# CANONICAS del nucleo y ``receptor_imagen`` las IMPORTA (direccion unica:
+# receptor -> ingesta). Antes vivian en el receptor y el nucleo las resolvia con
+# un import dinamico (``_modulo_receptor``), lo que mantenia vivo el ciclo
+# ingesta <-> receptor: el nucleo dependia del plugin en runtime.
 
 
 def resolver_datos_dir(writer: "IngestaWriter") -> Path:
-    """DIR base de datos: reusa el criterio del receptor HTTP (SPEC §7.1).
+    """DIR base de datos: ``AULASENSE_DATOS_DIR`` o el padre de la DB real.
 
-    ``AULASENSE_DATOS_DIR`` si esta definido; si no, el padre de la DB
-    (``server/datos``). No se reescribe la logica del receptor: se importa.
+    Convencion COMPARTIDA con el dashboard y el receptor HTTP (SPEC §7.1):
+    ``imagenes.ruta`` es RELATIVA a este directorio (default ``server/datos``).
     """
-    modulo = _modulo_receptor()
-    if modulo is not None and hasattr(modulo, "resolver_datos_dir"):
-        return modulo.resolver_datos_dir(writer)
     crudo = os.environ.get("AULASENSE_DATOS_DIR", "").strip()
-    return Path(crudo).expanduser() if crudo else Path(writer.db_path).parent
+    if crudo:
+        return Path(crudo).expanduser()
+    return Path(writer.db_path).parent
 
 
 def dimensiones_jpeg(contenido: bytes) -> tuple[int | None, int | None]:
-    """Ancho/alto del JPEG si Pillow esta disponible (mismo helper que §7.1)."""
-    modulo = _modulo_receptor()
-    if modulo is not None and hasattr(modulo, "_dimensiones"):
-        return modulo._dimensiones(contenido)
-    return None, None  # pragma: no cover - sin receptor importable
+    """Ancho/alto del JPEG si Pillow esta disponible; ``(None, None)`` es valido.
+
+    Pillow es OPCIONAL (import perezoso: no encarece el arranque de la ingesta).
+    Una imagen corrupta deja ``ancho``/``alto`` en NULL, que el contrato permite.
+    """
+    try:
+        from PIL import Image  # import perezoso: Pillow es opcional
+    except ImportError:  # pragma: no cover - entorno sin Pillow
+        return None, None
+    try:
+        with Image.open(io.BytesIO(contenido)) as imagen:
+            return int(imagen.width), int(imagen.height)
+    except Exception:  # imagenes corruptas: la fila queda con null (permitido)
+        return None, None
 
 
 def _borrar_silencioso(ruta: Path) -> None:

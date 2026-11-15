@@ -44,7 +44,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
-import io
 import json
 import logging
 import os
@@ -63,9 +62,19 @@ from urllib.parse import parse_qs, urlsplit
 from dotenv import load_dotenv
 
 try:  # ejecucion directa (server/ingesta en sys.path) o via conftest de tests
-    from ingesta_mqtt import IngestaWriter, JobImagen
+    from ingesta_mqtt import (  # type: ignore[import-not-found]
+        IngestaWriter,
+        JobImagen,
+        dimensiones_jpeg,
+        resolver_datos_dir,
+    )
 except ImportError:  # import como paquete server.ingesta
-    from .ingesta_mqtt import IngestaWriter, JobImagen  # type: ignore[no-redef]
+    from .ingesta_mqtt import (  # type: ignore[no-redef]
+        IngestaWriter,
+        JobImagen,
+        dimensiones_jpeg,
+        resolver_datos_dir,
+    )
 
 LOG = logging.getLogger("aulasense.receptor")
 
@@ -108,14 +117,11 @@ class _ErrorPeticion(Exception):
 
 
 # --- Helpers puros ---------------------------------------------------------
-
-
-def resolver_datos_dir(writer: IngestaWriter) -> Path:
-    """DIR base de datos: env ``AULASENSE_DATOS_DIR`` o el padre de la DB real."""
-    crudo = os.environ.get("AULASENSE_DATOS_DIR", "").strip()
-    if crudo:
-        return Path(crudo).expanduser()
-    return Path(writer.db_path).parent
+#
+# R3 (gate de arquitectura 2026-11-15): ``resolver_datos_dir`` y
+# ``dimensiones_jpeg`` NO se definen aqui; son CANONICAS de ``ingesta_mqtt`` y se
+# importan arriba. Asi el ciclo ingesta <-> receptor queda roto: la dependencia
+# va en un solo sentido (este modulo -> el nucleo).
 
 
 def _puerto_env() -> int:
@@ -132,19 +138,6 @@ def _borrar_silencioso(ruta: Path) -> None:
         ruta.unlink(missing_ok=True)
     except OSError:  # pragma: no cover - disco ocupado/permisos
         LOG.warning("no se pudo borrar archivo huerfano: %s", ruta)
-
-
-def _dimensiones(datos: bytes) -> tuple[int | None, int | None]:
-    """Ancho/alto si Pillow esta disponible; ``(None, None)`` es un valor valido."""
-    try:
-        from PIL import Image  # import perezoso: Pillow es opcional
-    except ImportError:  # pragma: no cover - entorno sin Pillow
-        return None, None
-    try:
-        with Image.open(io.BytesIO(datos)) as imagen:
-            return int(imagen.width), int(imagen.height)
-    except Exception:  # imagenes corruptas: la fila queda con null (permitido)
-        return None, None
 
 
 def _parsear_multipart(
@@ -361,7 +354,7 @@ class ReceptorImagen:
             LOG.exception("no se pudo escribir la imagen en datos/imagenes")
             return 500, {"ok": False, "error": "no se pudo guardar la imagen"}
 
-        ancho, alto = _dimensiones(imagen)
+        ancho, alto = dimensiones_jpeg(imagen)
         job = JobImagen(
             device_id=device_id,
             ts_device_ms=int(ts_device_ms),

@@ -106,7 +106,17 @@ def estadisticas_latencia(pares: list[tuple], etiqueta: str) -> dict:
             continue
         diffs.append(d)
     if not diffs:
-        return {"fuente": etiqueta, "n": 0, "anomalos_excluidos": anomalos}
+        return {
+            "fuente": etiqueta,
+            "n": 0,
+            "anomalos_excluidos": anomalos,
+            # BUG-PROD-F5A-1 (arreglado 2026-11-15): el dict n==0 tambien lleva
+            # 'nota'; escribir_informe la exige SIEMPRE y antes caiamos en KeyError
+            # en modo --sin-wsl (sin latencias que resumir).
+            "nota": ("sin datos de latencia (n=0): ningun par usable (p. ej. modo "
+                     "offline --sin-wsl, sin recibido_en ni ts_ms que comparar). Se "
+                     "omiten mediana y percentiles: ausencia de dato NO es latencia 0."),
+        }
     d = sorted(diffs)
     n = len(d)
     p = lambda q: d[min(n - 1, max(0, round(q * (n - 1))))]
@@ -132,8 +142,11 @@ def aparear_fotos_onsets(fotos: list[dict], onsets: list[dict],
     """Correlacion foto↔onset: para cada foto, el onset mas cercano dentro de ±ventana_ms.
     fotos/onsets: dicts con {"ts_ms","id"}."""
     if not fotos or not onsets:
+        # Misma FORMA que la rama con datos: escribir_informe lee cf["ventana_ms"]
+        # (KeyError en modo --sin-wsl hasta el fix BUG-PROD-F5A-1, 2026-11-15).
         return {"fotos": len(fotos), "onsets": len(onsets), "emparejadas": 0,
-                "fotos_emparejadas_pct": None, "onsets_con_foto_pct": None, "lags_ms": {},
+                "fotos_emparejadas_pct": None, "onsets_con_foto_pct": None,
+                "lags_ms": {}, "ventana_ms": ventana_ms,
                 "fotos_sin_match": sorted(f["id"] for f in fotos),
                 "onsets_sin_foto": sorted(o["id"] for o in onsets)}
     ts_on = sorted(o["ts_ms"] for o in onsets)

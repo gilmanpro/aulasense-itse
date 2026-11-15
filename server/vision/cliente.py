@@ -7,6 +7,14 @@ Alcance (fase F25-d2)
   pide la descripcion al modelo de vision y guarda ``descripcion`` (1-2 frases
   en espanol) + ``etiquetas`` (coma-separadas) + ``vision_estado='hecho'`` +
   ``vision_modelo``/``vision_ts_ms``/``vision_tokens``.
+* **Claim atomico por fila (BUG-PROD-VISION-LOCK, 2026-11-15):** la transicion
+  ``pendiente|error -> procesando`` es UN ``UPDATE ... WHERE id=? AND
+  vision_estado IN ('pendiente','error')`` y solo la pasada que ve
+  ``rowcount == 1`` procesa la fila (las demas hacen ``continue`` sin llamar a
+  la API). Dos pasadas concurrentes sobre la misma BD ya NO re-describen la
+  misma imagen (regla 16: cero Credits duplicados). El instante del claim se
+  sella en ``vision_ts_ms`` (columna F25 existente: NO se anaden columnas) y es
+  el heartbeat que usa ``liberar_procesando`` para liberar solo claims STALE.
 * Modelo: cadena con fallback. Default ``qwen3.8-flash`` (allowlist exact-string
   del Token Plan, visual understanding) -> ``qwen3.6-flash`` -> ``auto``.
   Con key pay-as-you-go ``sk-*`` existe ademas ``qwen3-vl-flash``/``qwen-vl-max``
@@ -84,7 +92,9 @@ Solo UPDATE cortos y parametrizados que tocan ``vision_estado``/``descripcion``/
 toca ``evaluaciones``/``eventos``/``imagenes.ruta`` ni hace DDL canonico: el
 esquema F25 lo migra la ingesta (``server/ingesta/esquema.py``). Si la DB aun no
 esta migrada se lanza ``ErrorEsquema`` con el mensaje
-``DB sin migrar (corre la ingesta F25-d1)``.
+``DB sin migrar (corre la ingesta F25-d1)``. El claim escribe ``vision_ts_ms``
+con el instante del reclamo (heartbeat/stale-claim): la pasada lo sobreescribe
+con el ``ts`` del resultado al guardar ``hecho``/``error``.
 
 Codigos de salida del CLI (``tools/vision_describe.py``)
 --------------------------------------------------------
@@ -132,6 +142,15 @@ MAX_TOKENS_SALIDA = 200  # salida acotada (SPEC §7.3): ~150 tokens reales
 TEMPERATURA = 0.2
 TIMEOUT_S = 60.0
 INTERVALO_LOOP_S = 300.0  # modo A: una pasada cada 5 min
+
+# Claim atomico por fila (BUG-PROD-VISION-LOCK): una fila ``procesando`` solo se
+# considera HUERFANA (y vuelve a ``pendiente``) si su claim es mas viejo que N
+# minutos. El claim sella ``vision_ts_ms`` con el instante del reclamo (columna
+# F25 EXISTENTE; NO se anaden columnas) hasta que la pasada lo sobreescribe con
+# el ts del resultado. 30 min cubre con holgura el peor caso de UNA llamada
+# (3 modelos x 3 intentos con backoff 10/30 s + timeout 60 s ~ 11 min).
+PROCESANDO_STALE_MIN_DEFECTO = 30
+MS_POR_MINUTO = 60_000
 
 # Backoff exponencial maximo 2 reintentos por modelo (SPEC §7.3).
 ESPERAS_BACKOFF_S: tuple[float, ...] = (10.0, 30.0)
@@ -236,6 +255,7 @@ class ConfigVision:
     modo: str = "B"
     limite: int = LIMITE_DEFECTO
     orden: str = ORDEN_DEFECTO  # "asc" (FIFO) | "desc" (ids mas nuevas primero)
+    stale_min: int = PROCESANDO_STALE_MIN_DEFECTO  # claim viejo = huerfano
     bandera_stop: Path = BANDERA_STOP_DEFECTO
     timeout: float = TIMEOUT_S
     prompt: str = PROMPT_VISION
@@ -481,6 +501,12 @@ def construir_config(
         log("WARN", f"AULASENSE_VISION_ORDEN={orden_final!r} invalido; se usa {ORDEN_DEFECTO}")
         orden_final = ORDEN_DEFECTO
 
+    # Claim stale: minutos tras los que una fila 'procesando' se considera
+    # huerfana (BUG-PROD-VISION-LOCK). Sin columna nueva: usa vision_ts_ms.
+    stale_min_final = _entero_env(
+        "AULASENSE_VISION_STALE_MIN", PROCESANDO_STALE_MIN_DEFECTO, minimo=1
+    )
+
     return ConfigVision(
         db_path=db_path.expanduser(),
         datos_dir=datos_dir.expanduser(),
@@ -492,6 +518,7 @@ def construir_config(
         modo=modo_final,
         limite=max(1, int(limite if limite is not None else LIMITE_DEFECTO)),
         orden=orden_final,
+        stale_min=max(1, int(stale_min_final)),
         bandera_stop=bandera,
     )
 
@@ -636,10 +663,14 @@ def ruta_imagen(datos_dir: Path, ruta_relativa: str) -> Path | None:
 def seleccionar_pendientes(
     con: sqlite3.Connection, limite: int, orden: str = ORDEN_DEFECTO
 ) -> list[dict[str, Any]]:
-    """Filas a procesar: ``pendiente``/``error`` (retry) y no purgadas.
+    """CANDIDATAS a procesar: ``pendiente``/``error`` (retry) y no purgadas.
 
     ``orden`` = ``asc`` (FIFO, default) | ``desc`` (ids mas nuevas primero; la
     actividad reciente manda cuando el cupo de la pasada es menor que la cola).
+
+    Este SELECT **solo propone** filas: no las reclama ni reserva (es lo que usa
+    ``vision_pending`` para listar la cola). El reclamo real es
+    ``reclamar_imagen`` por fila, atomico (BUG-PROD-VISION-LOCK).
     """
     sentido = "DESC" if str(orden).strip().lower() == "desc" else "ASC"
     filas = con.execute(
@@ -654,6 +685,33 @@ def seleccionar_pendientes(
     ]
 
 
+def reclamar_imagen(
+    con: sqlite3.Connection, imagen_id: int, *, ahora: int | None = None
+) -> bool:
+    """CLAIM atomico de UNA fila: ``pendiente|error -> procesando`` si aun es suya.
+
+    BUG-PROD-VISION-LOCK: la transicion de estado ES el reclamo. ``UPDATE ...
+    WHERE id = ? AND vision_estado IN ('pendiente','error')`` deja que SQLite
+    serialice a los competidores: exactamente una pasada ve ``rowcount == 1``;
+    las demas reciben 0 y deben hacer ``continue`` SIN llamar a la API (regla 16:
+    cero Credits duplicados). No sirve ``executemany``: aqui importa el
+    ``rowcount`` POR FILA.
+
+    El instante del claim se sella en ``vision_ts_ms`` (columna F25 existente;
+    NO se anaden columnas): es el heartbeat que ``liberar_procesando`` compara
+    para no reabrir una fila EN VUELO de otra pasada. La pasada lo sobreescribe
+    con el ts del resultado al guardar ``hecho``/``error``.
+    """
+    sello = int(ahora if ahora is not None else ahora_ms())
+    cursor = con.execute(
+        "UPDATE imagenes SET vision_estado = 'procesando', vision_ts_ms = ? "
+        "WHERE id = ? AND vision_estado IN ('pendiente','error')",
+        (sello, int(imagen_id)),
+    )
+    con.commit()
+    return int(cursor.rowcount or 0) > 0
+
+
 def hash_ya_descripto(
     con: sqlite3.Connection, hash_sha256: str, imagen_id: int
 ) -> bool:
@@ -666,13 +724,30 @@ def hash_ya_descripto(
     return fila is not None
 
 
-def liberar_procesando(con: sqlite3.Connection) -> int:
-    """Devuelve a ``pendiente`` filas huérfanas en ``procesando`` (crash previo).
+def liberar_procesando(
+    con: sqlite3.Connection,
+    *,
+    stale_ms: int = PROCESANDO_STALE_MIN_DEFECTO * MS_POR_MINUTO,
+    ahora: int | None = None,
+) -> int:
+    """Devuelve a ``pendiente`` SOLO las filas ``procesando`` HUERFANAS (stale).
 
-    Asume UN solo worker por DB (patron del proyecto); solo toca ``vision_estado``.
+    BUG-PROD-VISION-LOCK: la version anterior reabria TODAS las filas
+    ``procesando`` al arrancar cada pasada, incluida la que otra pasada tenia EN
+    VUELO -> la volvia a reclamar y la re-describia (doble gasto de Credits,
+    regla 16). Ahora el claim se sella en ``vision_ts_ms`` (``reclamar_imagen``)
+    y aqui solo se liberan los claims mas viejos que ``stale_ms`` (heartbeat:
+    ``AULASENSE_VISION_STALE_MIN``, default 30 min). Las filas heredadas con
+    ``vision_ts_ms`` NULL tambien se liberan: claim desconocido = huerfana.
+
+    Solo toca ``vision_estado`` (excepcion documentada al writer unico).
     """
+    limite = int(ahora if ahora is not None else ahora_ms()) - max(0, int(stale_ms))
     cursor = con.execute(
-        "UPDATE imagenes SET vision_estado = 'pendiente' WHERE vision_estado = 'procesando'"
+        "UPDATE imagenes SET vision_estado = 'pendiente' "
+        "WHERE vision_estado = 'procesando' "
+        "AND (vision_ts_ms IS NULL OR vision_ts_ms <= ?)",
+        (limite,),
     )
     con.commit()
     return int(cursor.rowcount or 0)
@@ -682,7 +757,11 @@ def liberar_procesando(con: sqlite3.Connection) -> int:
 # UPDATE cortos (SOLO columnas vision_*/descripcion/etiquetas)
 # ------------------------------------------------------------------------------
 def _marcar_estado(con: sqlite3.Connection, imagen_id: int, estado: str) -> None:
-    """Cambia solo ``vision_estado`` (procesando/omitido)."""
+    """Cambia solo ``vision_estado`` (``omitido`` en el dedupe por hash).
+
+    La transicion a ``procesando`` ya NO pasa por aqui: es el claim atomico
+    ``reclamar_imagen`` (BUG-PROD-VISION-LOCK).
+    """
     con.execute(
         "UPDATE imagenes SET vision_estado = ? WHERE id = ?", (estado, int(imagen_id))
     )
@@ -1088,12 +1167,12 @@ def procesar_pasada(
         )
         return resumen
 
-    retirados = liberar_procesando(con)
+    retirados = liberar_procesando(con, stale_ms=cfg.stale_min * MS_POR_MINUTO)
     if retirados:
         log(
             "WARN",
-            f"{retirados} imagen(es) en 'procesando' devueltas a 'pendiente' "
-            "(pasada anterior interrumpida)",
+            f"{retirados} imagen(es) con claim STALE (>{cfg.stale_min} min) devueltas "
+            "a 'pendiente' (pasada anterior caida)",
         )
 
     pendientes = seleccionar_pendientes(con, cfg.limite, cfg.orden)
@@ -1134,6 +1213,17 @@ def procesar_pasada(
         imagen_id = fila["id"]
         hash_imagen = fila["hash_sha256"]
 
+        # CLAIM atomico por fila (BUG-PROD-VISION-LOCK): la primera pasada que
+        # llega se queda la fila. Si otra la reclamo antes, rowcount == 0 ->
+        # continue SIN llamar a la API (cero Credits duplicados, regla 16).
+        if not reclamar_imagen(con, imagen_id):
+            log(
+                "INFO",
+                f"imagen {imagen_id}: reclamada por otra pasada concurrente; "
+                "se omite (cero llamadas)",
+            )
+            continue
+
         # Dedupe: ninguna imagen se describe dos veces (SPEC §7.3).
         if hash_imagen in hash_vistos or hash_ya_descripto(con, hash_imagen, imagen_id):
             _marcar_estado(con, imagen_id, "omitido")
@@ -1159,7 +1249,8 @@ def procesar_pasada(
             )
             continue
 
-        _marcar_estado(con, imagen_id, "procesando")
+        # La fila YA esta reclamada ('procesando' + vision_ts_ms = instante del
+        # claim) desde el inicio del bucle: no hay transicion intermedia.
         try:
             crudo = archivo.read_bytes()
         except OSError as exc:
