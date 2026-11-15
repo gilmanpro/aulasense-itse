@@ -749,7 +749,7 @@ Dependencia de capas: 1→2→3→4 (datos fluyen arriba). El CONTRATO (SPEC §6
     16 B) — cubre el venv Windows py3.15 si el wheel argon2 no existiera. passlib/bcrypt quedan como
     alternativa documentada, no requerida. **Password generado POR CÓDIGO** (`secrets.token_hex(16)`)
     en F25-e → escrito en `claves/.env` (D-F25-9), NUNCA impreso ni commiteado.
-  - **Sesiones:** token `secrets.token_urlsafe(32)`; en BD solo su **SHA-256** (tabla `sesiones`);
+  - **Sesiones:** token `secrets.token_urlsafe(32)`; en BD solo su **SHA-256** (tabla `sesiones_auth`);
     cookie `aulasense_sesion` HttpOnly, SameSite=Lax, Path=/, Max-Age=43200 (12 h absoluta) +
     inactividad 2 h (sliding, verificada en cada request); `Secure` omitido CON JUSTIFICACIÓN (http en
     loopback; el navegador trata localhost como secure context — documentado en SPEC §9.2). Logout

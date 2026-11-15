@@ -19,7 +19,7 @@
 > **imagen por MQTT** (§3.2.1, §6.2, §7.2 — REVOCA la regla "imágenes NUNCA por MQTT" de D-F24-1/6,
 > D-F25-1), **servidor en WSL Debian** (§15), **worker de descripción IA con rate limits** (§7.3),
 > **login seguro + búsqueda en galería** (§9.2, §9.3) y el **esquema extendido** (§8.2: columnas
-> canal/descripcion/etiquetas/vision_* + tablas usuarios/sesiones/intentos_login/vision_uso).
+> canal/descripcion/etiquetas/vision_* + tablas usuarios/sesiones_auth/intentos_login/vision_uso).
 > Variables nuevas en §12.1 (`claves/.env` gitignored). Decisiones D-F25-1..13 con evidencia en
 > `PLAN.md` §12; resumen en §14.1. Checklist vivo: v25.
 
@@ -273,6 +273,8 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   - `sha256`: hash del contenido JPEG; **dedupe** (unique index parcial, §8.2) y verificación de
     integridad (mismatch → descarte).
   - `b64`: JPEG magic `FFD8FF` tras decodificar (si no → descarte). QVGA 320×240 esperado.
+  - `origen` (OPCIONAL): `"real" | "sintetico"`; default `"real"` si ausente. Permite fire-tests
+    etiquetados sin pueblar el dataset real (C13); el decoder (ingesta §7.2) lo honra cuando exista.
 - **Validación en ingesta (§7.2):** todo fallo → descarte + log + (opcional) métrica; NUNCA se
   escribe una fila inválida. El evento motion ya llegó por su topic: la imagen es accesoria.
 - **Privacidad:** broker autenticado (electiva publica / srv-electiva suscribe), prefijo aislado,
@@ -318,6 +320,9 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
      `vision_estado='pendiente'` (§8.2), `origen='real'`.
 - **Writer único preservado:** el decoder NO abre otra conexión SQLite; todo pasa por la cola
   existente (mismo patrón que el receptor HTTP §7.1).
+- **`origen` (espejo del contrato §6.2):** el decoder lee `origen` del envelope si está presente
+  (default `'real'` si ausente); como el código actual escribe `'real'` fijo en el INSERT
+  `canal='mqtt'`, honrar el campo es **contrato futuro documentado** (sin cambios de código).
 - **Tests (F25-d1, ≥10):** b64 válido→archivo+fila canal='mqtt'; b64 corrupto→descarte; sha256
   mismatch→descarte; tamano incoherente→descarte; JSON >64 KB→descarte; device desconocido→descarte;
   dedupe hash→no duplica; FK por ventana onset; rate-limit→descarte; `v` desconocida→descarte;
@@ -475,7 +480,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
   creado_en TEXT NOT NULL DEFAULT (datetime('now')),
   ultimo_login_ms INTEGER
 );
-CREATE TABLE IF NOT EXISTS sesiones (
+CREATE TABLE IF NOT EXISTS sesiones_auth (
   token_hash TEXT PRIMARY KEY,                 -- SHA-256 del token de cookie (el token NO se guarda)
   user_id INTEGER NOT NULL REFERENCES usuarios(id),
   creado_en_ms INTEGER NOT NULL,
@@ -483,7 +488,7 @@ CREATE TABLE IF NOT EXISTS sesiones (
   expira_en_ms INTEGER NOT NULL,               -- absoluta: 12 h
   ip TEXT, user_agent TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_sesiones_expira ON sesiones(expira_en_ms);
+CREATE INDEX IF NOT EXISTS idx_sesiones_expira ON sesiones_auth(expira_en_ms);
 CREATE TABLE IF NOT EXISTS intentos_login (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip TEXT NOT NULL, username TEXT NOT NULL,
@@ -501,6 +506,8 @@ CREATE TABLE IF NOT EXISTS vision_uso (
 );
 CREATE INDEX IF NOT EXISTS idx_vision_uso_ts ON vision_uso(ts_ms);
 ```
+
+> **Desambiguación:** `sesiones` (F3, `tools/session_logger.py`) es el log de sesiones de captura (ground truth); la tabla de sesiones del login del dashboard es `sesiones_auth` — el código la resuelve en vivo con `nombre_tabla_sesiones_login()` (`esquema.py`; usa `sesiones` solo si F3 no ocupa aún el nombre).
 
 - **Notas de integridad:** el unique index de `hash_sha256` hace el dedupe transversal a los dos
   canales (si una foto llegó por HTTP y luego por MQTT, la segunda inserción se descarta por
@@ -544,7 +551,7 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 - **Cookie de sesión:** `aulasense_sesion=<token_urlsafe(32)>`; **HttpOnly, SameSite=Lax, Path=/**,
   Max-Age=43200. `Secure` omitido CON JUSTIFICACIÓN documentada: http en loopback (localhost es
   secure context para el navegador); si algún día se sirve por TLS, activar Secure. En BD solo el
-  **SHA-256 del token** (tabla `sesiones`, §8.2).
+  **SHA-256 del token** (tabla `sesiones_auth`, §8.2; la F3 `sesiones` de ground truth es otra).
 - **Expiración:** absoluta 12 h (`expira_en_ms`) + inactividad 2 h (sliding `ultimo_uso_ms`,
   verificado en cada request). Expirada → 401/redirect a /login + DELETE de la fila.
 - **Rate-limit de intentos (por IP+username, ventana 15 min, tabla `intentos_login`):** ≥5 fallos →
@@ -552,7 +559,7 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
   Lockout TEMPORAL auto-expirante (mitigación del encierro del dueño, R-F25-3). Login exitoso resetea
   el contador de ese par IP+usuario.
 - **Reset local del dueño:** `tools/reset_admin.py` (CLI, acceso físico) regenera la password en
-  `claves/.env`, actualiza el hash y limpia lockouts/sesiones. NUNCA imprime la password (solo
+  `claves/.env`, actualiza el hash y limpia lockouts/sesiones_auth. NUNCA imprime la password (solo
   "regenerada en claves/.env").
 - **Cobertura de auth:** middleware que exige sesión válida en TODAS las rutas salvo `GET/POST
   /login`, `POST /logout`, estáticos de login y `/internal/*` (máquina-a-máquina local: Origin guard

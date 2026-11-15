@@ -48,21 +48,41 @@
 
 | Documento | Estado | Fase | Contenido |
 |---|---|---|---|
-| `../assets/diagrama_tecnico.dsl/.svg/.png` | ⏳ | F25-f1 | Diagrama técnico C4 contenedores + flujo de datos ESP32→broker→WSL→dashboard (skill graphic-arq-software) |
-| `../assets/poster_funcionamiento.png` | ⏳ | F25-f2 | Póster visual del concepto CSI (ondas/persona/chip/dashboard), skill qwen-imagen (@6-medios) |
+| `../assets/diagrama_tecnico.*` | ✅ | F25-f1 | Diagrama técnico C4 en 4 vistas: `diagrama_tecnico.dsl/.svg/.png` (contenedores + flujo ESP32→broker→WSL→dashboard), `diagrama_tecnico_contexto.svg/.png`, `diagrama_tecnico_componentes_nodo.svg/.png`, `diagrama_tecnico_componentes_dashboard.svg/.png` (skill graphic-arq-software; evidencia `.tmp/f25f1_diagrama.md`) |
+| `../assets/poster_funcionamiento.png` | ✅ | F25-f2 | Póster visual del concepto CSI (ondas/persona/chip/dashboard), skill qwen-imagen (@6-medios) |
 | `guion_video.md` | ✅ | F25-f3 | Guion del video explicativo: DriveGuard→fallo caras→CSI→cómo funciona→construcción→finalidad |
 | `video_subtitulos.srt` | ✅ | F25-f3/f5 | Subtítulos del video (burn-in en el ensamblaje; re-timado real en `.tmp/video_final.srt`) |
-| `video_aulasense.mp4` | ✅ | F25-f5 | Video explicativo completo (H.264+AAC 480P, 65,96 s; escenas HappyHorse 480P + narración TTS longanlingxin + overlays drawtext + subtítulos burn-in; ensamblaje FFmpeg local, coste extra $0) |
+| `video_aulasense.mp4` | ✅ | F25-f5 | Video explicativo completo (H.264+AAC 480P, 65,96 s verificado por ffprobe 2026-11-15; escenas HappyHorse 480P + narración TTS longanlingxin + overlays drawtext + subtítulos burn-in; ensamblaje FFmpeg local, coste extra $0) |
+| `../server/deploy/README_wsl.md` | ✅ | F25-b1 | Despliegue WSL Debian: venv, systemd, portproxy loopback, cutover, fallback Windows (existe en disco; matriz final F25-b1 ronda 2 = CUMPLE, `.tmp/f25b1_wsl.md` §13) |
+| `../claves/.env.example` | ✅ | andamiaje F25 | Nombres de variables de auth/IA (valores vacíos; la password la genera el código en F25-e) |
+| `consentimiento_aula.md` | ⏳ | F24-f→F25-g | Consentimiento ACTUALIZADO: las imágenes transitan el broker autenticado (retain=false) |
+| `politica_retencion_imagenes.md` | ⏳ | F24-f→F25-g | Retención 30 d purgable (imagen_purgada conserva fila+descripción; dataset intacto) |
+| `INFORME.docx` / `PRESENTACION.pptx` | ⏳ | F6a (actualizado F25) | Regenerados con TODO: WSL, MQTT-imágenes, visión+búsqueda, login, diagramas, video, costes Credits reales |
 
 > **Nota QC honesta del video (F25-f5):** en la escena 6 la cuadrícula de miniaturas muestra un
 > **rostro sintético generado por la IA** (no es persona real); las pantallas de las escenas 5 y 7
 > contienen pseudo-texto ilegible (no se requiere legibilidad — todo el texto real va como overlay
 > FFmpeg). El video dice "detecta movimiento", nunca "presencia", y no cita métricas del vendor.
-| `../server/deploy/README_wsl.md` | ⏳ | F25-b1 | Despliegue WSL Debian: venv, systemd, portproxy loopback, cutover, fallback Windows |
-| `../claves/.env.example` | ✅ | andamiaje F25 | Nombres de variables de auth/IA (valores vacíos; la password la genera el código en F25-e) |
-| `consentimiento_aula.md` | ⏳ | F24-f→F25-g | Consentimiento ACTUALIZADO: las imágenes transitan el broker autenticado (retain=false) |
-| `politica_retencion_imagenes.md` | ⏳ | F24-f→F25-g | Retención 30 d purgable (imagen_purgada conserva fila+descripción; dataset intacto) |
-| `INFORME.docx` / `PRESENTACION.pptx` | ⏳ | F6a (actualizado F25) | Regenerados con TODO: WSL, MQTT-imágenes, visión+búsqueda, login, diagramas, video, costes Credits reales |
+
+## Cómo ver el sistema (verificado 2026-11-15)
+
+Runtime primario: **WSL Debian 13 + systemd** (`aulasense-ingesta` y `aulasense-dashboard` active;
+`aulasense-vision` instalada y disabled por diseño — SPEC §15, `../server/deploy/README_wsl.md`).
+URLs vigentes:
+
+| URL | Dónde | Verificación |
+|---|---|---|
+| `http://172.26.159.208:8000` | servidor WSL (systemd) desde el navegador Windows — vía fallback NAT (activa en F25-b1) | `/login` → **200** (2026-11-15, curl Windows→NAT). La IP WSL **cambia tras reboot de la VM**: obtener la vigente con `powershell tools\wsl_aulasense.ps1 status` |
+| `http://127.0.0.1:8000/login` | loopback **dentro de la VM WSL** | `/login` → **200** (evidencia `.tmp/f25b1_wsl.md` §6) |
+
+Acceso: requiere **login** (usuario `admin`; la password la genera el código y vive en
+`claves/.env`, gitignored — NUNCA se imprime en documentación).
+
+**Pendientes — NO vigentes aún** (no usar como vías activas): el portproxy
+`netsh` `127.0.0.1:8000`→WSL en Windows (requiere **admin** y el stack Windows parado; es el
+cutover F25-b2 — hoy ese loopback lo ocupa el stack fallback de Windows) y la publicación en un
+**puerto público del VPS** (vía elegida: token de `wsl-port`; a la espera del token del usuario —
+bitácora `iot2/.tmp/bitacora.md`, 2026-11-15).
 
 ## Contexto del proyecto anterior (archivado)
 
