@@ -470,6 +470,83 @@ def test_aulasense_config_valida_y_persiste(entorno):
     assert abs(filas[0][2] - (NOW + 1000)) <= 1  # R3: epoca_boot + timestamp_ms
 
 
+def test_aulasense_config_acepta_imagen_on(entorno, caplog):
+    """R8: ``IMAGEN_ON`` esta en ``EVENTOS_CONFIG`` y se PERSISTE (no se descarta).
+
+    El firmware lo publica al capturar el JPEG del onset
+    (``firmware/parche_aulasense/app_imagen.c``); decision del orquestador (gate
+    arquitectura 2026-11-15): se ACEPTA como diagnostico util, sin tocar firmware.
+    Antes caia en el enum y se descartaba con log (quedaba solo en el serial).
+    """
+    import logging
+
+    payload = {
+        "timestamp_ms": 7000,
+        "evento": "IMAGEN_ON",
+        "detalle": "captura QVGA en el onset",
+    }
+    with caplog.at_level(logging.WARNING, logger="aulasense.ingesta"):
+        resultado = entorno.writer.procesar(
+            _topic("aulasense_config"), payload, now_ms=NOW + 2000
+        )
+
+    assert "IMAGEN_ON" in esquema.EVENTOS_CONFIG
+    assert resultado["valido"] is True
+    assert resultado["kind"] == "aulasense_config"
+    assert resultado["accion"] == "config_evento"
+
+    filas = _consultar(
+        entorno.db, "SELECT tipo, detalle FROM config_eventos WHERE tipo = 'IMAGEN_ON'"
+    )
+    assert filas == [("IMAGEN_ON", "captura QVGA en el onset")]
+    assert not [r for r in caplog.records if "mensaje descartado" in r.getMessage()]
+
+
+def test_migracion_reconstruye_config_eventos_legacy(tmp_path):
+    """R8: una BD previa (CHECK sin ``IMAGEN_ON``) se reconstruye y conserva filas.
+
+    Es el caso REAL del despliegue (la BD de la distro se creo con el enum
+    anterior): sin esta migracion el INSERT de ``IMAGEN_ON`` violaria el CHECK
+    y el writer lo descartaria con excepcion.
+    """
+    con = sqlite3.connect(str(tmp_path / "legacy.db"))
+    try:
+        # BD como la del despliegue: esquema completo + config_eventos ANTIGUO.
+        con.executescript(esquema.ESQUEMA_SQL)
+        con.executescript(
+            "DROP TABLE config_eventos;"
+            "CREATE TABLE config_eventos ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL,"
+            " ts_ms INTEGER NOT NULL,"
+            " tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA',"
+            "'STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),"
+            " detalle TEXT, origen TEXT NOT NULL DEFAULT 'real'"
+            " CHECK(origen IN ('real','sintetico')),"
+            " recibido_en TEXT NOT NULL DEFAULT (datetime('now')));"
+            "CREATE INDEX idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);"
+        )
+        con.execute(
+            "INSERT INTO config_eventos (device_id, ts_ms, tipo, detalle) "
+            "VALUES (?, ?, 'IMAGEN_DESCARTE', 'upload agotado')",
+            (DEV, NOW),
+        )
+        assert esquema.migrar_esquema_f25(con)["config_eventos_reconstruida"] is True
+        con.execute(
+            "INSERT INTO config_eventos (device_id, ts_ms, tipo, detalle) "
+            "VALUES (?, ?, 'IMAGEN_ON', 'captura QVGA en el onset')",
+            (DEV, NOW + 1),
+        )
+        tipos = [
+            fila[0]
+            for fila in con.execute("SELECT tipo FROM config_eventos ORDER BY id")
+        ]
+        assert tipos == ["IMAGEN_DESCARTE", "IMAGEN_ON"]
+        # Segunda pasada: ya esta al dia (idempotente).
+        assert esquema.migrar_esquema_f25(con)["config_eventos_reconstruida"] is False
+    finally:
+        con.close()
+
+
 def test_aulasense_config_rechaza_enum_detalle_y_secretos():
     base = {"timestamp_ms": 10, "evento": "AP_FALLBACK", "detalle": "reintentos=3"}
     assert esquema.validar(_topic("aulasense_config"), base)["valido"] is True
