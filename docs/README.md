@@ -73,16 +73,18 @@ URLs vigentes:
 | URL | Dónde | Verificación |
 |---|---|---|
 | `http://172.26.159.208:8000` | servidor WSL (systemd) desde el navegador Windows — vía fallback NAT (activa en F25-b1) | `/login` → **200** (2026-11-15, curl Windows→NAT). La IP WSL **cambia tras reboot de la VM**: obtener la vigente con `powershell tools\wsl_aulasense.ps1 status` |
-| `http://127.0.0.1:8000/login` | loopback **dentro de la VM WSL** | `/login` → **200** (evidencia `.tmp/f25b1_wsl.md` §6) |
+| `http://127.0.0.1:8000/login` | loopback **dentro de la VM WSL** (Debian vivo) | `/login` → **200** (evidencia `.tmp/f25b1_wsl.md` §6) |
+| `http://167.114.169.134:10062` | **publicación VPS** del dashboard de la distro WSL nueva `debian-aulasense` (puerto interno 8100), vía túnel SSH auto-start de `wsl-port` **CLI local** (túnel `pub-aulasense-8100`) | `/login` → **200**; `/api/eventos` → **401** sin cookie; Origin público pasa (verificado 2026-11-15 desde fuera). No requiere token `wsl-port` |
 
 Acceso: requiere **login** (usuario `admin`; la password la genera el código y vive en
 `claves/.env`, gitignored — NUNCA se imprime en documentación).
 
-**Pendientes — NO vigentes aún** (no usar como vías activas): el portproxy
+**Pendiente menor — NO vigente** (no usar como vía activa): el portproxy
 `netsh` `127.0.0.1:8000`→WSL en Windows (requiere **admin** y el stack Windows parado; es el
-cutover F25-b2 — hoy ese loopback lo ocupa el stack fallback de Windows) y la publicación en un
-**puerto público del VPS** (vía elegida: token de `wsl-port`; a la espera del token del usuario —
-bitácora `iot2/.tmp/bitacora.md`, 2026-11-15).
+cutover F25-b2 — hoy ese loopback lo ocupa el stack fallback de Windows). El acceso público ya
+**no lo necesita**: lo cubre la URL `http://167.114.169.134:10062` de la tabla; el portproxy solo
+sirve para el forward auxiliar `8123` y el loopback NAT interno. *(La publicación VPS figuraba
+aquí como pendiente; **ya vigente** desde 2026-11-15 vía `wsl-port` CLI local, sin token.)*
 
 ## Contexto del proyecto anterior (archivado)
 

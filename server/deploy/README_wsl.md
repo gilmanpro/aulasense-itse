@@ -180,3 +180,19 @@ WSL parada**.
 - `AULASENSE_UPLOAD_HOST=` vaciado en la **copia WSL** del `.env` (receptor :8001 fuera de servicio
   en NAT; ver sección de red arriba). El `.env` de Windows no se toca.
 - `wsl-manager` ausente → `wsl.exe` directo (`tools/wsl_aulasense.ps1`).
+
+## Distro dedicada `debian-aulasense` y publicación VPS (F25-WSL-NUEVO, 2026-11-15)
+
+Además del Debian vivo de arriba (puerto 8000), existe una **distro WSL nueva** `debian-aulasense`
+(Debian 13, importada con `wsl --import`) que corre el dashboard en el **puerto interno 8100** (no
+8000, para convivir en el namespace NAT compartido). Se **publica en el VPS** en
+`http://167.114.169.134:10062` vía túnel SSH auto-start de `wsl-port` **CLI local** (túnel
+`pub-aulasense-8100`: `wsl-port tunnels add --distro debian-aulasense --local-port 8100 --remote-port 10062 --type ssh`). Verificada desde fuera: `/login` 200, `/api/eventos` 401 sin cookie, Origin público pasa. **No hace falta token de `wsl-port`** (la vía fue CLI local). Evidencia paso a paso en `iot2/.tmp/f25wsl_nuevo.md` §P7 (persistencia/autoarranque) y §P8 (publicación VPS); comandos del túnel en `.tmp/f25wsl_tunel_pendiente.md`.
+
+> **Fix systemd (hallazgo §P8):** en systemd, `EnvironmentFile` **pisa** el `Environment=` de la
+> unit (man systemd.service: los valores del EnvironmentFile reemplazan `Environment=`). El `.env` de
+> `debian-aulasense` (`/home/aulasense/aulasense/.env`) debe llevar
+> `AULASENSE_ORIGINS_EXTRA=172.26.159.208:8100,167.114.169.134:10062` (si está vacío, todos los POST
+> de navegador quedan en 403). Tras `wsl --shutdown`/reboot que cambie la IP NAT, **refrescar ese
+> valor** (receta §P7) + `systemctl daemon-reload` + reiniciar el dashboard; el Origin público
+> `167.114.169.134:10062` no depende de la IP NAT.
