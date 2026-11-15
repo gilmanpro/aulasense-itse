@@ -41,7 +41,7 @@
 | `INFORME.docx` / `PRESENTACION.pptx` | ✅ (docs/entrega/) | F6a | Versión inicial publicada en `docs/entrega/`; la ACTUALIZACIÓN F6a está **en vuelo** (herramienta `tools/generar_informe.py` en curso — no tocar desde esta auditoría) |
 | `../analysis/informe_eda.md` | ✅ | F5a | EDA + modelo predictivo generados por `eda.py`/`modelo_ocupacion.py` v f5a-2.0 (0 números a mano); métricas con tamaño muestral (C5) |
 | `../dataset/sesion_1/registro_F4S1*.jsonl` | ✅ | F4 | Dataset propio publicado de la sesión 1 con ground truth pasivo corroborado (commit e3ba4b5) |
-| `../analysis/dataset/consolidado.csv` | regenerable | F24-b1/f2 | **No está en disco hoy**: se regenera con `analysis/export_consolida.py` desde la BD canónica WSL (exportación reproducible, no entregable bloqueante) |
+| `../analysis/dataset/consolidado.csv` | ✅ | F24-b1/f2 | Dataset consolidado S1 **en disco y comiteado** (462 filas, 100 % `origen=real`, commit 7dbbb9a; verificado en la auditoría externa 2026-11-15). Regenerable con `analysis/export_consolida.py` desde la BD canónica WSL |
 | Figuras EDA/modelo (11, ≥6) | ✅ | F5a | **En `docs/analisis/graficos/*.png`** (desviación anotada de la convención vieja `assets/*.png` — PLAN §12.8) |
 
 ## Entregables F25 (expansión 2026-11-14, orden del dueño)
@@ -116,5 +116,6 @@ documentado en `PLAN_DETECCION.md` E1–E3). En F0 el orquestador lo archiva en 
 (historia preservada). AulaSense hereda su infraestructura como **patrón** (E7) y sus lecciones como
 **restricciones de diseño** (E1–E10, `iot2/.tmp/registro_riesgos_nuevo.md`), pero es un proyecto nuevo:
 sensing por Wi-Fi CSI con IA en-chip (el detector no necesita cámara), evidencia de imagen QVGA acotada
-local-only (F24: solo al servidor local, consentimiento + retención purgable) y prueba de vida temprana
+(F24: destino solo el servidor local, consentimiento + retención purgable; F25: transporte primario
+MQTT autenticado retain=false, HTTP N2 alternativo) y prueba de vida temprana
 (gate F1c).

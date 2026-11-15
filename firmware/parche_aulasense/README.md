@@ -211,19 +211,22 @@ X-Device-Id: <16 hex del nodo>              (2e6f0c909e30673e)
 X-Ts-Ms: <reloj monótono del nodo en ms>    (la ingesta lo mapea a época, R3)
 ```
 `X-Ia-*` se **omiten** (la IA de visión es F24-e, opcional). Respuesta esperada **201**.
-Ninguna imagen viaja por MQTT ni sale de la LAN (AGENTS regla 2/14).
+**Norma vigente post-F25 (D-F25-1, revoca "ninguna imagen por MQTT" de F24):** el canal **PRIMARIO**
+de la foto-evidencia es el topic `image` del MQTT **persistente** del nodo (norma **N1**: UNA sola
+conexión por rol, prohibido abrir otra por imagen); este endpoint HTTP :8001 queda como **FALLBACK**
+(norma **N2**, AGENTS regla 2/14, SPEC §3.2.1/§6.2 y §12 abajo). Nunca a la nube.
 
 **Eventos `aulasense_config`** (topic aditivo sobre el mismo cliente MQTT de Native, publicados desde
 la tarea del loop con `app_imagen_publish_pending()`): `IMAGEN_ON`, `IMAGEN_DESCARTE`,
 `IMAGEN_GATE_OFF`, con `{"timestamp_ms":…,"evento":"…","detalle":"…"}`.
 
-> ⚠️ **Desajuste de contrato FLAGGEADO (no se editó `server/`):** el dispatch de F24-c pedía el campo
-> `"tipo"`, pero el validador de la ingesta exige **`"evento"`**
-> (`server/ingesta/esquema.py:282-303`, `EVENTOS_CONFIG` en `:66-72`) y su enum **no incluye
-> `IMAGEN_ON`**. Se implementó `"evento"` (para que `IMAGEN_DESCARTE`/`IMAGEN_GATE_OFF` sí se
-> persistan en `config_eventos`); `IMAGEN_ON` se publica igualmente y la ingesta lo rechaza con
-> log (queda solo en serial). Decisión pendiente del orquestador: añadir `IMAGEN_ON` al enum del
-> servidor o dejar de publicarlo.
+> ✅ **Desajuste de contrato RESUELVIDO (2026-11-15, R8):** el campo es **`"evento"`** (el validador
+> lo exige, `server/ingesta/esquema.py:306-327`) y el enum `EVENTOS_CONFIG` **ya incluye `IMAGEN_ON`**
+> (`esquema.py:76-83`). La decisión pendiente de aquel entonces —"añadir `IMAGEN_ON` al enum del
+> servidor o dejar de publicarlo"— se cerró por la primera opción: se añadió, y la migración **R8**
+> reconstruye `config_eventos` al arrancar la ingesta conservando filas/ids (idempotente; validado
+> sobre copia de BD: 7 filas, `esquema.py:740-779`; SPEC §8.1 con nota). `IMAGEN_ON` se publica y se
+> persiste; ya no queda solo en serial.
 
 ## 10. SPIRAM: líneas exactas aplicadas al `sdkconfig` del app
 
@@ -335,6 +338,10 @@ Estado de F24-c: TODO CUMPLE MENOS el E2E de >=3 onsets reales (0 motion en 18:3
 ver protocolo de caminata en reporte del dev/ejecutor). Flag abierto #1 del dev: `IMAGEN_ON` NO esta en
 `EVENTOS_CONFIG` de `server/ingesta/esquema.py:76-82` (SI estan GATE_OFF y DESCARTE) â†’ la ingesta rechazara
 con log ese evento hasta que se aÃ±ada al enum (edicion de 1 linea, territorio server â€” decision del orquestador).
+**Anotación 2026-11-15 (cierre — no reescribe este texto):** el flag quedó CERRADO por la opción "añadir al
+enum": `IMAGEN_ON` está en `EVENTOS_CONFIG` (`esquema.py:80`) y la migración R8 reconstruye `config_eventos`
+al arrancar la ingesta, idempotente y conservando filas/ids (validado sobre copia: 7 filas; SPEC §8.1 y la
+nota RESUELVIDO del §9 de este README).
 
 ## 12. F25-c — Imagen por MQTT (D-F25-1)
 

@@ -131,8 +131,11 @@ Módulo NUEVO añadido al app Native (disjunto de app_feedback; comparte Kconfig
   alternativo (si `AULASENSE_UPLOAD_HOST` configurado) → si ambos fallan, descarte tras reintentos
   (backoff máx 3, heredado F24-c). Cooldown 15 s, cola PSRAM, gate de memoria y prioridad 3–4
   (§3.2) INTACTOS.
-- **Kconfig F25:** `AULASENSE_IMAGEN_MQTT` (bool, **default y**), `AULASENSE_IMAGEN_MQTT_MAX_B64`
-  (int, 16384). Con `AULASENSE_IMAGEN_MQTT=n` el módulo se comporta EXACTAMENTE como F24-c (HTTP).
+- **Config F25 (implementación real: `#define`, NO Kconfig — verificado 2026-11-15 post-auditoría):**
+  el dispatch de F25-c ordenó NO añadir Kconfig nuevo; `IMAGEN_MQTT_MAX_B64 16384` es `#define` duro
+  (`app_imagen.c:209`) y la activación MQTT-imagen queda implícita en "¿hay publisher inyectado?"
+  (sin `app_imagen_set_mqtt_image()` el módulo se comporta EXACTAMENTE como F24-c, HTTP). Rationale
+  documentado en código (`app_imagen.c:202-208`; ver §12.1).
 - **Criterio de prueba (F25-c):** ≥3 imágenes reales `canal='mqtt'` en BD+galería (onset→galería
   <5 s); retain=false verificado (un suscriptor tardío NO recibe fotos viejas); sha256 coincide;
   `csi_accepted_pps` no cae >10 % vs F1c; el parche outbox queda documentado y el build lo aplica.
@@ -708,8 +711,13 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
   en Windows fallback `server/datos/aulasense.db`), `AULASENSE_DATOS_DIR` (base de imagenes/exports;
   ya soportadas por F24-b), `AULASENSE_BIND_HOST` (SOLO dentro de WSL: `0.0.0.0` VM-local; en Windows
   el bind sigue siendo 127.0.0.1 fijo — el dashboard Windows NO gana flag de bind).
-- **Firmware F25 (Kconfig, no env):** `AULASENSE_IMAGEN_MQTT` (y), `AULASENSE_IMAGEN_MQTT_MAX_B64`
-  (16384) — §3.2.1.
+- **Firmware F25 (NO es env, y NO es Kconfig):** el tope b64 y la activación MQTT-imagen son
+  **`#define` duros en `app_imagen.c`** (`IMAGEN_MQTT_MAX_B64 16384` en `:209`; `AULASENSE_IMAGEN_MQTT`
+  queda implícito en "¿hay publisher inyectado?" — sin `app_imagen_set_mqtt_image()` el módulo se
+  comporta como F24-c HTTP puro). Rationale D-F25-c documentado en código (`app_imagen.c:202-208`:
+  el dispatch de F25-c ordenó NO añadir Kconfig nuevo; con `IMAGEN_JPEG_MAX=8192` el b64 real máximo
+  es ~10.923 chars y el tope solo protege cambios futuros → si se supera, canal HTTP, nunca truncar).
+  Ver §3.2.1.
 - **Regla de secretos intacta:** toda credencial real se genera por código en la fase que la
   requiera; el modelo NUNCA asigna contraseñas; `.env`, `claves/` y `sdkconfig.defaults.local`
   gitignored; nada de valores reales en docs/evidencia/logs.
@@ -723,7 +731,7 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 - BLE opcional puede degradar CSI (R7); default n.
 - GPLv3: el derivado debe publicar fuente (S9); uso académico OK.
 - MQTT: sin WebSocket ni CA privada en Native (S8).
-- **F24 — privacidad PARCIAL (D-F24-1, C9 cumple-parcial):** el sistema YA NO es "cero imágenes". Captura evidencia QVGA al onset de motion. **Acotada:** imágenes SOLO al servidor local del proyecto (LAN→ingesta con token, galería loopback), NUNCA a la nube ni al broker MQTT público; **consentimiento de aula documentado obligatorio**; **retención/borrado configurables** (default 30 días, purga con imagen_purgada que no rompe el dataset); **sin caras-ML** (no detección facial). Las imágenes pueden capturar personas → son datos personales: minimización (QVGA, solo onset, cooldown), acceso local autenticado, gitignored, purgables. **No es privacidad por construcción; es privacidad acotada por mitigación.**
+- **F24 — privacidad PARCIAL (D-F24-1, C9 cumple-parcial):** el sistema YA NO es "cero imágenes". Captura evidencia QVGA al onset de motion. **Acotada:** imágenes SOLO al servidor local del proyecto como destino final (transporte actualizado por F25: MQTT al broker autenticado como primario — retain=false — y HTTP con token como alternativo; galería con login, SPEC §14.1), NUNCA a la nube; **consentimiento de aula documentado obligatorio**; **retención/borrado configurables** (default 30 días, purga con imagen_purgada que no rompe el dataset); **sin caras-ML** (no detección facial). Las imágenes pueden capturar personas → son datos personales: minimización (QVGA, solo onset, cooldown), acceso local autenticado, gitignored, purgables. **No es privacidad por construcción; es privacidad acotada por mitigación.**
 - **F24 — IA visión puede NO caber (D-F24-5):** la capa de visión persona (esp-dl) es opcional default n y está sujeta a spike F24-e0. **Si el spike prueba que no coexiste con el detector CSI (pps/heap), se ABANDONA y se documenta** ("la capa de visión IA no cabe junto al detector CSI en este hardware — verificado"). La IA principal (detector CSI) YA cumple edge-first sin ella.
 - **F24 — imagen es accesoria, no fuente de verdad:** si la cola se llena o el heap cae, la imagen se descarta/auto-deshabilita y el EVENTO CSI sigue. La detección de movimiento no depende de la cámara.
 - **F24 — AP de provisioning abierto por default:** el AP fallback es abierto CON aviso (patrón DriveGuard); la ruta privada token es el control de acceso. Riesgo: sniffing del POST en AP abierto → mitigado por token de ruta + Origin guard + cooldown + WPA2 opcional. Configurar en lugar privado.
@@ -740,7 +748,7 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 - **D-F24-3 — Upload por receptor HTTP en INGESTA (no dashboard), galería loopback.** Dashboard 127.0.0.1 es regla dura y el nodo no alcanza loopback → listener :8001 con Bearer token dentro de ingesta (preserva writer único). Sin thumbnail server-side (QVGA ya es pequeño; evita riesgo Pillow cp315). MEJORA el diseño "endpoint en dashboard" del orquestador. Evidencia: AGENTS regla seguridad (bind 127.0.0.1); f2_backend.md (writer único).
 - **D-F24-4 — Provisioning: nativo primero (verificado NO trae AP) → módulo propio endurecido + ruta privada.** Native = Improv Serial + BOOT 3 s, STA-only (standalone_wifi_service.cpp:176, wifi_lifecycle.cpp:378; captive portal solo ESPHome README:14). app_provision.c calco DriveGuard app_portal.c (Origin/Referer 403, cooldown 429, NVS solo cambio real, nunca log SSID/pass) + AP AULASENSE-CFG-xxxx + /cfg/<token NVS 8hex, mostrado una vez en serial>. BOOT 3 s preservado.
 - **D-F24-5 — IA interna = detector CSI (YA existe); visión persona OPCIONAL spike-gated default n.** F24-e0 time-boxed con gate duro (pps ≤10 % caída, heap ≥120 KB/64 KB bloque, arena PSRAM, ≤2 s asíncrono); si FAIL → ABANDONADA documentada, no se hace. Sin caras, sin COCO/YOLO (inviable F23). Evidencia: research viabilidad:94-109,195-198; orden usuario "si no se puede no lo hagas".
-- **D-F24-6 — MQTT sin cambios.** electiva (nodo) / srv-electiva (ingesta), .env vigente, nunca impreso. Aditivos: topic aulasense_config + campo opcional ia_imagen. Imágenes NUNCA por MQTT. Evidencia: bitácora verificación srv-electiva rc=0; .env.example.
+- **D-F24-6 — MQTT sin cambios.** electiva (nodo) / srv-electiva (ingesta), .env vigente, nunca impreso. Aditivos: topic aulasense_config + campo opcional ia_imagen. ~~Imágenes NUNCA por MQTT~~ **(frase REVOCADA por D-F25-1, 2026-11-14 — ver §6/§14.1; lo demás sigue vigente)**. Evidencia: bitácora verificación srv-electiva rc=0; .env.example.
 - **D-F24-7 — Recopilación big data académica.** TODAS las fuentes (evaluaciones/eventos, telemetría, imágenes+ia, openmeteo, config/provision, validación) → SQLite + consolidado CSV §10.1 (una fila por evento, joins por ventana). Pipeline real ingesta→almacén→análisis con datos propios; no petabytes. Purga no rompe dataset (imagen_purgada). Evidencia: orden usuario "recopilar datos en backend con big data"; condiciones curso C3/C5.
 - **D-F24-8 — Creatividad barata sin riesgo: heatmap de actividad por hora.** Ya previsto en Reportes v23; F24-f2 produce `assets/heatmap_actividad_hora.png` desde el consolidado (datos CSI+horas lo permiten). No infla fases. Galería de evidencia como entregable visual nuevo.
 

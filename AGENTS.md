@@ -110,7 +110,10 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
     `POST /internal/imagen` al receptor de ingesta (LAN :8001, Bearer token `AULASENSE_UPLOAD_TOKEN`
     generado `secrets.token_hex(16)`, nunca impreso). **F25 (D-F25-1): el canal PRIMARIO es MQTT
     (topic `image`, b64, QoS 0, retain=false, parche outbox vendor 8192→32768 documentado); HTTP
-    :8001 queda alternativo. NUNCA a la nube.** El
+    :8001 queda alternativo. NUNCA a la nube.** Normas del firmware (README del parche §12):
+    **N1** = la imagen viaja por la MISMA conexión MQTT persistente del nodo — prohibido abrir otra
+    conexión por imagen; **N2** = fallback HTTP :8001 (hoy re-habilitado en `debian-aulasense` con
+    caveat de ruteo LAN, README_wsl). El
     dashboard sirve la galería SOLO en loopback **con login** (bind loopback intacto; exposición
     Windows solo 127.0.0.1, SPEC §15). `datos/imagenes/` gitignored.
     Purga con `imagen_purgada` conserva la fila (dataset intacto). La IA de visión persona es OPCIONAL
