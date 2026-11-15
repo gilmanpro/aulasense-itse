@@ -50,9 +50,14 @@
 |---|---|---|---|
 | `../assets/diagrama_tecnico.dsl/.svg/.png` | ⏳ | F25-f1 | Diagrama técnico C4 contenedores + flujo de datos ESP32→broker→WSL→dashboard (skill graphic-arq-software) |
 | `../assets/poster_funcionamiento.png` | ⏳ | F25-f2 | Póster visual del concepto CSI (ondas/persona/chip/dashboard), skill qwen-imagen (@6-medios) |
-| `guion_video.md` | ⏳ | F25-f3 | Guion del video explicativo: DriveGuard→fallo caras→CSI→cómo funciona→construcción→finalidad |
-| `video_subtitulos.srt` | ⏳ | F25-f3/f5 | Subtítulos del video (burn-in en el ensamblaje) |
-| `video_aulasense.mp4` | ⏳ | F25-f5 | Video explicativo completo (escenas HappyHorse 480P + TTS opcional + FFmpeg); presupuesto Credits medido |
+| `guion_video.md` | ✅ | F25-f3 | Guion del video explicativo: DriveGuard→fallo caras→CSI→cómo funciona→construcción→finalidad |
+| `video_subtitulos.srt` | ✅ | F25-f3/f5 | Subtítulos del video (burn-in en el ensamblaje; re-timado real en `.tmp/video_final.srt`) |
+| `video_aulasense.mp4` | ✅ | F25-f5 | Video explicativo completo (H.264+AAC 480P, 65,96 s; escenas HappyHorse 480P + narración TTS longanlingxin + overlays drawtext + subtítulos burn-in; ensamblaje FFmpeg local, coste extra $0) |
+
+> **Nota QC honesta del video (F25-f5):** en la escena 6 la cuadrícula de miniaturas muestra un
+> **rostro sintético generado por la IA** (no es persona real); las pantallas de las escenas 5 y 7
+> contienen pseudo-texto ilegible (no se requiere legibilidad — todo el texto real va como overlay
+> FFmpeg). El video dice "detecta movimiento", nunca "presencia", y no cita métricas del vendor.
 | `../server/deploy/README_wsl.md` | ⏳ | F25-b1 | Despliegue WSL Debian: venv, systemd, portproxy loopback, cutover, fallback Windows |
 | `../claves/.env.example` | ✅ | andamiaje F25 | Nombres de variables de auth/IA (valores vacíos; la password la genera el código en F25-e) |
 | `consentimiento_aula.md` | ⏳ | F24-f→F25-g | Consentimiento ACTUALIZADO: las imágenes transitan el broker autenticado (retain=false) |
