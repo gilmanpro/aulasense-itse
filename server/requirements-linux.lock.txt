@@ -4,9 +4,18 @@
 # la que YA tienen instalada los dos runtimes que pasaron la suite. Cero vulnerabilidades OSV
 # (api.osv.dev, 55 paquetes PyPI) — 0 hallazgos.
 #
-# Para regenerar/validar desde dentro de la distro (el auditor no tuvo shell, queda pendiente):
-#   wsl -d Debian -- ~/venvs/aulasense/bin/python -m pip install --dry-run -r server/requirements-linux.lock.txt
-#   wsl -d Debian -- ~/venvs/aulasense/bin/pip freeze | sort
+# Para regenerar/validar desde dentro de la distro (VERIFICADO 2026-11-15 con shell real contra
+# el venv REAL ~/venvs/aulasense de la distro debian-aulasense: `pip freeze` == este fichero al
+# 100 % — 0 drift de nombre y 0 de version; OJO: NO existe /home/aulasense/aulasense/.venv):
+#   wsl -d debian-aulasense -- ~/venvs/aulasense/bin/python -m pip install --dry-run -r server/requirements-linux.lock.txt
+#   wsl -d debian-aulasense -- ~/venvs/aulasense/bin/python -m pip freeze | sort
+#
+# SOLO RUNTIME. server/requirements-dev.txt (pytest-cov, python-docx, python-pptx y sus transitivas
+# coverage/lxml/xlsxwriter) NO entra aqui A PROPOSITO: el lock de cierre instala lo justo para
+# arrancar el server y pasar su suite; el gate de cobertura y los generadores de informe son
+# herramientas de verificacion, no de deploy. Ademas este venv NO instala pytest-cov por diseño
+# (pyproject.toml: en WSL `pytest server/tests -q` debe seguir funcionando sin `--cov`), asi que
+# meterlo en el lock romperia esa garantia. (`pytest` SI esta: dependencia declarada del runtime.)
 #
 # Diferencias reales frente a requirements-win.lock.txt (ambas por marcadores de plataforma,
 # no por deriva): AQUI uvloop (sys_platform != "win32") y NO colorama (sys_platform == "win32").
@@ -48,8 +57,11 @@ opentelemetry-api==1.45.2               # requerido por fastapi>=0.162 (linea ba
 packaging==26.3
 paho-mqtt==2.2.0                        # directa
 pandas==3.1.1                           # directa
-pillow==13.0.0                          # import directo (`from PIL import Image`) via matplotlib>=9;
-                                        # fijada explicita (ver propuesta en el reporte)
+pillow==13.0.0                          # DIRECTA desde 2026-11-15 (declarada en requirements-linux.txt):
+                                        # `from PIL import Image` explicito (server/vision/cliente.py:844,
+                                        # server/ingesta/ingesta_mqtt.py:1287 en runtime; analysis/ y tools/).
+                                        # Antes solo llegaba via matplotlib>=9 (transitiva). Version real
+                                        # del venv WSL ~/venvs/aulasense: 13.0.0, igual que Windows.
 pluggy==1.7.0
 pycparser==3.12
 pydantic==2.14.3

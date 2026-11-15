@@ -8,6 +8,14 @@ python-dotenv==1.2.4
 pandas==3.1.1
 scikit-learn==1.9.1
 matplotlib==3.11.2
+# pillow: DEPENDENCIA DECLARADA-NO-LISTADA corregida 2026-11-15 (auditoria de dependencias).
+# matplotlib la arrastra como transitiva, pero el codigo la importa DIRECTA y explicitamente
+# (`from PIL import Image`) tanto en runtime (server/vision/cliente.py:844,
+# server/ingesta/ingesta_mqtt.py:1287) como en analisis/tools/tests (analysis/analizar_dataset.py:502,
+# tools/f4_runner_wsl.py:115, tools/generar_informe.py:34 y 7 puntos de server/tests). Depender de
+# una transitiva de matplotlib es fragil (si cambia su backend, desaparece): se fija aqui.
+# Version real verificada en los DOS venvs: 13.0.0 (Windows server\.venv y WSL ~/venvs/aulasense).
+pillow==13.0.0
 requests==2.34.2
 # bleak RETIRADO 2026-11-15 (auditoría de dependencias): declarado-no-usado. El modulo que lo
 # importaba (server/ble/receptor_ble.py) nunca se implemento — server/ble/ solo tiene .gitkeep,

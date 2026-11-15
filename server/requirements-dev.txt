@@ -1,0 +1,35 @@
+# AulaSense - dependencias de DESARROLLO/VERIFICACION (no runtime). 2026-11-15.
+#
+# PARA QUE ES:
+#   - tools/coverage_gate.ps1 necesita pytest-cov (el gate --cov-fail-under vive fuera de
+#     pyproject.toml a proposito; ver el comentario de [tool.pytest.ini_options]).
+#   - tools/tests/test_generar_informe.py ejercita tools/generar_informe.py, que genera el
+#     informe .docx y la presentacion .pptx => python-docx y python-pptx.
+#   - pytest: la suite completa (299 pruebas). YA esta en server/requirements.txt y
+#     server/requirements-linux.txt porque el server corre su propia suite dentro del venv
+#     (AGENTS.md regla 3); se repite aqui con la MISMA version para que un
+#     `pip install -r server/requirements-dev.txt` sobre un venv limpio de dev sea autosuficiente.
+#
+# COMO INSTALAR (Windows, venv del server):
+#   server\.venv\Scripts\python.exe -m pip install -r server/requirements-dev.txt
+#   (o junto al runtime: -r server/requirements.txt -r server/requirements-dev.txt)
+#
+# VERSIONES: todas verificadas con `pip show` en server\.venv el 2026-11-15 (las REALMENTE
+# instaladas y usadas, no las que "deberian" ir).
+#
+# ESTE FICHERO NO ENTRA EN LOS LOCKS DE RUNTIME:
+#   server/requirements-win.lock.txt y server/requirements-linux.lock.txt son cierres del
+#   RUNTIME (lo que necesita el server para arrancar y pasar su suite en produccion). Las
+#   dev-deps de aqui (y sus transitivas coverage/lxml/xlsxwriter) quedan FUERA de esos locks a
+#   proposito, para que un despliegue instale solo runtime. Esta decision esta documentada
+#   tambien en la cabecera de los dos locks.
+#
+# ALCANCE: solo Windows. El venv WSL de runtime (~/venvs/aulasense, distro debian-aulasense) NO
+# instala pytest-cov por diseño (pyproject.toml: alli `pytest server/tests -q` debe seguir
+# funcionando sin --cov); el gate de cobertura se corre solo desde Windows.
+pytest==9.2.0
+pytest-cov==7.1.0
+python-docx==1.2.0
+python-pptx==1.0.2
+# Transitivas de las anteriores (NO fijadas aqui, las resuelve pip; valores observados en
+# server\.venv el 2026-11-15): coverage==7.17.3, lxml==6.1.3, xlsxwriter==3.3.1.

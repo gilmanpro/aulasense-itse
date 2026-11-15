@@ -18,6 +18,12 @@ python-dotenv==1.2.4
 pandas==3.1.1
 scikit-learn==1.9.1
 matplotlib==3.11.2
+# pillow: DEPENDENCIA DECLARADA-NO-LISTADA corregida 2026-11-15 (auditoria de dependencias).
+# Llega como transitiva de matplotlib, pero el codigo importa PIL DIRECTAMENTE
+# (server/vision/cliente.py:844, server/ingesta/ingesta_mqtt.py:1287 en runtime;
+# analysis/analizar_dataset.py:502, tools/*.py y server/tests). Version real verificada en el
+# venv WSL real (~/venvs/aulasense, distro debian-aulasense): 13.0.0, igual que en Windows.
+pillow==13.0.0
 requests==2.34.2
 argon2-cffi==25.1.0
 pytest==9.2.0
