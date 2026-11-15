@@ -21,7 +21,12 @@
 # http://<WSL_IP>:8000 (la unit ya lleva AULASENSE_ORIGINS_EXTRA con ese host:puerto).
 # Este script NUNCA lee ni imprime .env, claves ni credenciales.
 #
+# Codigos de salida (F25-auditoria): 0 = OK/informativo; 1 = fallo REAL de la accion
+# (start no dejo active una unit, stop dejo algo corriendo, url sin respuesta,
+# refresh-portproxy sin WSL_IP). El stack Windows usa exit code para encadenar.
+#
 # Uso: powershell tools\wsl_aulasense.ps1 status
+#      powershell tools\wsl_aulasense.ps1 start -Distro debian-aulasense   (nombrado)
 param(
     [Parameter(Position = 0)]
     [ValidateSet("start", "stop", "status", "logs", "refresh-portproxy", "url")]
@@ -29,39 +34,55 @@ param(
     [Parameter(Position = 1)]
     [string]$Unidad = "",
     [Parameter(Position = 2)]
-    [int]$Lineas = 50
+    [ValidateRange(1, 10000)]
+    [int]$Lineas = 50,
+    # Parametrizado (antes vivia en una variable y el comentario mandaba "ajustar -Distro"
+    # que no existia). Default intacto: Debian = stack F25-b1 de puerto 8000.
+    [string]$Distro = "Debian"
 )
 
 $ErrorActionPreference = "Stop"
 
-$Distro = "Debian"
 $Usuario = "aulasense"
 $Units = @("aulasense-ingesta.service", "aulasense-dashboard.service", "aulasense-vision.service")
-$RepoWsl = "/home/aulasense/aulasense"
 $PuertoDashboard = 8000
 
 function Assert-Wsl {
     $distros = (& wsl.exe -l -q) -replace "`0", ""
     if (-not ($distros | Where-Object { $_.Trim() -eq $Distro })) {
-        Write-Host "La distro '$Distro' no existe. Instalala o ajusta -Distro en este script." -ForegroundColor Red
+        Write-Host "La distro '$Distro' no existe. Instalala o pasa -Distro <nombre> a este script." -ForegroundColor Red
         exit 1
     }
 }
 
 # Ejecuta un comando dentro de WSL como el usuario dedicado (sin password: adduser
-# --disabled-password). -u root solo se usa cuando el verbo necesita privilegios.
+# --disabled-password). -u root solo se usa cuando el verbo necesita privilegios
+# (systemctl enable/stop, journalctl: aulasense no esta en systemd-journal).
 function Invoke-Wsl {
     param([string[]]$Argumentos, [switch]$ComoRoot)
     $base = @("-d", $Distro)
     if ($ComoRoot) { $base += @("-u", "root") } else { $base += @("-u", $Usuario) }
     $base += @("--")
     $base += $Argumentos
-    $salida = & wsl.exe @base 2>&1
-    return @{ Codigo = $LASTEXITCODE; Salida = $salida }
+    # PS 5.1 + ErrorActionPreference=Stop + 2>&1 sobre un nativo convierten el stderr en
+    # NativeCommandError TERMINANTE (p. ej. un `systemctl enable --now` fallido abortaba
+    # el verbo con un mensaje confuso en vez de leer el Codigo). Se fuerza Continue
+    # dentro y se stringuifican los registros de error antes de propagar.
+    $eapPrev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $salida = & wsl.exe @base 2>&1 | ForEach-Object { "$_" }
+        $codigo = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $eapPrev
+    }
+    return @{ Codigo = $codigo; Salida = @($salida) }
 }
 
 function Get-WslIp {
-    $r = Invoke-Wsl -Argumentos @("hostname", "-I") -ComoRoot
+    # hostname -I no necesita root: se pide como el usuario dedicado (privilegio minimo;
+    # antes se invocaba -ComoRoot sin necesidad).
+    $r = Invoke-Wsl -Argumentos @("hostname", "-I")
     $ip = ("{0}" -f ($r.Salida -join " ")).Trim().Split(" ")[0]
     return $ip
 }
@@ -162,13 +183,22 @@ switch ($Accion) {
             $r = Invoke-Wsl -Argumentos @("systemctl", "enable", "--now", $u) -ComoRoot
             Write-Host ("  {0}: {1}" -f $u, (Format-Salida $r)) -ForegroundColor Gray
         }
+        $fallidas = @()
         foreach ($u in $Units) {
-            Write-Host ("  {0,-32} {1}" -f $u, (Get-Activo $u))
+            $estado = Get-Activo $u
+            Write-Host ("  {0,-32} {1}" -f $u, $estado)
+            # Solo ingesta+dashboard son obligatoriamente active aqui; vision queda
+            # inactive por diseño (ToS, modo B) y NO cuenta como fallo.
+            if ($u -ne $Units[2] -and $estado -ne "active") { $fallidas += $u }
         }
         $u = Show-Url
         Write-Host ("  URL efectiva : {0} [HTTP {1}]" -f $u.Url, $u.Codigo) -ForegroundColor Gray
         if ($u.Nat) { Write-Host ("  URL NAT WSL  : {0} [HTTP {1}]" -f $u.Nat, $u.NatCodigo) -ForegroundColor Gray }
         if ($u.Aviso) { Write-Host ("  " + $u.Aviso) -ForegroundColor Yellow }
+        if ($fallidas.Count -gt 0) {
+            Write-Host ("FALLO: no quedaron active -> {0}. Ver: powershell tools\wsl_aulasense.ps1 logs <unit>" -f ($fallidas -join ", ")) -ForegroundColor Red
+            exit 1
+        }
         exit 0
     }
     "stop" {
@@ -177,14 +207,32 @@ switch ($Accion) {
             $r = Invoke-Wsl -Argumentos @("systemctl", "stop", $u) -ComoRoot
             Write-Host ("  {0}: {1}" -f $u, (Format-Salida $r)) -ForegroundColor Gray
         }
+        $vivas = @()
         foreach ($u in $Units) {
-            Write-Host ("  {0,-32} {1}" -f $u, (Get-Activo $u))
+            $estado = Get-Activo $u
+            Write-Host ("  {0,-32} {1}" -f $u, $estado)
+            if ($estado -in @("active", "activating", "reloading")) { $vivas += $u }
+        }
+        Write-Host "  OJO: 'stop' NO deshabilita el autoarranque: las units habilitadas vuelven al boot de la distro. Antes del rollback a Windows (start_demo.ps1) ejecuta ADEMAS (root, evita split-brain AGENTS.md regla 3): wsl -d $Distro -u root -- systemctl disable aulasense-ingesta.service aulasense-dashboard.service" -ForegroundColor Yellow
+        if ($vivas.Count -gt 0) {
+            Write-Host ("FALLO: siguen corriendo -> {0}" -f ($vivas -join ", ")) -ForegroundColor Red
+            exit 1
         }
         exit 0
     }
     "logs" {
         # journalctl se lee como root (el usuario aulasense no esta en systemd-journal).
-        $objetivo = if ($Unidad) { @($Unidad) } else { $Units }
+        # $Unidad SOLO admite las 3 units conocidas (con o sin .service): el verbo corre
+        # journalctl como root y NO debe servir para leer el journal de otras units.
+        $objetivo = $Units
+        if ($Unidad) {
+            $candidato = if ($Unidad -like "*.service") { $Unidad } else { "$Unidad.service" }
+            if ($candidato -notin $Units) {
+                Write-Host ("Unidad no permitida: '$Unidad'. Validas: {0}" -f (($Units | ForEach-Object { $_ -replace "\.service$", "" }) -join ", ")) -ForegroundColor Red
+                exit 1
+            }
+            $objetivo = @($candidato)
+        }
         foreach ($u in $objetivo) {
             Write-Host ("=== {0} (ultimas {1}) ===" -f $u, $Lineas) -ForegroundColor Cyan
             $r = Invoke-Wsl -Argumentos @("journalctl", "-u", $u, "-n", "$Lineas", "--no-pager") -ComoRoot
@@ -195,6 +243,10 @@ switch ($Accion) {
     "refresh-portproxy" {
         # WSL_IP cambia tras reboot de la VM: el portproxy debe reapuntarse.
         $ip = Get-WslIp
+        if ([string]::IsNullOrWhiteSpace($ip)) {
+            Write-Host "FALLO: no se pudo leer la WSL_IP (hostname -I vacio: distro parada o sin red). Nada que refrescar." -ForegroundColor Red
+            exit 1
+        }
         $instrucciones = @(
             "Refresh del portproxy REQUIERE consola elevada (Administrador). Sin admin NO aplicable.",
             "Condicion previa: stack Windows PARADO (el puerto 127.0.0.1:$PuertoDashboard lo ocupa hoy).",
