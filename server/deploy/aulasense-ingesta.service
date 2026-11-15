@@ -1,0 +1,30 @@
+# AulaSense — ingesta MQTT (runtime primario WSL Debian 13, SPEC §15.1 / D-F25-3).
+# Instalación (root dentro de WSL): ver server/deploy/README_wsl.md.
+# Escritor único de la DB: si este servicio corre, el stack Windows debe estar PARADO.
+[Unit]
+Description=AulaSense ingesta MQTT (escritor unico SQLite + receptor HTTP :8001 segun .env)
+Documentation=file:///home/aulasense/aulasense/server/deploy/README_wsl.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=aulasense
+Group=aulasense
+WorkingDirectory=/home/aulasense/aulasense
+# Rutas ABSOLUTAS: systemd EnvironmentFile no expande ~ (leccion F25-b1).
+EnvironmentFile=/home/aulasense/aulasense/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AULASENSE_DB=/home/aulasense/aulasense-datos/aulasense.db
+Environment=AULASENSE_DATOS_DIR=/home/aulasense/aulasense-datos
+ExecStart=/home/aulasense/venvs/aulasense/bin/python server/ingesta/ingesta_mqtt.py
+Restart=on-failure
+RestartSec=5
+# El primer arranque importa pandas/scikit-learn: margen holgado antes de matar.
+TimeoutStopSec=20
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

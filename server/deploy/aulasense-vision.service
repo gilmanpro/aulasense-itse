@@ -1,0 +1,33 @@
+# AulaSense — worker de vision IA (F25-d2). INSTALADA pero DISABLED en F25-b1: el entrypoint
+# tools/vision_describe.py YA existe (b99e185), pero el daemon SOLO es legal con key
+# pay-as-you-go sk-* (modo A). Con la key del Token Plan sk-sp- (default) la guarda ToS la
+# RECHAZA: la descripcion corre en modo B agente-mediado (tools/vision_describe.py --once).
+# ToS del Token Plan (AGENTS.md regla 13): modo A daemon SOLO con key pay-as-you-go sk-*;
+# una key sk-sp- (Token Plan) es SOLO para uso interactivo en agentes y el codigo de d2
+# la rechaza. Rate limits obligatorios (regla 16): AULASENSE_VISION_MAX_DIA/MAX_HORA.
+# Instalación (root dentro de WSL): ver server/deploy/README_wsl.md.
+[Unit]
+Description=AulaSense worker de vision IA (descripcion de imagenes; modo A sk-* unicamente)
+Documentation=file:///home/aulasense/aulasense/server/deploy/README_wsl.md
+Wants=network-online.target
+After=network-online.target aulasense-ingesta.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=aulasense
+Group=aulasense
+WorkingDirectory=/home/aulasense/aulasense
+EnvironmentFile=/home/aulasense/aulasense/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AULASENSE_DB=/home/aulasense/aulasense-datos/aulasense.db
+Environment=AULASENSE_DATOS_DIR=/home/aulasense/aulasense-datos
+ExecStart=/home/aulasense/venvs/aulasense/bin/python tools/vision_describe.py --loop
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
