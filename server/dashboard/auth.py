@@ -13,7 +13,8 @@ Alcance (F25-e)
     escritura argon2id opt-in con ``AULASENSE_AUTH_HASH=argon2id`` (requiere
     argon2-cffi en AMBOS runtimes; está fijado en ``requirements.txt`` y
     ``requirements-linux.txt``).
-* Sesiones (tabla ``auth_sesiones``, columnas de §8.2): en BD solo el **SHA-256**
+* Sesiones (tabla ``sesiones`` o ``sesiones_auth`` según resuelva
+  ``esquema.nombre_tabla_sesiones_login``, columnas de §8.2): en BD solo el **SHA-256**
   del token de cookie; expiración absoluta 12 h + inactividad 2 h (sliding).
 * Lockout progresivo por par IP+usuario con ventana de 15 min: ≥5 fallos → 60 s,
   ≥10 → 15 min, ≥20 → 1 h. Temporal y auto-expirante (R-F25-3). Éxito resetea.
@@ -332,7 +333,7 @@ def tabla_sesiones(con: sqlite3.Connection) -> str:
 
 
 def ensure_tablas(con: sqlite3.Connection) -> None:
-    """Crea usuarios/intentos_login/auth_sesiones si faltan (idempotente)."""
+    """Crea usuarios/intentos_login/sesiones_auth si faltan (idempotente)."""
     con.executescript(USUARIOS_SQL)
     con.executescript(INTENTOS_SQL)
     con.executescript(_sql_sesiones(tabla_sesiones(con)))

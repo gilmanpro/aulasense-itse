@@ -65,7 +65,11 @@ SERVER_DIR = Path(__file__).resolve().parents[1]
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from ingesta.esquema import ESQUEMA_SQL, validar  # noqa: E402
+from ingesta.esquema import (  # noqa: E402
+    COLUMNAS_F25_IMAGENES,
+    ESQUEMA_SQL,
+    validar,
+)
 
 # F25-e (SPEC §9.2): login, sesiones, lockout y bootstrap del admin único.
 from dashboard import auth  # noqa: E402
@@ -162,23 +166,11 @@ ESTADOS_VISION = ("pendiente", "procesando", "hecho", "error", "omitido")
 # patrones gigantes y mantiene el coste acotado en la escala actual (SPEC §9.3).
 TOPE_BUSQUEDA = 200
 
-# Columnas nuevas de ``imagenes`` (F25, SPEC §8.2): (nombre, DDL para ``ALTER TABLE``).
-# Se replican aquí SOLO como migración de respaldo para DB anteriores a F25 (tests
-# con DB nueva y arranque del dashboard sin la ingesta); la dueña real del esquema
-# sigue siendo ``server/ingesta/esquema.py`` (mismo patrón que ``IMAGENES_SQL``).
-COLUMNAS_F25_IMAGENES: tuple[tuple[str, str], ...] = (
-    ("canal", "canal TEXT NOT NULL DEFAULT 'http' CHECK(canal IN ('http','mqtt'))"),
-    ("descripcion", "descripcion TEXT"),
-    ("etiquetas", "etiquetas TEXT"),
-    (
-        "vision_estado",
-        "vision_estado TEXT NOT NULL DEFAULT 'pendiente' "
-        "CHECK(vision_estado IN ('pendiente','procesando','hecho','error','omitido'))",
-    ),
-    ("vision_modelo", "vision_modelo TEXT"),
-    ("vision_ts_ms", "vision_ts_ms INTEGER"),
-    ("vision_tokens", "vision_tokens INTEGER"),
-)
+# Columnas nuevas de ``imagenes`` (F25, SPEC §8.2): se IMPORTAN del canonico
+# ``server/ingesta/esquema.py`` (antes había una copia literal aquí; dedupe R1
+# de la auditoría de arquitectura 2026-11-15). Se usan SOLO como migracion de
+# respaldo para DB anteriores a F25 (tests con DB nueva y arranque del dashboard
+# sin la ingesta); la dueña real del esquema sigue siendo ``server/ingesta/esquema.py``.
 
 # Extension F3 (session logger): DDL local deliberado, mismo patrón que
 # IMAGENES_SQL. La dueña real es ``server/ingesta/esquema.py``; esta copia
