@@ -1,0 +1,66 @@
+# AulaSense — dashboard FastAPI (runtime primario WSL Debian 13, SPEC §15.1 / D-F25-3).
+# Bind: AULASENSE_HOST=0.0.0.0 es VM-LOCAL dentro de la VM WSL (NAT sin portproxy =>
+# inalcanzable desde la LAN). La superficie expuesta en Windows sigue siendo SOLO
+# 127.0.0.1 (portproxy con admin) o http://<WSL_IP>:8000 (fallback sin admin).
+# AULASENSE_ORIGINS_EXTRA habilita exactamente el host:puerto del fallback y nada mas.
+# Instalación (root dentro de WSL): ver server/deploy/README_wsl.md.
+[Unit]
+Description=AulaSense dashboard FastAPI (lector SQLite, WS, galeria con login)
+Documentation=file:///home/aulasense/aulasense/server/deploy/README_wsl.md
+Wants=network-online.target
+After=network-online.target aulasense-ingesta.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=aulasense
+Group=aulasense
+WorkingDirectory=/home/aulasense/aulasense
+# OJO (hallazgo README §P8): el EnvironmentFile PISA los Environment= de esta unit.
+# La allowlist REAL es la de /home/aulasense/aulasense/.env; si alli hay
+# AULASENSE_ORIGINS_EXTRA, este Environment= es decorativo. Cambiar la IP NAT tras
+# reboot => editar el .env (o un drop-in), no solo esta linea. Ver README_wsl.md.
+EnvironmentFile=/home/aulasense/aulasense/.env
+Environment=PYTHONUNBUFFERED=1
+# VM-local: NAT sin portproxy => inalcanzable desde la LAN (D-F25-3).
+# En la distro debian-aulasense (dashboard :8100 publicado via tunel wsl-port al VPS
+# :10062) se RECOMIENDA fijar AULASENSE_HOST=127.0.0.1 en su .env: el tunel ssh corre
+# DENTRO de la distro y el namespace NAT es COMPARTIDO con las otras distros (8100
+# visible entre ellas con bind 0.0.0.0). Receta completa en README_wsl.md.
+Environment=AULASENSE_HOST=0.0.0.0
+Environment=AULASENSE_PORT=8100
+Environment=AULASENSE_DB=/home/aulasense/aulasense-datos/aulasense.db
+Environment=AULASENSE_DATOS_DIR=/home/aulasense/aulasense-datos
+# Host[:puerto] EXACTO del fallback sin admin (WSL_IP NAT). Si cambia la IP tras reboot,
+# actualizar aqui y en tools/wsl_aulasense.ps1 (verbos status/refresh-portproxy).
+# Sin wildcards: el origin guard del dashboard descarta entradas con */:// (app.py:365).
+Environment=AULASENSE_ORIGINS_EXTRA=172.26.159.208:8100,167.114.169.134:10062
+# Credenciales (hash admin, key IA) SOLO por EnvironmentFile/claves/.env — nunca argv.
+# Guard de fuente POST /internal/evento (auditoria 2026-11-15): el default del codigo
+# es loopback+pytest; el trafico del tunel VPS/portproxy llega con el gateway NAT y
+# recibe 403 (correcto: aqui la ingesta entra por MQTT, /internal no se usa). Si una
+# herramienta local lo necesitara via portproxy, fijar el host EXACTO:
+#   Environment=AULASENSE_INTERNAL_HOSTS=127.0.0.1,::1,<IP-gateway-NAT>
+ExecStart=/home/aulasense/venvs/aulasense/bin/python server/dashboard/app.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+# --- Hardening (F25-auditoria 2026-11-15). Sin ProtectHome: rompería los binds a
+# /home/aulasense/aulasense (código+venv) y /home/aulasense/aulasense-datos (DB). ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+UMask=0077
+# FastAPI+uvicorn+SQLite lector: 512M sobran; techo = run-away no tumba la VM (D-F25-3).
+MemoryMax=512M
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target

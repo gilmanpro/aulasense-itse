@@ -1,0 +1,59 @@
+# AulaSense — worker de vision IA (F25-d2). INSTALADA pero DISABLED en F25-b1: el entrypoint
+# tools/vision_describe.py YA existe (b99e185), pero el daemon SOLO es legal con key
+# pay-as-you-go sk-* (modo A). Con la key del Token Plan sk-sp- (default) la guarda ToS la
+# RECHAZA: la descripcion corre en modo B agente-mediado (tools/vision_describe.py --once).
+# ToS del Token Plan (AGENTS.md regla 13): modo A daemon SOLO con key pay-as-you-go sk-*;
+# una key sk-sp- (Token Plan) es SOLO para uso interactivo en agentes y el codigo de d2
+# la rechaza. Rate limits obligatorios (regla 16): AULASENSE_VISION_MAX_DIA/MAX_HORA.
+# Instalación (root dentro de WSL): ver server/deploy/README_wsl.md.
+#
+# --- Porque sigue DISABLED y nadie la enciende "de rebote" (verificado 2026-11-15) ---
+# * NINGUNA unit del repo la referencia con Requires=/Wants=/Also= (grep server/deploy:
+#   las unicas Wants= apuntan a network-online.target; dashboard/ingesta no la listan).
+# * tools/wsl_aulasense.ps1 (verbo start) habilita SOLO ingesta+dashboard (Units[0..1]).
+# * README_wsl.md instruye explicitamente `systemctl disable aulasense-vision.service`.
+# * Guarda en profundidad: aunque se enable/start con una key sk-sp-, el CLI sale con
+#   ErrorToS != 0 ANTES de llamar al modelo (server/vision/cliente.py:500) y Restart
+#   queda acotado por StartLimitBurst=3/300s. El [Install] se CONSERVA a proposito: solo
+#   tiene efecto si el dueño migra a key sk-* (modo A legal), nunca por dependencias.
+[Unit]
+Description=AulaSense worker de vision IA (descripcion de imagenes; modo A sk-* unicamente)
+Documentation=file:///home/aulasense/aulasense/server/deploy/README_wsl.md
+Wants=network-online.target
+After=network-online.target aulasense-ingesta.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=aulasense
+Group=aulasense
+WorkingDirectory=/home/aulasense/aulasense
+# DASHSCOPE_API_KEY SOLO por EnvironmentFile (claves/.env tiene prioridad para auth/IA,
+# regla 15); jamas por argv. El log del cliente nunca imprime la key (solo su tipo/prefijo).
+EnvironmentFile=/home/aulasense/aulasense/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=AULASENSE_DB=/home/aulasense/aulasense-datos/aulasense.db
+Environment=AULASENSE_DATOS_DIR=/home/aulasense/aulasense-datos
+# Flag real del modo A: --loop (SPEC §7.3 / vision_describe.py:97). NO existe --daemon.
+ExecStart=/home/aulasense/venvs/aulasense/bin/python tools/vision_describe.py --loop
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
+# --- Hardening (F25-auditoria 2026-11-15). Sin ProtectHome: rompería los binds a
+# /home/aulasense/aulasense (código+venv) y /home/aulasense/aulasense-datos (DB). ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+UMask=0077
+MemoryMax=512M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

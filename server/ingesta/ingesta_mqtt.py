@@ -32,6 +32,11 @@ decodifica el envelope (limite 64 KB, base64 estricto, magic JPEG, ``tamano``,
 fila con ``canal='mqtt'`` y ``vision_estado='pendiente'``. Todo fallo es descarte
 + log: JAMAS una fila invalida (el evento motion es la fuente de verdad).
 
+``origen`` (SPEC §6.2, OPCIONAL): el decoder lo HONRA en la fila de ``imagenes``
+(``real`` | ``sintetico``); default ``real`` si falta y valor invalido -> ``real``
++ WARNING sin descartar el mensaje. El nodo nunca lo envia (solo los fire-tests
+etiquetados) y MQTT 3.1.1 no permite saber por mensaje que usuario publico.
+
 Secretos: MQTT_PASS solo se pasa a paho; jamas se registra en logs. El token del
 receptor no se imprime (solo su longitud si hiciera falta diagnosticar).
 """
@@ -670,12 +675,15 @@ class IngestaWriter:
             return "imagen_descartada_disco"
 
         ancho, alto = dimensiones_jpeg(contenido)
+        # 7.b Campo OPCIONAL ``origen`` del envelope (SPEC §6.2): default 'real',
+        # invalido -> 'real' + WARNING (JAMAS descarta, la imagen es accesoria).
+        origen = origen_desde_envelope(datos)
         try:
             self._conn.execute(
                 "INSERT INTO imagenes "
                 "(device_id, ts_ms, ruta, hash_sha256, tamano_bytes, ancho, alto, "
                 " evento_id, imagen_purgada, origen, canal, vision_estado) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'real', 'mqtt', 'pendiente')",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'mqtt', 'pendiente')",
                 (
                     device_id,
                     ts_ms,
@@ -685,6 +693,7 @@ class IngestaWriter:
                     ancho,
                     alto,
                     evento_id,
+                    origen,
                 ),
             )
         except sqlite3.IntegrityError:
@@ -1210,6 +1219,42 @@ def parsear_envelope_imagen(crudo: Any) -> tuple[dict[str, Any] | None, str | No
     if not isinstance(datos, dict):
         return None, "payload de imagen no es un objeto JSON"
     return datos, None
+
+
+# Enum del campo OPCIONAL ``origen`` del envelope de imagen (SPEC §6.2).
+ORIGENES_IMAGEN: tuple[str, ...] = ("real", "sintetico")
+
+
+def origen_desde_envelope(datos: dict[str, Any]) -> str:
+    """``origen`` a persistir para una imagen MQTT: ``"real"`` | ``"sintetico"``.
+
+    El campo es **OPCIONAL y accesorio** (SPEC §6.2): ausente (o ``null``) ->
+    ``"real"`` sin log; ``"sintetico"`` -> ``"sintetico"``; cualquier otro valor
+    -> ``"real"`` + WARNING y el mensaje se persiste igual (nunca se rechaza: la
+    imagen no es la fuente de verdad, el evento motion si).
+
+    Procedencia del publish (honestidad del contrato): el nodo publica como
+    usuario ``electiva`` y la ingesta suscribe como ``srv-electiva`` (SPEC §6),
+    pero MQTT 3.1.1 **no transporta la identidad del publicador por mensaje** y
+    el callback de paho 2.x no la expone (``msg`` solo trae topic/payload/qos/
+    retain). La ACL del broker se aplica al CONECTAR, no por mensaje, asi que el
+    decoder NO puede distinguir hoy que cliente emitio el envelope: el campo se
+    honra tal cual venga. El riesgo residual es acotado porque el firmware del
+    nodo NUNCA envia ``origen`` (solo lo emiten los fire-tests etiquetados) y el
+    canal sintetico "oficial" sigue siendo ``POST /internal/evento`` (C13).
+    """
+    if "origen" not in datos or datos["origen"] is None:
+        return "real"
+    valor = datos["origen"]
+    if isinstance(valor, str) and valor in ORIGENES_IMAGEN:
+        return valor
+    mostrado = repr(valor)
+    if len(mostrado) > 40:  # un valor absurdo no debe inundar el log
+        mostrado = mostrado[:37] + "..."
+    LOG.warning(
+        "imagen MQTT con 'origen' invalido (%s): se persiste como 'real'", mostrado
+    )
+    return "real"
 
 
 def _modulo_receptor() -> Any:
