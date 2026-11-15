@@ -6,7 +6,7 @@
 # para que el parche sea reproducible sobre un clon limpio del vendor tag 3.2.0.
 #
 # Cambios respecto al CMakeLists.txt del vendor:
-#   1. SRCS: se añaden "app_feedback.c" (F3) y "app_imagen.c" (F24-c).
+#   1. SRCS: se añaden "app_feedback.c" (F3), "app_imagen.c" (F24-c) y "app_provision.c" (F24-d).
 #   2. REQUIRES: se añade `driver` (LEDC del buzzer + temperature_sensor del die) y
 #      `esp32-camera` (driver DVP de la OV3660, F24-c).
 #      - El WS2812 usa el componente gestionado espressif/led_strip, declarado en
@@ -14,6 +14,8 @@
 #        así que NO se lista en REQUIRES (mismo patrón que usó el archive dashcam-ia).
 #      - esp32-camera también se declara en main/idf_component.yml (espressif/esp32-camera).
 #      - esp_http_client ya estaba en REQUIRES (F24-c lo usa para subir el JPEG).
+#      - F24-d (ENMIENDA E8): cero componentes nuevos — esp_http_server + nvs_flash +
+#        esp_wifi + esp_event ya estaban listados; el módulo solo añade C propio.
 #      - BLE (`bt`) NO se añade: AULASENSE_BLE queda en n (gate R7, sin decidir todavía).
 #
 # Nota: como `main` declara REQUIRES explícitos, IDF desactiva la comodidad "main depende de
@@ -24,6 +26,7 @@ idf_component_register(
         "app_main.cpp"
         "app_feedback.c"
         "app_imagen.c"
+        "app_provision.c"
     INCLUDE_DIRS
         "."
         "../../espectre"

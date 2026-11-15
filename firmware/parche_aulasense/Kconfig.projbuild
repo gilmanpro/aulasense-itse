@@ -151,3 +151,67 @@ menu "AulaSense Imagen (F24-c)"
             lo contiene es GITIGNORED; no pegarlo en docs, logs ni evidencias.
 
 endmenu
+
+menu "AulaSense Provisioning (F24-d)"
+
+    config AULASENSE_PROVISION
+        bool "AP de emergencia + portal privado /cfg/<token>"
+        default y
+        help
+            Activa el modulo app_provision.c (parche F24-d): si la estacion WiFi falla
+            AULASENSE_PROVISION_RETRIES intentos propios DEL MODULO (el Native nunca falla de
+            forma permanente: re-intenta con back-off en bucle — ENMIENDA E2), o si no hay
+            credenciales en el arranque, levanta un SoftAP "AULASENSE-CFG-<4 hex>" (canal 1,
+            max 4 clientes) con un portal SOLO en la ruta privada
+            http://192.168.4.1/cfg/<token>.
+
+            El token de 8 hex se GENERA POR CODIGO con esp_fill_random (NUNCA hardcodeado ni
+            fijo) y se persiste en NVS namespace "aulasense_prov" (clave "cfg_token"). Se
+            IMPRIME por serial al activarse el AP (una vez por activacion; no sale por MQTT ni
+            en endpoints no autenticados). Ruta o token incorrectos devuelven 404 neutro con
+            comparacion en tiempo constante.
+
+            Credenciales del portal: el SSID/clave que se guardan por el POST van a NVS
+            namespace "aulasense_wifi" (la pass NUNCA se loguea ni se renderiza; solo
+            longitudes). El flujo de reconexion es AP OFF -> WIFI_MODE_STA PURO -> connect
+            (radio unica del S3, ENMIENDA E3): NUNCA APSTA cross-canal.
+
+            El recovery nativo queda PRESERVADO: BOOT 3 s -> Improv Serial sigue funcionando;
+            este modulo es aditivo y no toca el detector CSI, el canal MQTT ni las imagenes.
+
+            Donde se consultan las claves: la URL del portal (con token) en el log serial de
+            la placa al arribar el AP; las credenciales WiFi viven en la NVS de la placa.
+            Ninguna clave se escribe en el repo.
+
+    config AULASENSE_PROVISION_RETRIES
+        int "Fallos STA del modulo antes de levantar el AP"
+        range 1 10
+        default 3
+        help
+            Umbral DEL MODULO (no de config_.max_retry del vendor). Cada desconexion STA sin
+            un GOT_IP intermedio suma; al cruzarlo sube el AP de emergencia. Con GOT_IP el
+            contador se resetea.
+
+    config AULASENSE_PROVISION_AP_PASS
+        string "Clave WPA2 del AP de emergencia (vacio = AP ABIERTO con aviso)"
+        default ""
+        help
+            Vacio (default, decision D-F24-4): el AP es ABIERTO y la pagina + el log llevan el
+            aviso explícito; el segundo factor es la ruta privada con token (proximidad +
+            conocimiento del token).
+
+            Con valor: el AP usa WPA2-PSK con esa clave. La clave se escribe EN EL SDKCONFIG
+            (gitignored): fijarla SOLO localmente o via menuconfig/gen, NUNCA commitearla ni
+            imprimirla. Maximo 63 bytes.
+
+    config AULASENSE_PROVISION_AP_OFF_S
+        int "Segundos de gracia antes de AP-off tras STA OK con AP arribado"
+        range 5 600
+        default 30
+        help
+            Caso defensivo: si llega GOT_IP mientras el AP aun esta arriba (p. ej. provisioning
+            por Improv concurrente), el AP se apaga tras estos segundos y el nodo vuelve a
+            WIFI_MODE_STA puro. En el flujo normal del portal (E3) el AP se apaga ANTES del
+            intento STA, sin esperar este timer.
+
+endmenu

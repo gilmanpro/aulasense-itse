@@ -437,3 +437,95 @@ abre conexión (N1). El bombeo de `aulasense_config` sigue exclusivamente en la 
 **Pendiente para el criterio E2E de SPEC §3.2.1:** ver una fila `imagenes.canal='mqtt'` con `origen='real'`
 producida por un onset humano del nodo (durante el smoke no hubo ninguna transición a MOTION:
 `mvmt 0.000`, IDLE estable — la sensibilidad NO se toca, es materia de otro frente).
+
+## 13. F24-d — `app_provision` (AP de emergencia + portal privado `/cfg/<token>`)
+
+**Qué hace (SPEC §3.3, decisiones D-F24-4, ENMIENDAS E2/E3/E4/E5/E7/E8).** Módulo aditivo que
+NO toca el detector CSI, el canal MQTT existente (solo re-usa el publisher `aulasense_config`
+inyectado, mismo patrón F24-c), la mecánica de imágenes ni el recovery nativo (BOOT 3 s →
+Improv preservado).
+
+### 13.1 Disparo del AP (E2: contador propio)
+
+El Native nunca "falla de forma permanente" (`standalone_wifi_service.cpp:698-705,831-838`:
+`max_retry=8` + back-off 30 s en bucle), así que `app_provision.c` lleva SU contador:
+cada `WIFI_EVENT_STA_DISCONNECTED` sin `IP_EVENT_STA_GOT_IP` intermedio suma; al cruzar
+`AULASENSE_PROVISION_RETRIES` (default 3, umbral DEL MODOLO) sube el SoftAP. Con GOT_IP el
+contador se resetea. Caso "sin credenciales": un esp_timer de gracia (20 s tras el arranque)
+consulta `esp_wifi_get_config(WIFI_IF_STA)`; si el vendor no tiene SSID y el NVS del portal
+tiene credenciales, se aplica el flujo E3 directamente (AP OFF → STA puro con las credenciales
+del portal); si tampoco las hay, sube el AP.
+
+### 13.2 AP y portal
+
+- SoftAP **`AULASENSE-CFG-<4 hex>`** (2 últimos bytes del MAC — E4, adaptación intencional del
+  calco de 6 hex del archive), canal 1, `max_connection=4`, modo **AP PURO** (nunca APSTA).
+- Auth: **ABIERTO con aviso** (página + log) por default; con `AULASENSE_PROVISION_AP_PASS`
+  (menuconfig, gitignored, NUNCA logueada) → WPA2-PSK. Decisión D-F24-4: el segundo factor es
+  la ruta privada con token (proximidad física + conocimiento del token).
+- **Token:** 8 hex generados por CÓDIGO con `esp_fill_random` (NUNCA hardcodeado ni fijo),
+  persistidos en NVS `aulasense_prov/cfg_token`. Se imprime la URL completa por serial **una vez
+  por activación del AP** (`AulaSense CFG URL: http://192.168.4.1/cfg/<token>`); NUNCA sale por
+  MQTT ni por endpoints no autenticados. *Desviación justificada del literal "una vez al
+  generarse":* reimprimirlo en cada activación (evento raro, ligado al evento, no periódico)
+  evita que un operador que perdió el scroll del monitor quede fuera del portal sin borrar NVS;
+  quien tiene acceso al serial ya tiene acceso físico a la placa (mismo Threat model que BOOT).
+- **Enrutado (E5):** los handlers se registran como `/cfg/*` con `httpd_uri_match_wildcard` y
+  el segmento del token se valida en `ruta_token_ok()` con **comparación en tiempo constante**.
+  *Desviación documentada:* `consttime_memequal` **NO existe en ESP-IDF 5.5.6** (la SPEC citaba
+  `esp_mac.h`; verificado: cero coincidencias `memequal` en `components/**/*.h`) → el módulo
+  trae `token_consttime_igual()` (acumulador XOR `volatile`, mismo propósito anti-timing).
+  Ruta o token incorrectos → **404 neutro** sin pista (el 403 ni siquiera se emite sin token
+  válido, para no delatar rutas).
+- **Endpoints:** `GET /cfg/<token>` (formulario text-only, aviso AP abierto, estado sin
+  binarios), `GET /cfg/<token>/estado` (JSON: `wifi_sta/ap_activa/fallos_sta/heap/psram`,
+  CERO secretos), `POST /cfg/<token>/wifi` (flujo E3).
+- httpd: **prio 4, stack 8192, puerto 80** (E7; el Direct HTTP del vendor vive en 62587). La
+  tarea del módulo (`aulasense_prov`, prio 3, stack 8192) es la ÚNICA que opera la radio; los
+  handlers WiFi/IP no loguean (regla del vendor) y solo postean a la cola.
+
+### 13.3 Flujo de guardado (E3, crítico)
+
+`POST /cfg/<token>/wifi` → Origin/Referer guard (403) → body leído una vez (≤255 B, urldecode
+mínimo) → **escritura NVS `aulasense_wifi` SOLO si las credenciales CAMBIAN**, cooldown 5 s →
+**429** → respuesta HTML → evento a la tarea del módulo: **AP OFF → `esp_wifi_stop()` →
+`WIFI_MODE_STA` puro → `esp_wifi_set_config` con las credenciales del NVS →
+`esp_wifi_connect()`**. Watch 25 s: GOT_IP → `STA_RECONECTADO` (AP queda OFF); desconexión o
+agotado → **re-levantar AP**. El `maybe_retry_connect_` del vendor contra un driver en modo AP
+falla sin ruido (su rama de error solo re-programa el deadline: sin log). `AP_OFF_S` (Kconfig)
+cubre el caso defensivo GOT_IP-con-AP-arribado (p. ej. Improv concurrente).
+
+### 13.4 Kconfig (menú "AulaSense Provisioning (F24-d)")
+
+| Opción | Tipo | Default | Notas |
+|---|---|---|---|
+| `AULASENSE_PROVISION` | bool | y | Desactiva el módulo completo (no-op) |
+| `AULASENSE_PROVISION_RETRIES` | int | 3 | Umbral PROPIO del módulo (E2), 1..10 |
+| `AULASENSE_PROVISION_AP_PASS` | string | "" | Vacío = AP abierto con aviso; WPA2 opcional; NUNCA commitearla ni imprimirla |
+| `AULASENSE_PROVISION_AP_OFF_S` | int | 30 | Gracia AP-off solo para el caso defensivo (13.3) |
+
+Dependencias (E8): **cero componentes nuevos** — `esp_http_server`, `nvs_flash`, `esp_wifi`,
+`esp_event` ya estaban en `main/CMakeLists.txt`; `SRCS` gana solo `app_provision.c`.
+
+### 13.5 Eventos `aulasense_config`
+
+`AP_FALLBACK` (`motivo/ap/auth`, sin secretos), `CFG_GUARDADA` (`ssid_len/pass_len` — NUNCA
+valores), `STA_RECONECTADO` (`via=portal`). Los tres ya están en `EVENTOS_CONFIG` del servidor
+(`server/ingesta/esquema.py:76-82` → filas `config_eventos` sin tocar `server/`). Cola anillo
+4 slots con 3 reintentos de publicación (sin STA no hay broker: los eventos del fallback se
+emiten cuando MQTT reconecta; si no, quedan solo en serial con log honesto).
+
+### 13.6 Riesgos aceptados (documentados, evalúa el gate F24-e0/e y el gate seguridad)
+
+- **Red auto-curada con AP arriba:** en modo AP puro el STA no puede reconectar solo (radio
+  única, E3). Si el router revive, el nodo vuelve con: (a) POST del portal aunque las
+  credenciales sean idénticas (siempre re-intenta STA), (b) reboot (el BOOT_CHECK y el
+  contador manejan el arranque), o (c) Improv por USB. No hay sondeo periódico STA-AP porque
+  la coexistencia cross-canal está precisamente prohibida.
+- **CSI durante el fallback:** sin AP de red conocido el detector CSI pierde su fuente de
+  paquetes; es inherente a "STA caído" (el vendor ya degrada igual), el módulo no lo empeora
+  — el AP solo sirve red local.
+- **Contador por desconexión:** 3 blips de red sin IP entre medianías suben el AP (umbral
+  pesimista por diseño: el disparo falso es benigno — el portal no estorba y el flujo E3
+  reconecta en cuanto la red responde).
+

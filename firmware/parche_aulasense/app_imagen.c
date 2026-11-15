@@ -493,7 +493,11 @@ static bool camera_init(void) {
         .pin_vsync = AULASENSE_CAM_PIN_VSYNC,
         .pin_href = AULASENSE_CAM_PIN_HREF,
         .pin_pclk = AULASENSE_CAM_PIN_PCLK,
-        .xclk_freq_hz = 20000000,
+        .xclk_freq_hz = 10000000,  /* Fix F1 (raíz jpegqc 2026-11-15): 20->10 MHz. El byte-loss
+                                    * GDMA (huecos de 16 B en captura) aparece con el FIFO al
+                                    * límite bajo contención PSRAM octal 80 MHz: dividir el ritmo
+                                    * DVP por 2 deja margen al drenado. Captura ~2x más lenta,
+                                    * irrelevante a 1 foto/onset con cooldown 15 s. */
         /* LEDC timer/canal 0: el buzzer del feedback usa timer2/canal2 (app_feedback.c). */
         .ledc_timer = LEDC_TIMER_0,
         .ledc_channel = LEDC_CHANNEL_0,
@@ -625,6 +629,73 @@ static void subir_jpeg(const uint8_t *datos, size_t len, int64_t ts_ms) {
  * Captura (solo en la tarea propia)
  * ---------------------------------------------------------------------------------------- */
 
+/* Fix F2 (raíz jpegqc 2026-11-15): validacion estructural minima del JPEG recien
+ * capturado, ANTES de hashear/publicar. El byte-loss por overflow del FIFO GDMA
+ * (contencion del PSRAM octal bajo carga CSI/WiFi) deja SOI FFD8 y EOI FFD9
+ * intactos pero pierde segmentos de 16 B en la cabecera (offsets 336-590): el
+ * walk de marcadores pierde el sync alli. Mismo contrato que _jpeg_estructura_ok
+ * del servidor (Fix S). Limitacion aceptada: un hueco enteramente dentro de la
+ * entropy data pasa (el walk se detiene en el primer SOS) — ese filtro lo hace
+ * el decoder del servidor solo si rompe algo mas y el QC de PIL post-hoc.
+ * Devuelve false con cualquier rotura de sintaxis. */
+static bool jpeg_sintaxis_ok(const uint8_t *d, size_t n) {
+    if (n < 4U || d[0] != 0xFFU || d[1] != 0xD8U) {
+        return false; /* sin SOI */
+    }
+    bool eoi_ok = false;
+    for (size_t i = n - 4U; i + 1U < n; ++i) {
+        if (d[i] == 0xFFU && d[i + 1U] == 0xD9U) {
+            eoi_ok = true;
+            break;
+        }
+    }
+    if (!eoi_ok) {
+        return false; /* sin EOI en los ultimos 4 B */
+    }
+    bool sof_visto = false;
+    size_t i = 2U;
+    while (i + 1U < n) {
+        if (d[i] != 0xFFU) {
+            return false; /* perdida de sync */
+        }
+        size_t k = i + 1U;
+        while (k < n && d[k] == 0xFFU) {
+            ++k; /* bytes de relleno */
+        }
+        if (k >= n) {
+            return false;
+        }
+        const uint8_t c = d[k];
+        if (c == 0x00U) {
+            return false;
+        }
+        if (c == 0xDAU) {
+            return sof_visto; /* SOS: fin del walk; exige SOF previo */
+        }
+        if (c >= 0xC0U && c <= 0xCFU && c != 0xC4U && c != 0xC8U && c != 0xCCU) {
+            sof_visto = true;
+        }
+        const bool sin_longitud = (c == 0x01U) || (c == 0xD8U) || (c == 0xD9U) ||
+                                  (c >= 0xD0U && c <= 0xD7U);
+        if (sin_longitud) {
+            i = k + 1U;
+            continue;
+        }
+        if (k + 2U >= n) {
+            return false;
+        }
+        const size_t largo = ((size_t)d[k + 1U] << 8) | (size_t)d[k + 2U];
+        if (largo < 2U) {
+            return false;
+        }
+        i = k + largo + 1U;
+        if (!sof_visto && i >= 2048U) {
+            return false; /* sin SOF en los primeros 2 KB */
+        }
+    }
+    return false; /* sin SOS: cabecera incompleta */
+}
+
 static void procesar_onset(const imagen_onset_t *onset) {
     ESP_LOGI(TAG, "onset recibido ts=%lld score=%.3f camera=%s gate=%s (diagnostico F24-c)",
              (long long)onset->ts_ms, (double)onset->score, s_camera_ok ? "ok" : "off",
@@ -679,6 +750,17 @@ static void procesar_onset(const imagen_onset_t *onset) {
     const int alto = (int)fb->height;
     memcpy(buf, fb->buf, len);
     esp_camera_fb_return(fb); /* el driver queda libre ANTES del HTTP (no retiene framebuffers) */
+
+    /* Fix F2: el byte-loss de captura se detecta AQUI, tras el memcpy y ANTES de
+     * hashear/publicar. Se descarta la imagen, NO el evento: el onset ya se publico
+     * por el detector. No se marca cooldown: el siguiente onset reintenta la captura. */
+    if (!jpeg_sintaxis_ok(buf, len)) {
+        ESP_LOGW(TAG, "byte-loss en captura: estructura JPEG invalida len=%u; imagen descartada",
+                 (unsigned)len);
+        publicar_evento("IMAGEN_DESCARTE", "byte-loss en captura");
+        s_descartes++;
+        return;
+    }
 
     s_ultima_captura_us = ahora_us;
     ESP_LOGI(TAG, "IMAGEN_ON captura %u B (%.1f KB) %dx%d score=%.3f ts=%lld heap_int=%u/%u KB",
