@@ -2,9 +2,13 @@
 
 Cobertura: raíz HTML, Origin guard (cruzado/ausente/loopback/extra exacta),
 clamp de ``limite`` y validación de ``device_id``, inyección sintética con
-``origen='sintetico'`` hard-codeado, broadcast WS <2 s, export CSV escapado y
+``origen='sintetico'`` hard-codeado, broadcast WS <2 s, export CSV escapado,
 **galería F24** (metadata sin ruta, foto con cabeceras, purga/inexistente 404,
-id no entero 422, path traversal rechazado y banner de privacidad en la UI).
+id no entero 422, path traversal rechazado y banner de privacidad en la UI) y
+**búsqueda F25-d3** (SPEC §9.3: ``q``/``texto`` sobre descripción y etiquetas con
+comodines escapados, filtros combinados canal/vision_estado/device/fechas,
+``con_ia``, 401 sin sesión, logout que invalida la cookie, payload sin rutas y
+XSS servido como texto plano con UI sin innerHTML).
 
 La DB va a ``tmp_path`` vía ``AULASENSE_DB``; el esquema lo crea la app con el
 DDL compartido de ``server/ingesta/esquema.py`` (import real, sin stubs) más la
@@ -87,10 +91,16 @@ def _insertar_imagen(
     ia_persona: int | None = None,
     ia_score: float | None = None,
     contenido: bytes = JPEG_MINIMO,
+    descripcion: str | None = None,
+    etiquetas: str | None = None,
+    canal: str = "http",
+    vision_estado: str = "pendiente",
 ) -> int:
     """Inserta una fila en ``imagenes`` directamente en la DB (sin receptor B1).
 
     Con ``ruta=None`` además escribe el JPEG bajo ``datos/imagenes/<device>/``.
+    Las columnas F25 (``descripcion``/``etiquetas``/``canal``/``vision_estado``)
+    se pueden fijar por test para cubrir la búsqueda de §9.3.
     """
     relativa = ruta
     if relativa is None:
@@ -102,11 +112,13 @@ def _insertar_imagen(
     try:
         cursor = con.execute(
             "INSERT INTO imagenes (device_id, ts_ms, ruta, hash_sha256, tamano_bytes, "
-            "ancho, alto, evento_id, ia_persona, ia_score, imagen_purgada, origen) "
-            "VALUES (?, ?, ?, ?, ?, 320, 240, NULL, ?, ?, ?, ?)",
+            "ancho, alto, evento_id, ia_persona, ia_score, imagen_purgada, origen, "
+            "descripcion, etiquetas, canal, vision_estado) "
+            "VALUES (?, ?, ?, ?, ?, 320, 240, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 device, ts_ms, relativa, "0" * 64, len(contenido),
                 ia_persona, ia_score, purgada, origen,
+                descripcion, etiquetas, canal, vision_estado,
             ),
         )
         con.commit()
@@ -294,6 +306,8 @@ def test_validacion_vacia_no_crashea(cliente):
 CAMPOS_METADATA = {
     "id", "device_id", "ts_ms", "tamano_bytes", "ancho", "alto", "evento_id",
     "ia_persona", "ia_score", "imagen_purgada", "origen", "recibido_en",
+    # F25-d3 (SPEC §9.3): descripción IA, etiquetas, canal y estado de visión.
+    "descripcion", "etiquetas", "canal", "vision_estado",
 }
 
 
@@ -404,6 +418,270 @@ def test_galeria_ui_banner_privacidad_y_pestana(cliente):
     assert "/api/imagenes/" in js.text
     assert 'fetch("/api/imagenes"' not in js.text
     assert "FormData" not in js.text
+
+
+# ------------------------------------------------------------------------------
+# F25-d3 (SPEC §9.3): búsqueda por descripción/etiquetas, filtros y logout UI
+# ------------------------------------------------------------------------------
+def test_galeria_busqueda_q_por_descripcion_y_etiquetas(galeria):
+    cliente, datos = galeria
+    id_persona = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_000_000,
+        descripcion="Una persona caminando junto a la pizarra",
+        etiquetas="persona, aula, pizarra",
+        vision_estado="hecho",
+    )
+    id_mobiliario = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_100_000,
+        descripcion="Mesa y sillas vacías",
+        etiquetas="mobiliario, silla",
+        vision_estado="hecho",
+    )
+
+    # Por descripción, case-insensitive ASCII (LIKE/lower de SQLite).
+    filas = cliente.get("/api/imagenes", params={"q": "CAMINANDO"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_persona]
+
+    # Por etiquetas (la palabra no está en la descripción).
+    filas = cliente.get("/api/imagenes", params={"q": "mobiliario"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_mobiliario]
+
+    # Alias `texto=` (lo pidió el dispatcher; SPEC §9.3 fija `q=`).
+    filas = cliente.get("/api/imagenes", params={"texto": "sillas"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_mobiliario]
+
+    # Sin coincidencias → lista vacía (no error) y el eco del término recortado.
+    assert cliente.get("/api/imagenes", params={"q": "inexistente"}).json()["filas"] == []
+    assert cliente.get("/api/imagenes", params={"q": " persona "}).json()["q"] == "persona"
+
+
+def test_galeria_busqueda_comodines_escapados(galeria):
+    cliente, datos = galeria
+    id_porcentaje = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_000_000,
+        descripcion="cartel con 100% de ocupación",
+        etiquetas="cartel",
+        vision_estado="hecho",
+    )
+    _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_100_000,
+        descripcion="aforo 1000 personas",
+        etiquetas="aforo",
+        vision_estado="hecho",
+    )
+    id_guion = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_200_000,
+        descripcion="clave_uno del proyector",
+        etiquetas="",
+        vision_estado="hecho",
+    )
+    _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_300_000,
+        descripcion="claveXuno del proyector",
+        etiquetas="",
+        vision_estado="hecho",
+    )
+
+    # `%` literal: sin ESCAPE, "100%" (→ "%100%%") casaría también con "1000".
+    filas = cliente.get("/api/imagenes", params={"q": "100%"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_porcentaje]
+
+    # `_` literal: sin ESCAPE, "clave_uno" casaría también con "claveXuno".
+    filas = cliente.get("/api/imagenes", params={"q": "clave_uno"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_guion]
+
+    # Un `%` suelto busca el carácter literal, NUNCA "todas las filas".
+    filas = cliente.get("/api/imagenes", params={"q": "%"}).json()["filas"]
+    assert [fila["id"] for fila in filas] == [id_porcentaje]
+
+
+def test_galeria_filtros_combinados_q_canal_estado_device_y_fechas(galeria):
+    cliente, datos = galeria
+    objetivo = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_500_000,
+        canal="mqtt",
+        vision_estado="hecho",
+        descripcion="persona junto a la ventana",
+        etiquetas="persona, ventana",
+    )
+    # Mismo texto, pero canal http.
+    _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_600_000,
+        canal="http",
+        vision_estado="hecho",
+        descripcion="persona junto a la puerta",
+        etiquetas="persona, puerta",
+    )
+    # Mismo canal/estado, otra descripción.
+    _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_700_000,
+        canal="mqtt",
+        vision_estado="hecho",
+        descripcion="silla apilada",
+        etiquetas="mobiliario",
+    )
+    # Coincide todo menos la ventana temporal (fuera de desde/hasta).
+    _insertar_imagen(
+        datos,
+        ts_ms=1_600_000_000_000,
+        canal="mqtt",
+        vision_estado="hecho",
+        descripcion="persona antigua",
+        etiquetas="persona",
+    )
+    # Coincide todo menos el device.
+    _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_800_000,
+        device="fedcba9876543210",
+        canal="mqtt",
+        vision_estado="hecho",
+        descripcion="persona en otro aula",
+        etiquetas="persona",
+    )
+
+    respuesta = cliente.get(
+        "/api/imagenes",
+        params={
+            "q": "persona",
+            "canal": "mqtt",
+            "vision_estado": "hecho",
+            "device_id": DEVID,
+            "desde": 1_700_000_000_000,
+            "hasta": 1_700_000_999_999,
+        },
+    )
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert [fila["id"] for fila in cuerpo["filas"]] == [objetivo]
+    assert cuerpo["filas"][0]["canal"] == "mqtt"
+    assert cuerpo["canal"] == "mqtt"
+    assert cuerpo["vision_estado"] == "hecho"
+
+    # Valores fuera del CHECK → 422 explícito (nunca se ignoran en silencio).
+    assert cliente.get("/api/imagenes", params={"canal": "carrier-pigeon"}).status_code == 422
+    assert cliente.get("/api/imagenes", params={"vision_estado": "casi"}).status_code == 422
+
+
+def test_galeria_con_ia_excluye_pendiente_error_y_descripcion_nula(galeria):
+    cliente, datos = galeria
+    id_ok = _insertar_imagen(
+        datos,
+        ts_ms=1_700_000_100_000,
+        vision_estado="hecho",
+        descripcion="mesa con cuadernos",
+        etiquetas="mesa",
+    )
+    _insertar_imagen(datos, ts_ms=1_700_000_200_000, vision_estado="hecho", descripcion=None)
+    _insertar_imagen(
+        datos, ts_ms=1_700_000_300_000, vision_estado="pendiente", descripcion="persona"
+    )
+    _insertar_imagen(
+        datos, ts_ms=1_700_000_400_000, vision_estado="error", descripcion="persona"
+    )
+    _insertar_imagen(datos, ts_ms=1_700_000_500_000, vision_estado="hecho", descripcion="   ")
+
+    cuerpo = cliente.get("/api/imagenes", params={"con_ia": 1}).json()
+    assert cuerpo["con_ia"] is True
+    assert [fila["id"] for fila in cuerpo["filas"]] == [id_ok]
+
+    # con_ia=0 equivale a omitir el filtro (las 5 filas siguen listándose).
+    assert len(cliente.get("/api/imagenes", params={"con_ia": 0}).json()["filas"]) == 5
+
+
+def test_galeria_sin_sesion_401(galeria):
+    cliente, datos = galeria
+    id_img = _insertar_imagen(datos)
+    # Cookie ausente/caducada: el middleware §9.2 corta ANTES del endpoint.
+    cliente.cookies.clear()
+    assert cliente.get("/api/imagenes").status_code == 401
+    assert cliente.get(f"/api/imagenes/{id_img}/foto").status_code == 401
+    # La página raíz redirige al login en vez de servir el dashboard.
+    raiz = cliente.get("/", follow_redirects=False)
+    assert raiz.status_code == 302
+    assert raiz.headers["location"] == "/login"
+
+
+def test_logout_invalida_sesion_y_protegidos_401(galeria):
+    cliente, _datos = galeria
+    assert cliente.get("/api/imagenes").status_code == 200
+    token = cliente.cookies.get("aulasense_sesion")
+    assert token, "el login del fixture debe dejar cookie de sesión"
+
+    salida = cliente.post("/logout")
+    assert salida.status_code == 200
+    assert salida.json()["ok"] is True
+    # La cookie se expira con Max-Age/Expires pasado (SPEC §9.2).
+    set_cookie = salida.headers.get("set-cookie", "")
+    assert "aulasense_sesion=" in set_cookie
+    assert "Max-Age=0" in set_cookie
+
+    # Sin cookie en el jar → 401.
+    assert cliente.get("/api/imagenes").status_code == 401
+    # Y el token viejo reutilizado a mano tampoco vale: la fila se borró en BD.
+    reuso = cliente.get(
+        "/api/imagenes", headers={"Cookie": f"aulasense_sesion={token}"}
+    )
+    assert reuso.status_code == 401
+
+
+def test_galeria_respuesta_sin_ruta_ni_rutas_absolutas(galeria, tmp_path):
+    cliente, datos = galeria
+    _insertar_imagen(
+        datos, descripcion="persona", etiquetas="persona", vision_estado="hecho"
+    )
+    respuesta = cliente.get("/api/imagenes")
+    fila = respuesta.json()["filas"][0]
+    assert "ruta" not in fila
+    assert set(fila) == CAMPOS_METADATA
+
+    texto = respuesta.text
+    assert '"ruta"' not in texto
+    assert "imagenes/" not in texto
+    # Ni la base de datos de imágenes ni el tmp del test aparecen en el payload.
+    assert str(datos) not in texto
+    assert str(tmp_path) not in texto
+
+
+def test_galeria_descripcion_hostil_texto_plano_y_ui_sin_innerhtml(galeria):
+    cliente, datos = galeria
+    hostil = '<script>alert("xss")</script>'
+    etiquetas_hostiles = '<img src=x onerror="alert(1)">'
+    id_img = _insertar_imagen(
+        datos,
+        descripcion=hostil,
+        etiquetas=etiquetas_hostiles,
+        vision_estado="hecho",
+    )
+
+    fila = cliente.get("/api/imagenes", params={"q": "script"}).json()["filas"][0]
+    assert fila["id"] == id_img
+    # El JSON transporta el texto TAL CUAL (sin recortar ni interpretar): el
+    # navegador lo pinta con textContent, así que no hay ejecución.
+    assert fila["descripcion"] == hostil
+    assert fila["etiquetas"] == etiquetas_hostiles
+
+    js = cliente.get("/static/app.js").text
+    assert "bloqueDescripcion" in js      # se construye con nodos + textContent
+    assert "chipsEtiquetas" in js
+    assert "innerHTML =" not in js        # cero asignaciones de markup
+    assert ".innerHTML" not in js         # cero lecturas de markup
+
+    html = cliente.get("/").text
+    assert 'id="galeria-q"' in html
+    assert 'id="btn-salir"' in html
+    assert 'id="galeria-canal-mqtt"' in html
+    assert 'id="galeria-canal-http"' in html
+    assert 'id="galeria-con-ia"' in html
 
 
 # ------------------------------------------------------------------------------

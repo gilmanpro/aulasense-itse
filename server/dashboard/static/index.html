@@ -23,6 +23,13 @@
     .badge-ia { background: #1e3a8a; color: #bfdbfe; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
     .badge-vivo { background: #064e3b; color: #6ee7b7; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
     .badge-stale { background: #78350f; color: #fcd34d; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
+    /* F25-d3 (SPEC §9.3): origen real, canal de transporte y estado de visión IA. */
+    .badge-real { background: #164e63; color: #a5f3fc; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; letter-spacing: .04em; }
+    .badge-canal { background: #312e81; color: #c7d2fe; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
+    .badge-vision { background: #3f6212; color: #d9f99d; border-radius: .35rem; padding: 0 .4rem; font-size: .68rem; }
+    .chip-etiqueta { background: #1e293b; color: #cbd5e1; border-radius: 999px; padding: 0 .45rem; font-size: .65rem; }
+    .filtro-chip { background: #1e293b; color: #cbd5e1; border-radius: .5rem; padding: .35rem .6rem; font-size: .72rem; }
+    .filtro-chip[aria-pressed="true"] { background: #1d4ed8; color: #fff; }
     .pestana-activa { background: #1d4ed8; color: #fff; }
     .celda-metrica { background: #111c31; border-radius: .5rem; padding: .45rem .6rem; }
     .tabla-scroll { max-height: 26rem; overflow: auto; }
@@ -38,6 +45,9 @@
     <h1 class="text-xl font-semibold tracking-tight">AulaSense</h1>
     <span class="text-xs text-slate-400">sensing de movimiento por Wi-Fi CSI · ESP32-S3 · edge</span>
     <span class="ml-auto text-xs" id="ws-badge">WS: conectando…</span>
+    <button id="btn-salir" type="button"
+            class="rounded bg-slate-800 hover:bg-slate-700 px-3 py-1 text-xs"
+            title="cerrar la sesión del dashboard">Salir</button>
   </header>
 
   <!-- REGLA 11: badge honesto permanente y visible -->
@@ -238,10 +248,28 @@
             <input id="galeria-hasta" type="date"
                    class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-100" />
           </label>
+          <!-- F25-d3 (SPEC §9.3): búsqueda por descripción/etiquetas (debounce 300 ms). -->
+          <label class="flex flex-col gap-1 text-slate-300">
+            buscar texto (descripción / etiquetas)
+            <input id="galeria-q" type="search" maxlength="200" placeholder="p. ej. persona, mesa"
+                   class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-100 min-w-[15rem]" />
+          </label>
           <button id="galeria-recargar" class="rounded bg-slate-800 hover:bg-slate-700 px-3 py-1.5">
             Recargar
           </button>
           <span id="galeria-info" class="ml-auto text-slate-400"></span>
+        </div>
+
+        <!-- Chips de filtro: se combinan con device/fechas en la misma petición. -->
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span class="text-slate-400">filtros:</span>
+          <button id="galeria-canal-mqtt" type="button" class="filtro-chip"
+                  aria-pressed="false" title="solo imágenes recibidas por MQTT">canal mqtt</button>
+          <button id="galeria-canal-http" type="button" class="filtro-chip"
+                  aria-pressed="false" title="solo imágenes recibidas por HTTP :8001">canal http</button>
+          <button id="galeria-con-ia" type="button" class="filtro-chip"
+                  aria-pressed="false" title="solo imágenes ya descritas por la IA de visión">con descripción IA</button>
+          <span class="text-slate-500">se combinan con device y las fechas</span>
         </div>
 
         <div id="galeria-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">

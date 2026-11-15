@@ -118,11 +118,22 @@ CREATE TABLE IF NOT EXISTS imagenes (
   imagen_purgada INTEGER NOT NULL DEFAULT 0,
   origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
   recibido_en TEXT NOT NULL DEFAULT (datetime('now')),
+  -- F25 (SPEC §8.2): canal de transporte y descripción IA para la búsqueda §9.3.
+  canal TEXT NOT NULL DEFAULT 'http' CHECK(canal IN ('http','mqtt')),
+  descripcion TEXT,
+  etiquetas TEXT,
+  vision_estado TEXT NOT NULL DEFAULT 'pendiente'
+    CHECK(vision_estado IN ('pendiente','procesando','hecho','error','omitido')),
+  vision_modelo TEXT,
+  vision_ts_ms INTEGER,
+  vision_tokens INTEGER,
   FOREIGN KEY(evento_id) REFERENCES eventos(id)
 );
 CREATE INDEX IF NOT EXISTS idx_img_dev_ts ON imagenes(device_id, ts_ms);
 CREATE INDEX IF NOT EXISTS idx_img_evento ON imagenes(evento_id);
 CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
+CREATE INDEX IF NOT EXISTS idx_img_vision_estado ON imagenes(vision_estado);
+CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal);
 CREATE TABLE IF NOT EXISTS config_eventos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
@@ -135,9 +146,38 @@ CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
 """
 
 # Columnas exactas de metadata de la galería: ``ruta`` NUNCA se expone (SPEC §9.1).
+# F25-d3 (SPEC §9.3): se añaden descripcion/etiquetas/canal/vision_estado para la
+# búsqueda por texto; la ruta absoluta sigue fuera del contrato.
 COLS_IMAGEN_METADATA = (
     "id, device_id, ts_ms, tamano_bytes, ancho, alto, evento_id, "
-    "ia_persona, ia_score, imagen_purgada, origen, recibido_en"
+    "ia_persona, ia_score, imagen_purgada, origen, recibido_en, "
+    "descripcion, etiquetas, canal, vision_estado"
+)
+
+# Valores del CHECK canónico de ``imagenes`` (server/ingesta/esquema.py, §8.2):
+# un valor fuera de estos conjuntos se rechaza con 422 (nunca se concatena al SQL).
+CANALES_IMAGEN = ("http", "mqtt")
+ESTADOS_VISION = ("pendiente", "procesando", "hecho", "error", "omitido")
+# Tope del texto de búsqueda: LIKE sobre descripcion/etiquetas; cortar evita
+# patrones gigantes y mantiene el coste acotado en la escala actual (SPEC §9.3).
+TOPE_BUSQUEDA = 200
+
+# Columnas nuevas de ``imagenes`` (F25, SPEC §8.2): (nombre, DDL para ``ALTER TABLE``).
+# Se replican aquí SOLO como migración de respaldo para DB anteriores a F25 (tests
+# con DB nueva y arranque del dashboard sin la ingesta); la dueña real del esquema
+# sigue siendo ``server/ingesta/esquema.py`` (mismo patrón que ``IMAGENES_SQL``).
+COLUMNAS_F25_IMAGENES: tuple[tuple[str, str], ...] = (
+    ("canal", "canal TEXT NOT NULL DEFAULT 'http' CHECK(canal IN ('http','mqtt'))"),
+    ("descripcion", "descripcion TEXT"),
+    ("etiquetas", "etiquetas TEXT"),
+    (
+        "vision_estado",
+        "vision_estado TEXT NOT NULL DEFAULT 'pendiente' "
+        "CHECK(vision_estado IN ('pendiente','procesando','hecho','error','omitido'))",
+    ),
+    ("vision_modelo", "vision_modelo TEXT"),
+    ("vision_ts_ms", "vision_ts_ms INTEGER"),
+    ("vision_tokens", "vision_tokens INTEGER"),
 )
 
 # Extension F3 (session logger): DDL local deliberado, mismo patrón que
@@ -215,6 +255,29 @@ def _datos_dir() -> Path:
     return _db_path().expanduser().resolve().parent
 
 
+def _migrar_imagenes_f25(con: sqlite3.Connection) -> None:
+    """Añade a ``imagenes`` las columnas F25 si faltan (idempotente, tolerante).
+
+    SQLite no tiene ``ADD COLUMN IF NOT EXISTS``: se consulta ``pragma table_info``
+    antes de cada ``ALTER TABLE`` (mismo patrón que el canónico de
+    ``server/ingesta/esquema.py``). Un fallo de ALTER (p. ej. DB bloqueada por otro
+    proceso) NO tumba el arranque: la ingesta aplicará la migración canónica.
+    """
+    try:
+        existentes = {fila[1] for fila in con.execute("PRAGMA table_info(imagenes)")}
+        for nombre, ddl in COLUMNAS_F25_IMAGENES:
+            if nombre in existentes:
+                continue
+            con.execute(f"ALTER TABLE imagenes ADD COLUMN {ddl}")
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_img_vision_estado ON imagenes(vision_estado)"
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal)")
+        con.commit()
+    except sqlite3.Error:  # tabla ausente/bloqueada: la ingesta migrará después
+        con.rollback()
+
+
 def _conectar() -> sqlite3.Connection:
     """Abre la DB en WAL y garantiza el esquema (CREATE IF NOT EXISTS es idempotente)."""
     ruta = _db_path()
@@ -234,6 +297,10 @@ def _conectar() -> sqlite3.Connection:
     ).fetchone()
     if not existe_img:
         con.executescript(IMAGENES_SQL)
+    else:
+        # DB anterior a F25: se alinean las columnas de visión (CANAL/descripcion/…)
+        # antes de cualquier lectura de la galería.
+        _migrar_imagenes_f25(con)
     # Extensión F3 (session logger): misma migración de respaldo.
     existe_ses = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sesiones'"
@@ -252,6 +319,21 @@ def _clamp_limite(valor: int | None, defecto: int = LIMITE_DEFECTO) -> int:
     if valor is None:
         return defecto
     return max(1, min(LIMITE_MAX, int(valor)))
+
+
+def _escapar_like(texto: str) -> str:
+    """Escapa ``\\``, ``%`` y ``_`` para un LIKE con ``ESCAPE '\\'`` (SPEC §9.3).
+
+    Sin esto, un ``q=%`` del usuario se convertiría en "cualquier cosa" y un
+    ``q=a_b`` casaría con ``axb``. El resultado SIEMPRE viaja como parámetro
+    (nunca se interpola en el SQL).
+    """
+    return (
+        str(texto)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
 
 
 def _validar_device(device_id: str | None) -> str | None:
@@ -1337,14 +1419,58 @@ def api_imagenes(
     desde: int | None = None,
     hasta: int | None = None,
     limite: int | None = None,
+    q: str | None = None,
+    texto: str | None = None,
+    canal: str | None = None,
+    vision_estado: str | None = None,
+    con_ia: int | None = None,
 ) -> dict[str, Any]:
-    """Metadata paginada de imágenes de evidencia (SPEC §9.1).
+    """Metadata paginada de imágenes de evidencia con búsqueda por descripción.
 
     Devuelve solo columnas de metadata (``COLS_IMAGEN_METADATA``); la ruta del
-    archivo NUNCA sale por la API.
+    archivo NUNCA sale por la API (SPEC §9.1). Filtros (SPEC §9.3, F25-d3):
+
+    - ``q``: texto libre buscado con LIKE parametrizado sobre ``descripcion`` y
+      ``etiquetas`` (case-insensitive ASCII, ver nota de escala), escapando ``%``,
+      ``_`` y ``\\`` del input con ``ESCAPE '\\'``;
+    - ``texto``: ALIAS de ``q`` (el dispatcher pidió ``texto=`` y SPEC §9.3 fija
+      ``q=``): si llegan ambos, gana ``q`` cuando no está vacío. Un único término
+      de búsqueda, nunca se combinan;
+    - ``canal``: ``http``|``mqtt`` (fuera del CHECK → 422, igual que ``tipo`` en
+      ``/api/eventos``; NO se ignora en silencio para no devolver datos falsos);
+    - ``vision_estado``: ``pendiente``|``procesando``|``hecho``|``error``|
+      ``omitido`` (fuera del CHECK → 422);
+    - ``con_ia=1``: solo imágenes ya descritas (``vision_estado='hecho'`` y
+      ``descripcion`` no vacía); ``con_ia=0`` equivale a omitirlo.
+
+    ``limite`` sigue clampado 1..5000. Sin sesión la petición la corta el
+    middleware (§9.2) con 401: aquí no se reimplementa auth.
+
+    TODO(FTS5, SPEC §9.3): LIKE es suficiente a la escala actual (cientos de
+    imágenes, latencia de ms). Solo si se superan ~5000 imágenes o el LIKE pasa
+    de 100 ms se migrará a FTS5 (tabla virtual + triggers de sincronización).
     """
     device = _validar_device(device_id)
     lim = _clamp_limite(limite)
+
+    # Alias q/texto: un único término; se recorta y acota antes de escapar.
+    busqueda = (q if (q or "").strip() else texto) or ""
+    busqueda = busqueda.strip()[:TOPE_BUSQUEDA]
+
+    canal_filtro: str | None = None
+    if canal is not None and canal.strip() != "":
+        canal_filtro = canal.strip().lower()
+        if canal_filtro not in CANALES_IMAGEN:
+            raise HTTPException(status_code=422, detail="canal debe ser http o mqtt")
+    estado_filtro: str | None = None
+    if vision_estado is not None and vision_estado.strip() != "":
+        estado_filtro = vision_estado.strip().lower()
+        if estado_filtro not in ESTADOS_VISION:
+            raise HTTPException(
+                status_code=422, detail="vision_estado no está en el CHECK del esquema"
+            )
+    con_ia_activo = con_ia is not None and int(con_ia) != 0
+
     condiciones: list[str] = []
     params: list[Any] = []
     if device:
@@ -1356,6 +1482,23 @@ def api_imagenes(
     if hasta is not None:
         condiciones.append("ts_ms <= ?")
         params.append(int(hasta))
+    if busqueda:
+        patron = f"%{_escapar_like(busqueda)}%"
+        condiciones.append(
+            "(lower(COALESCE(descripcion, '')) LIKE lower(?) ESCAPE '\\' "
+            "OR lower(COALESCE(etiquetas, '')) LIKE lower(?) ESCAPE '\\')"
+        )
+        params.extend((patron, patron))
+    if canal_filtro:
+        condiciones.append("canal = ?")
+        params.append(canal_filtro)
+    if estado_filtro:
+        condiciones.append("vision_estado = ?")
+        params.append(estado_filtro)
+    if con_ia_activo:
+        condiciones.append("vision_estado = 'hecho'")
+        condiciones.append("descripcion IS NOT NULL")
+        condiciones.append("TRIM(descripcion) <> ''")
     where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
     con = _conectar()
     try:
@@ -1367,7 +1510,14 @@ def api_imagenes(
         )
     finally:
         con.close()
-    return {"limite": lim, "filas": filas}
+    return {
+        "limite": lim,
+        "q": busqueda or None,
+        "canal": canal_filtro,
+        "vision_estado": estado_filtro,
+        "con_ia": con_ia_activo,
+        "filas": filas,
+    }
 
 
 def _resolver_foto(ruta_relativa: str) -> Path | None:

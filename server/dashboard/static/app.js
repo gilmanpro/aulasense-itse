@@ -853,6 +853,11 @@ function cargarValidacion() {
 // ruta del archivo y el dashboard nunca acepta uploads (el upload es el receptor
 // LAN :8001 de la ingesta). Metadata SIEMPRE por textContent (cero innerHTML).
 const RE_DEVICE = /^[0-9a-f]{16}$/;
+// F25-d3 (SPEC §9.3): filtros de la búsqueda. ``galeriaCanal`` es excluyente
+// (mqtt | http | null) y ``galeriaConIa`` pide solo imágenes ya descritas.
+let galeriaCanal = null;
+let galeriaConIa = false;
+let galeriaDebounce = null;
 
 function msDeFecha(valor, finDelDia) {
   if (!valor) return null;
@@ -869,8 +874,46 @@ function parametrosGaleria() {
   const hasta = msDeFecha(document.getElementById("galeria-hasta").value, true);
   if (desde !== null) params.set("desde", String(desde));
   if (hasta !== null) params.set("hasta", String(hasta));
+  const texto = (document.getElementById("galeria-q").value || "").trim();
+  if (texto) params.set("q", texto);
+  if (galeriaCanal) params.set("canal", galeriaCanal);
+  if (galeriaConIa) params.set("con_ia", "1");
   params.set("limite", "200");
   return { device, params };
+}
+
+// Etiquetas del worker de visión: coma-separadas ("a, b, c"); se pintan como chips.
+function chipsEtiquetas(etiquetas) {
+  const caja = el("div", "flex flex-wrap gap-1 pt-0.5");
+  String(etiquetas || "").split(/[,;]/).forEach((parte) => {
+    const etiqueta = parte.trim();
+    if (etiqueta) caja.appendChild(el("span", "chip-etiqueta", etiqueta));
+  });
+  return caja.childElementCount ? caja : null;
+}
+
+// Descripción IA bajo la foto. CERO innerHTML: nodos + textContent (AGENTS XSS).
+function bloqueDescripcion(fila) {
+  const caja = el("div", "pt-1 space-y-1");
+  const estadoVision = String(fila.vision_estado || "pendiente");
+  const descripcion = (fila.descripcion === null || fila.descripcion === undefined)
+    ? "" : String(fila.descripcion).trim();
+  if (estadoVision === "pendiente" || estadoVision === "procesando") {
+    // Placeholder honesto: la IA todavía no ha descrito esta imagen.
+    caja.appendChild(el("p", "text-[0.7rem] text-slate-500 italic", "descripción pendiente"));
+  } else if (descripcion) {
+    caja.appendChild(el("p", "text-[0.7rem] text-slate-200", descripcion));
+  } else if (estadoVision === "error") {
+    caja.appendChild(el("p", "text-[0.7rem] text-slate-500 italic",
+      "descripción no disponible (error de visión)"));
+  } else if (estadoVision === "omitido") {
+    caja.appendChild(el("p", "text-[0.7rem] text-slate-500 italic", "descripción omitida"));
+  } else if (estadoVision === "hecho") {
+    caja.appendChild(el("p", "text-[0.7rem] text-slate-500 italic", "descripción vacía"));
+  }
+  const chips = chipsEtiquetas(fila.etiquetas);
+  if (chips) caja.appendChild(chips);
+  return caja;
 }
 
 function tarjetaImagen(fila) {
@@ -918,9 +961,20 @@ function tarjetaImagen(fila) {
     badges.appendChild(el("span", "badge-ia", `IA: ${etiqueta}${score}`));
   }
   if (purgada) badges.appendChild(el("span", "badge-purgada", "purgada"));
-  if (fila.origen === "sintetico") badges.appendChild(el("span", "badge-simulado", "SIMULADO"));
+  // Origen SIEMPRE visible (regla 10: lo sintético nunca se presenta como real).
+  badges.appendChild(el(
+    "span",
+    fila.origen === "sintetico" ? "badge-simulado" : "badge-real",
+    fila.origen === "sintetico" ? "SIMULADO" : "real",
+  ));
+  // Canal de transporte (SPEC §9.3) y estado de la IA de visión.
+  const canal = String(fila.canal || "http");
+  badges.appendChild(el("span", "badge-canal", `canal: ${canal}`));
+  const estadoVision = String(fila.vision_estado || "pendiente");
+  badges.appendChild(el("span", "badge-vision", `visión: ${estadoVision}`));
   meta.appendChild(badges);
   caja.appendChild(meta);
+  caja.appendChild(bloqueDescripcion(fila));
   return caja;
 }
 
@@ -948,8 +1002,63 @@ function cargarGaleria() {
   obtener(`/api/imagenes?${params.toString()}`)
     .then(pintarGaleria)
     .catch((error) => {
+      // Sesión caducada: el middleware responde 401 → al login (SPEC §9.2).
+      if (String(error.message).includes("HTTP 401")) {
+        window.location.href = "/login";
+        return;
+      }
       info.textContent = "no se pudo cargar la galería";
       console.warn("Galería:", error.message);
+    });
+}
+
+// Chips de filtro (canal excluyente + con_ia) y debounce de la búsqueda.
+function pintarChipsGaleria() {
+  const mqtt = document.getElementById("galeria-canal-mqtt");
+  const http = document.getElementById("galeria-canal-http");
+  const conIa = document.getElementById("galeria-con-ia");
+  if (mqtt) mqtt.setAttribute("aria-pressed", galeriaCanal === "mqtt" ? "true" : "false");
+  if (http) http.setAttribute("aria-pressed", galeriaCanal === "http" ? "true" : "false");
+  if (conIa) conIa.setAttribute("aria-pressed", galeriaConIa ? "true" : "false");
+}
+
+function alternarCanalGaleria(canal) {
+  galeriaCanal = galeriaCanal === canal ? null : canal;
+  pintarChipsGaleria();
+  cargarGaleria();
+}
+
+function alternarConIaGaleria() {
+  galeriaConIa = !galeriaConIa;
+  pintarChipsGaleria();
+  cargarGaleria();
+}
+
+function programarBusquedaGaleria() {
+  // Debounce ~300 ms (SPEC §9.3): no se recarga en cada tecla.
+  if (galeriaDebounce !== null) clearTimeout(galeriaDebounce);
+  galeriaDebounce = window.setTimeout(() => {
+    galeriaDebounce = null;
+    cargarGaleria();
+  }, 300);
+}
+
+/* -------------------------------- sesión --------------------------------- */
+// SPEC §9.2: POST /logout borra la sesión en la BD y expira la cookie; después
+// se navega al login (cualquier GET protegido responderá 401).
+function cerrarSesion() {
+  const boton = document.getElementById("btn-salir");
+  if (boton) {
+    boton.disabled = true;
+    boton.textContent = "saliendo…";
+  }
+  fetch("/logout", { method: "POST", headers: { Accept: "application/json" } })
+    .then(() => {
+      window.location.href = "/login";
+    })
+    .catch((error) => {
+      console.warn("Logout:", error.message);
+      window.location.href = "/login";
     });
 }
 
@@ -986,6 +1095,19 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("galeria-device").addEventListener("keydown", (evento) => {
     if (evento.key === "Enter") cargarGaleria();
   });
+  // F25-d3: búsqueda con debounce + chips de canal y "con descripción IA".
+  document.getElementById("galeria-q").addEventListener("input", programarBusquedaGaleria);
+  document.getElementById("galeria-q").addEventListener("keydown", (evento) => {
+    if (evento.key === "Enter") cargarGaleria();
+  });
+  document.getElementById("galeria-canal-mqtt").addEventListener("click", () => {
+    alternarCanalGaleria("mqtt");
+  });
+  document.getElementById("galeria-canal-http").addEventListener("click", () => {
+    alternarCanalGaleria("http");
+  });
+  document.getElementById("galeria-con-ia").addEventListener("click", alternarConIaGaleria);
+  document.getElementById("btn-salir").addEventListener("click", cerrarSesion);
 
   cargarTodo();
   conectarWS();
