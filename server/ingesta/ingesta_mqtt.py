@@ -64,6 +64,15 @@ try:  # ejecucion directa (server/ingesta en sys.path) o via conftest de tests
 except ImportError:  # import como paquete server.ingesta
     from . import esquema  # type: ignore[no-redef]
 
+# F25f (fire-test del receptor :8001): bajo systemd ExecStart este modulo corre
+# como ``__main__`` y ``receptor_imagen`` hace ``from ingesta_mqtt import ...``,
+# lo que creaba una SEGUNDA copia del modulo: isinstance(item, JobImagen) en
+# _procesar_item fallaba entre las dos clases homonimas y el job HTTP moria
+# ("writer no responde"). Registrar el alias garantiza que ambos paths del
+# import resuelven al MISMO objeto de modulo.
+if __name__ == "__main__":  # pragma: no cover - solo efecto colateral del alias
+    sys.modules.setdefault("ingesta_mqtt", sys.modules[__name__])
+
 LOG = logging.getLogger("aulasense.ingesta")
 
 # Raiz del repo (server/ingesta/ingesta_mqtt.py -> aulasense/).
@@ -163,6 +172,67 @@ VENTANA_IMAGEN_PRE_MS = 15_000
 VENTANA_IMAGEN_POST_MS = 5_000
 # Magic JPEG que debe seguir al b64 decodificado (SPEC §6.2).
 _MAGIC_JPEG = b"\xff\xd8\xff"
+# Fix S (causa raíz jpegqc 2026-11-15): validación estructural mínima del JPEG.
+_EOI_JPEG = b"\xff\xd9"
+# Ventana del segment-walk: el SOF debe aparecer antes del primer SOS y dentro
+# de los primeros 2 KB (la cabecera OV3660 estándar ocupa ~623 B).
+VENTANA_SOF_JPEG = 2048
+# Marcadores sin segmento de longitud (TEM y RSTn) más SOI/EOI.
+_MARCADORES_SIN_LONGITUD = frozenset({0x01, 0xD8, 0xD9, *range(0xD0, 0xD8)})
+
+
+def _jpeg_estructura_ok(datos: bytes) -> tuple[bool, str]:
+    """Sintaxis mínima JPEG: SOI@0, EOI en los últimos 4 B y SOF antes de SOS.
+
+    Fix S de la causa raíz jpegqc: el byte-loss en la captura (OV3660→GDMA con
+    overflow de FIFO) produce JPEGs que empiezan con magic FFD8FF válido y
+    terminan en FFD9, pero con huecos de 14-16 B en offsets múltiplos de 16
+    dentro de la cabecera (offsets 336-590). El segment-walk de marcadores
+    pierde el sync ahí y delata el patrón. Limitación conocida (aceptada, como
+    Fix F2 del firmware): un hueco colocado enteramente DENTRO de la entropy
+    data (id30-like) no es detectable barato — el walk se detiene en el primer
+    SOS; ese último filtro lo pone el QC externo con PIL.
+
+    Devuelve ``(True, "")`` o ``(False, motivo)``.
+    """
+    if not datos.startswith(b"\xff\xd8"):
+        return False, "sin SOI FFD8 en offset 0"
+    if _EOI_JPEG not in datos[-4:]:
+        return False, "sin EOI FFD9 en los ultimos 4 bytes"
+    n = len(datos)
+    sof_visto = False
+    i = 2
+    while i + 1 < n:
+        if datos[i] != 0xFF:
+            return False, f"perdida de sync: esperado FF en offset {i}"
+        k = i + 1
+        while k < n and datos[k] == 0xFF:  # bytes de relleno (FF FF ... marker)
+            k += 1
+        if k >= n:
+            return False, "marker trunco al final de datos"
+        codigo = datos[k]
+        if codigo == 0x00:
+            return False, f"byte 00 donde se esperaba marcador (offset {k})"
+        if codigo == 0xDA:  # SOS: fin del walk de cabecera
+            if not sof_visto:
+                return False, "sin marcador SOF antes de SOS"
+            return True, ""
+        if 0xC0 <= codigo <= 0xCF and codigo not in (0xC4, 0xC8, 0xCC):
+            sof_visto = True
+        if codigo in _MARCADORES_SIN_LONGITUD:
+            i = k + 1
+            continue
+        if k + 2 >= n:
+            return False, "longitud de segmento fuera de datos"
+        largo = int.from_bytes(datos[k + 1 : k + 3], "big")
+        if largo < 2:
+            return False, f"longitud {largo} invalida en offset {k}"
+        # El largo incluye los 2 B del propio campo pero no el marcador:
+        # el siguiente FF queda en k + largo + 1 (k es el byte del codigo).
+        i = k + largo + 1
+        if not sof_visto and i >= VENTANA_SOF_JPEG:
+            return False, f"sin SOF en los primeros {VENTANA_SOF_JPEG} B"
+    return False, "sin SOS (cabecera incompleta)"
 
 
 def ahora_ms() -> int:
@@ -498,7 +568,8 @@ class IngestaWriter:
         """Pasos 2-7 del decoder (SPEC §7.2). Se ejecuta bajo ``self._lock``.
 
         Devuelve la accion: ``imagen_mqtt`` si persistio, o
-        ``imagen_descartada_*``/``imagen_duplicada`` con log del motivo.
+        ``imagen_descartada_*`` (incluida ``imagen_descartada_estructura``, Fix S)
+        /``imagen_duplicada`` con log del motivo.
         """
         # 2. Allowlist con refresco EN VIVO (mismo patron que el receptor F24-b1:
         # en una DB nueva el retained ``device`` puede llegar despues).
@@ -530,6 +601,20 @@ class IngestaWriter:
                 "imagen MQTT descartada: sin magic JPEG FFD8FF device=%s", device_id
             )
             return "imagen_descartada_magic"
+        # Fix S (causa raíz jpegqc): el magic bueno no garantiza estructura —
+        # el byte-loss en captura deja FFD8FF@0 y FFD9 final con huecos de
+        # 16 B en la cabecera. Se exige la sintaxis mínima antes de persistir.
+        estructura_ok, motivo_estructura = _jpeg_estructura_ok(contenido)
+        if not estructura_ok:
+            LOG.warning(
+                "imagen MQTT descartada: estructura JPEG invalida (%s) device=%s "
+                "sha=%s bytes=%d",
+                motivo_estructura,
+                device_id,
+                hashlib.sha256(contenido).hexdigest()[:8],
+                len(contenido),
+            )
+            return "imagen_descartada_estructura"
         if len(contenido) != int(datos["tamano"]):
             LOG.warning(
                 "imagen MQTT descartada: tamano declarado %s != %d reales device=%s",

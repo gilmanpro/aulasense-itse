@@ -438,6 +438,116 @@ def test_fk_ignora_motion_fin_y_otro_device(escenario):
     assert _consultar(escenario.db, "SELECT evento_id FROM imagenes") == [(None,)]
 
 
+# --- 2b. Validación estructural JPEG (Fix S, causa raíz jpegqc 2026-11-15) --
+
+
+def _hueco_16b(datos: bytes, offset: int) -> bytes:
+    """Réplica del patrón E5: borra 16 B en un offset múltiplo de 16."""
+    assert offset % 16 == 0
+    return datos[:offset] + datos[offset + 16:]
+
+
+def _craft_jpeg(*, con_sof: bool = True, con_eoi: bool = True) -> bytes:
+    """JPEG estructural mínimo DETERMINISTA (sin PIL, entre máquinas).
+
+    SOI + APP0 (rellena la cabecera hasta offsets múltiplos de 16, como el
+    patrón E5 observado en la OV3660: huecos entre 336 y 590) + DQT + SOF0 +
+    DHT + SOS + entropy sin FF + EOI.
+    """
+    partes = [
+        b"\xff\xd8",
+        b"\xff\xe0" + (310).to_bytes(2, "big") + b"\x00" * 308,  # APP0
+        b"\xff\xdb" + (4).to_bytes(2, "big") + b"\x00\x11",  # DQT
+    ]
+    if con_sof:
+        partes.append(
+            b"\xff\xc0" + (17).to_bytes(2, "big")
+            + b"\x08\x00\x1e\x00\x28\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+        )
+    partes += [
+        b"\xff\xc4" + (4).to_bytes(2, "big") + b"\x00\x00",  # DHT
+        b"\xff\xda" + (8).to_bytes(2, "big") + b"\x01\x01\x00\x00\x3f\x00",  # SOS
+        b"\x7f\xf7\x9b\xa0" * 4,  # entropy data sin bytes FF
+    ]
+    partes.append(b"\xff\xd9" if con_eoi else b"\x00\x00")
+    return b"".join(partes)
+
+
+def test_craft_jpeg_valido_persiste(escenario):
+    """Guarda de regresión: el walkthrough NO rechaza estructuras válidas."""
+    resultado = escenario.writer.procesar_imagen_mqtt(
+        _topic("image"), _envelope(_craft_jpeg()), now_ms=NOW
+    )
+    assert resultado["accion"] == "imagen_mqtt", resultado
+    assert len(_imagenes(escenario.db)) == 1
+
+
+def test_hueco_16b_en_cabecera_descarta_estructura(escenario, caplog):
+    """Patrón E5 exacto: hueco de 16 B en offset 336 (múltiplo de 16) de una
+    cabecera determinista → el walk pierde el sync y la imagen SE DESCARTA
+    (nunca se persiste basura con magic válido)."""
+    roto = _hueco_16b(_craft_jpeg(), 336)
+    with caplog.at_level(logging.WARNING, logger="aulasense.ingesta"):
+        resultado = escenario.writer.procesar_imagen_mqtt(
+            _topic("image"), _envelope(roto), now_ms=NOW
+        )
+    assert resultado["accion"] == "imagen_descartada_estructura"
+    assert _imagenes(escenario.db) == []
+    assert _archivos(escenario.datos) == []
+    assert any("estructura JPEG invalida" in r.message for r in caplog.records)
+
+
+def test_hueco_16b_en_pil_real_descarta_estructura(escenario):
+    """El mismo hueco sobre un JPEG PIL real, recortado DENTRO de su cabecera
+    (offset múltiplo de 16 estrictamente anterior al SOS), para que el test
+    sea determinista en cualquier versión de Pillow."""
+    imagen = _jpeg()
+    sos = imagen.find(b"\xff\xda")
+    assert sos >= 80, "cabecera PIL inesperadamente corta para este fixture"
+    roto = _hueco_16b(imagen, (sos // 16) * 16 - 16)
+    resultado = escenario.writer.procesar_imagen_mqtt(
+        _topic("image"), _envelope(roto), now_ms=NOW
+    )
+    assert resultado["accion"] == "imagen_descartada_estructura"
+    assert _imagenes(escenario.db) == []
+
+
+def test_sin_eoi_final_descarta_estructura(escenario):
+    """JPEG sin FFD9 en los últimos 4 B (marcador de cola perdido)."""
+    roto = _craft_jpeg(con_eoi=False)
+    resultado = escenario.writer.procesar_imagen_mqtt(
+        _topic("image"), _envelope(roto), now_ms=NOW
+    )
+    assert resultado["accion"] == "imagen_descartada_estructura"
+    assert _imagenes(escenario.db) == []
+
+
+def test_sin_sof_antes_de_sos_descarta_estructura(escenario):
+    """Cabecera sin marcador SOF antes del SOS (hueco que se traga el SOF)."""
+    roto = _craft_jpeg(con_sof=False)
+    resultado = escenario.writer.procesar_imagen_mqtt(
+        _topic("image"), _envelope(roto), now_ms=NOW
+    )
+    assert resultado["accion"] == "imagen_descartada_estructura"
+    assert _imagenes(escenario.db) == []
+
+
+def test_hueco_en_entropy_data_limitacion_conocida(escenario):
+    """LIMITACIÓN ACEPTADA (id30-like): un hueco de 16 B DENTRO de la entropy
+    data mantiene la cabecera íntegra → el walk structural pasa y la imagen
+    se persiste. Ese último filtro NO es del decoder: lo hace el QC de PIL y
+    el técnico de visión (descartada a mano). Test honesto que documenta el
+    borde del Fix S."""
+    imagen = _jpeg()
+    sos = imagen.find(b"\xff\xda")
+    # offset múltiplo de 16 dentro de la entropy: tras SOS + ~100 B de datos.
+    roto = _hueco_16b(imagen, ((sos + 100) // 16) * 16)
+    resultado = escenario.writer.procesar_imagen_mqtt(
+        _topic("image"), _envelope(roto), now_ms=NOW
+    )
+    assert resultado["accion"] == "imagen_mqtt"  # persistida a propósito
+
+
 # --- 5. Invariante de writer único ---------------------------------------
 
 
