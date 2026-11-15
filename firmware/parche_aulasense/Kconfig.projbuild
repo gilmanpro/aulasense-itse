@@ -69,3 +69,85 @@ menu "AulaSense Feedback"
             continuo cuando la persona se mueve de forma sostenida.
 
 endmenu
+
+menu "AulaSense Imagen (F24-c)"
+
+    config AULASENSE_IMAGEN
+        bool "Evidencia de imagen en el onset de motion (OV3660 QVGA JPEG)"
+        default y
+        help
+            Activa el modulo app_imagen.c (parche F24-c): captura UN JPEG QVGA 320x240 de la
+            OV3660 en la transicion idle->motion y lo sube por HTTP al receptor local de la
+            ingesta (POST /internal/imagen, LAN :8001, Bearer token).
+
+            La imagen es EVIDENCIA del evento, no streaming: cooldown 15 s, tarea propia de
+            prioridad 3 (NUNCA el loop del detector), cola corta en PSRAM. Si el heap interno
+            cae por debajo del gate, la captura se auto-deshabilita y el CSI sigue detectando.
+            Imagenes SOLO a la LAN del proyecto: NUNCA por MQTT ni a la nube (AGENTS regla 2/14).
+
+            Este simbolo exige CONFIG_SPIRAM=y (framebuffers y buffers JPEG en PSRAM): si falta,
+            app_imagen.c falla en compilacion con un #error explicito. Ver README §10.
+
+    config AULASENSE_IMAGEN_COOLDOWN_S
+        int "Cooldown entre capturas (segundos)"
+        range 1 300
+        default 15
+        help
+            Tiempo minimo entre dos capturas. Dos onsets seguidos con menos de este intervalo
+            producen UNA sola imagen (anti-spam y anti-desgaste de la red/flash).
+
+    config AULASENSE_IMAGEN_QUEUE
+        int "Slots de la cola de onsets en PSRAM (x 8 KB de buffer JPEG)"
+        range 1 8
+        default 2
+        help
+            Longitud de la cola corta de onsets pendientes (SPEC 3.2: 2 slots x 8 KB = 16 KB en
+            PSRAM). Si la cola se llena se DESCARTA la imagen y se emite IMAGEN_DESCARTE: el
+            EVENTO motion sigue su curso por MQTT (el evento es la fuente de verdad).
+
+    config AULASENSE_IMAGEN_HEAP_MIN_KB
+        int "Gate de memoria: heap interno libre minimo (KB)"
+        range 32 512
+        default 120
+        help
+            Antes de cada captura se comprueba xPortGetFreeHeapSize(). Si el heap interno libre
+            es menor que este valor, la captura se auto-deshabilita con ESP_LOGW y evento
+            IMAGEN_GATE_OFF. El sistema SIGUE detectando movimiento por CSI.
+
+    config AULASENSE_IMAGEN_HEAP_BLOCK_MIN_KB
+        int "Gate de memoria: mayor bloque libre interno minimo (KB)"
+        range 16 256
+        default 64
+        help
+            Segundo umbral del gate de memoria: heap_caps_get_largest_free_block() sobre el heap
+            INTERNO. Por debajo de este valor la captura se auto-deshabilita. La re-habilitacion
+            usa histeresis de +20 KB sobre ambos umbrales.
+
+    config AULASENSE_UPLOAD_HOST
+        string "Host LAN del receptor de imagenes (:8001)"
+        default ""
+        help
+            IP LAN del PC que corre la ingesta con el receptor de imagen (SPEC 7.1). Vacio =
+            receptor desactivado (se captura y se descarta: degradacion honesta). NUNCA 0.0.0.0.
+
+            Este valor lo emite tools/gen_firmware_config.py desde .env
+            (AULASENSE_UPLOAD_HOST) a sdkconfig.defaults.local; NO se escribe a mano aqui.
+
+    config AULASENSE_UPLOAD_PORT
+        int "Puerto del receptor de imagenes"
+        range 1 65535
+        default 8001
+        help
+            Puerto TCP del receptor de imagen dentro del proceso de ingesta. Default 8001.
+
+    config AULASENSE_UPLOAD_TOKEN
+        string "Bearer token del receptor (NUNCA se imprime)"
+        default ""
+        help
+            Token Bearer del receptor de imagen (secrets.token_hex(16) generado por
+            tools/gen_firmware_config.py en .env). Vacio = upload deshabilitado.
+
+            El modulo NUNCA loguea este valor: solo su longitud y el destino. El sdkconfig que
+            lo contiene es GITIGNORED; no pegarlo en docs, logs ni evidencias.
+
+endmenu
