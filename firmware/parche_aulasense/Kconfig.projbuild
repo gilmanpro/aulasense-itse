@@ -83,7 +83,8 @@ menu "AulaSense Imagen (F24-c)"
             La imagen es EVIDENCIA del evento, no streaming: cooldown 15 s, tarea propia de
             prioridad 3 (NUNCA el loop del detector), cola corta en PSRAM. Si el heap interno
             cae por debajo del gate, la captura se auto-deshabilita y el CSI sigue detectando.
-            Imagenes SOLO a la LAN del proyecto: NUNCA por MQTT ni a la nube (AGENTS regla 2/14).
+            Imagenes SOLO a la LAN del proyecto: transporte primario MQTT (N1), fallback
+            HTTP :8001 (N2); NUNCA a la nube (D-F25-1, AGENTS regla 2/14).
 
             Este simbolo exige CONFIG_SPIRAM=y (framebuffers y buffers JPEG en PSRAM): si falta,
             app_imagen.c falla en compilacion con un #error explicito. Ver README §10.

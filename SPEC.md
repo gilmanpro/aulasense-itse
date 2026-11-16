@@ -709,8 +709,9 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
   también flag `--orden` del CLI).
 - **WSL (§15):** `AULASENSE_DB` (ruta canónica tras cutover: `~/aulasense-datos/aulasense.db` en WSL;
   en Windows fallback `server/datos/aulasense.db`), `AULASENSE_DATOS_DIR` (base de imagenes/exports;
-  ya soportadas por F24-b), `AULASENSE_BIND_HOST` (SOLO dentro de WSL: `0.0.0.0` VM-local; en Windows
-  el bind sigue siendo 127.0.0.1 fijo — el dashboard Windows NO gana flag de bind).
+  ya soportadas por F24-b). El bind NO es variable de `.env`: la interfaz real es la del
+  `Environment=` de la unit systemd (`AULASENSE_HOST`; app.py:82 solo lee esa) — `AULASENSE_BIND_HOST`
+  era referencia muerta y queda DEPRECADA (retirada de `.env.example`, cierre 2026-11-15).
 - **Firmware F25 (NO es env, y NO es Kconfig):** el tope b64 y la activación MQTT-imagen son
   **`#define` duros en `app_imagen.c`** (`IMAGEN_MQTT_MAX_B64 16384` en `:209`; `AULASENSE_IMAGEN_MQTT`
   queda implícito en "¿hay publisher inyectado?" — sin `app_imagen_set_mqtt_image()` el módulo se
