@@ -259,9 +259,17 @@ res["ts_anomalos"] = [{"tabla": "imagenes", "id": i, "ts_ms": t} for i, t in q(
     (payload["rango"][0] - 3600000, payload["rango"][1] + 3600000))]
 
 # 6) fotos y onsets para la cobertura de GT
+# GT foto↔onset (auditoría 2026-11-15, MEDIO): SOLO se excluye 'omitido'/FIRE-TEST.
+# Las fotos con vision_estado='error' (JPEG irrecoverable) SE MANTIENEN: son evidencia
+# física de captura al onset aunque el píxel esté roto; su cuenta se reporta aparte
+# (fotos_error) para que el informe diga "evidencia física, no material visión".
 res["fotos"] = [[i, t] for i, t in q(
     "SELECT id, ts_ms FROM imagenes WHERE origen='real' AND ts_ms BETWEEN ? AND ? "
     "AND COALESCE(vision_estado,'') != 'omitido' AND UPPER(COALESCE(descripcion,'')) NOT LIKE "
+    "'%FIRE-TEST%' ORDER BY ts_ms", (payload["rango"][0], payload["rango"][1]))]
+res["fotos_error"] = [[i, t] for i, t in q(
+    "SELECT id, ts_ms FROM imagenes WHERE origen='real' AND ts_ms BETWEEN ? AND ? "
+    "AND COALESCE(vision_estado,'') = 'error' AND UPPER(COALESCE(descripcion,'')) NOT LIKE "
     "'%FIRE-TEST%' ORDER BY ts_ms", (payload["rango"][0], payload["rango"][1]))]
 res["onsets"] = [[i, t, s] for i, t, s in q(
     "SELECT id, ts_ms, score FROM eventos WHERE origen='real' AND tipo='MOVIMIENTO_INICIO' "
@@ -401,9 +409,14 @@ def analizar_sesiones(wsl: dict) -> dict:
 
 def cobertura_gt(wsl: dict, gt: list[dict]) -> dict:
     """Cobertura temporal del GT: fraccion de segundos de cada tramo motion cubiertos por
-    evaluaciones state=motion (densidad), y fotos/onsets dentro."""
+    evaluaciones state=motion (densidad), y fotos/onsets dentro.
+
+    Las fotos con vision_estado='error' (JPEG irrecoverable) cuentan como evidencia fisica
+    de captura (`n_fotos_dentro`), NO como material de vision: se reportan aparte en
+    `n_fotos_vision_error` y la nota lo explicita (auditoria 2026-11-15, MEDIO)."""
     b5 = {int(t): {"n": int(n), "m": int(m or 0)} for t, n, m, _ in wsl["eval5"]}
     fotos = [f[1] for f in wsl["fotos"]]
+    n_vision_error = len(wsl.get("fotos_error") or [])
     onsets = [o[1] for o in wsl["onsets"]]
     tramos = []
     for w in gt:
@@ -433,9 +446,11 @@ def cobertura_gt(wsl: dict, gt: list[dict]) -> dict:
             "tramos_con_motion": cubiertos,
             "pct_tramos_cubiertos": r4(100.0 * cubiertos / len(tramos)) if tramos else None,
             "densidad_motion_mediana": r4(statistics.median(dens)) if dens else None,
+            "n_fotos_vision_error": n_vision_error,
             "tramos": tramos,
             "nota": "densidad = fraccion de evaluaciones motion dentro del tramo GT (buckets "
-                    "de 5 s pesados por solape); tramo sin evaluaciones = sin-dato, no idle"}
+                    "de 5 s pesados por solape); tramo sin evaluaciones = sin-dato, no idle. "
+                    + ad.texto_vision_error(n_vision_error)}
 
 
 # ---------------------------------------------------------------- figuras
@@ -664,7 +679,8 @@ def main(argv=None) -> int:
         print("[aviso] modo --sin-wsl: EDA con wsl vacio (solo valida flujo)", file=sys.stderr)
         wsl = {"hist_hora": [], "stats_hora": [], "pps": [], "rssi_hist": [], "eval5": [],
                "rssi5": [], "sesiones": [], "idle_altos": [], "idle_altos_n": 0, "huecos": [],
-               "ts_anomalos": [], "fotos": [], "onsets": [], "config": [], "totals": [0, 0, 0, 0],
+               "ts_anomalos": [], "fotos": [], "fotos_error": [], "onsets": [], "config": [],
+               "totals": [0, 0, 0, 0],
                "rango": [0, 0]}
         eda = None
     else:

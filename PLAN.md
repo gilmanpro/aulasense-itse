@@ -1126,9 +1126,10 @@ checklist v25 (quedan `[x]`/`[ ]` a verificación del orquestador, única mano q
 - **F25-e · login — EJECUTADA** (b99e185; portal `/cfg` humano en README firmware §13.7 — nota: es
   el token del portal, no la sesión del dashboard). **F25-f1..f5 — EJECUTADAS** (diagrama C4, póster,
   guion+SRT, video ensamblado 65,96 s, publicación VPS 77a08d0: `:10062` vigente sin admin).
-- **F24-d/e0/e/f — F24-f2 consolidado:** el pipeline base F5a lee BD canónica + `dataset/sesion_*/`
-  directamente; `analysis/dataset/consolidado.csv` **no está en disco hoy** (regenerable con
-  `export_consolida.py`; el texto de SPEC §7/PLAN "consolidado" sigue vigente como herramienta).
+- **F24-d/e0/e/f — F24-f2 consolidado:** `analysis/dataset/consolidado.csv` **publicado y en disco**
+  (462 filas, 100 % `origen=real`, commit 7dbbb9a; verificado en la auditoría externa 2026-11-15);
+  regenerable con `export_consolida.py`. El pipeline F5a base lee además BD canónica +
+  `dataset/sesion_*/` directamente.
 - **F5a · EDA+modelo — EJECUTADA** (7807e8b + e06cb60): pipeline base v f5a-1.1 + `eda.py`/
   `modelo_ocupacion.py` v f5a-2.0, runner único `analysis/run_analisis.ps1`, 11 figuras, 18 tests,
   determinismo byte-a-byte sobre snapshot (`--db`, modo=ro). **Desviaciones anotadas:** figuras en

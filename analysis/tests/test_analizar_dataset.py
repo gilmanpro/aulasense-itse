@@ -74,6 +74,33 @@ def test_aparear_fotos_onsets_ventana_20s():
     assert r["lags_ms"]["n"] == 2 and r["lags_ms"]["p0"] == 2000.0 and r["lags_ms"]["p100"] == 19000.0
 
 
+# ---------------------------------------------------------------- vision 'error'
+def test_vision_error_cuenta_en_gt_y_lleva_nota_explicita():
+    """[MEDIO auditoria 2026-11-15] vision_estado='error' (JPEG irrecoverable):
+    (b) SIGUE contando en el GT foto↔onset y la nota del informe lo explicita en
+    'integridad'/'fotos' — evidencia física de captura, no material de visión."""
+    def img(ident, ts, estado, desc=""):
+        return {"id": ident, "ts_ms": ts, "ruta": f"imagenes/{ident}.jpg", "tamano_bytes": 10,
+                "evento_id": None, "origen": "real", "canal": "mqtt",
+                "vision_estado": estado, "imagen_purgada": 0, "vision_tokens": None,
+                "vision_modelo": None, "diff_recibido_ms": -500, "descripcion_corta": desc}
+
+    wsl = {"eventos": [], "imagenes": [img(1, 10_000, "hecho", "persona"),
+                                       img(2, 11_000, "error")],
+           "gt_stats": [], "jpeg": [], "ventanas": [], "vision_uso": [],
+           "vision_tokens_totales": 0}
+    m = ad.construir_metricas({}, [], wsl)
+    nota = ("1 con JPEG irrecoverable (error) contadas como evidencia fisica de captura, "
+            "no como material vision")
+    assert m["correlacion_foto_onset"]["fotos"] == 2      # la rota sigue en el GT
+    assert m["correlacion_foto_onset"]["vision_error_en_gt_n"] == 1
+    assert m["correlacion_foto_onset"]["nota_vision_error"] == nota
+    assert m["integridad_jpeg"]["vision_error_n"] == 1
+    assert m["integridad_jpeg"]["nota_vision_error"] == nota
+    # Sin filas 'error' la nota es estable (modo --sin-wsl / BD limpia).
+    assert ad.texto_vision_error(0).startswith("sin fotos con JPEG irrecoverable (error)")
+
+
 # ---------------------------------------------------------------- parser validacion csv
 def test_cargar_validacion_y_ground_truth_union(tmp_path=None):
     TMP.mkdir(parents=True, exist_ok=True)

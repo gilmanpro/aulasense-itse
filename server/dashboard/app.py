@@ -68,6 +68,7 @@ if str(SERVER_DIR) not in sys.path:
 from ingesta.esquema import (  # noqa: E402
     COLUMNAS_F25_IMAGENES,
     ESQUEMA_SQL,
+    EVENTOS_CONFIG,
     validar,
 )
 
@@ -102,11 +103,22 @@ POLL_INGESTA_S = 0.4  # latencia objetivo <2 s global (SPEC §9)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# --- DDL literal de SPEC §8.1 (copia local deliberada, NO se importa) ---------
+# --- DDL literal de SPEC §8.1 (copia local deliberada) ------------------------
 # La ingesta es la dueña del esquema (§8.1); el dashboard solo lo replica como
 # migración idempotente de respaldo (tests con DB nueva, DB antigua anterior a
-# F24). Se mantiene como constante local para no acoplarnos a los símbolos que
-# B1 edita en paralelo en ``server/ingesta/esquema.py`` (condición de carrera).
+# F24). El SQL se mantiene como constante local para no acoplarnos a los símbolos
+# que se editan en paralelo en ``server/ingesta/esquema.py`` (condición de
+# carrera); la única pieza IMPORTADA es el enum de eventos de config (ver abajo).
+# Enum del CHECK de ``config_eventos.tipo``: se DERIVA del canon
+# (``ingesta.esquema.EVENTOS_CONFIG``, fuente unica de R8) para que la copia de
+# respaldo no vuelva a divergir. Auditoria externa doble-ciego 2026-11-15 (MEDIO):
+# el literal local se quedo sin 'IMAGEN_ON' tras R8, y una DB creada dashboard-first
+# (rama ``not existe_img``) rechazaba ese evento hasta que la ingesta reconstruia la
+# tabla (migracion R8 de ``esquema.py``). Derivarlo convierte el drift en imposible.
+CHECK_CONFIG_TIPOS = "tipo TEXT NOT NULL CHECK(tipo IN ({tipos}))".format(
+    tipos=",".join(f"'{tipo}'" for tipo in EVENTOS_CONFIG)
+)
+
 IMAGENES_SQL = """
 CREATE TABLE IF NOT EXISTS imagenes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,13 +153,13 @@ CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal);
 CREATE TABLE IF NOT EXISTS config_eventos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
-  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
+  {check_config_tipos},
   detalle TEXT,
   origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
   recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
-"""
+""".format(check_config_tipos=CHECK_CONFIG_TIPOS)
 
 # Columnas exactas de metadata de la galería: ``ruta`` NUNCA se expone (SPEC §9.1).
 # F25-d3 (SPEC §9.3): se añaden descripcion/etiquetas/canal/vision_estado para la

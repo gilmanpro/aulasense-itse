@@ -924,6 +924,67 @@ def test_esquema_sesiones_idempotente(tmp_path):
     assert total == 2
 
 
+def test_ddl_respaldo_config_eventos_acepta_imagen_on(tmp_path, monkeypatch):
+    """[MEDIO auditoria doble-ciego 2026-11-15] El DDL de respaldo del dashboard
+    (rama ``not existe_img`` de ``_conectar``) alinea el CHECK de
+    ``config_eventos.tipo`` con el canon de ``server/ingesta/esquema.py`` (R8):
+    una DB creada dashboard-first debe aceptar ``IMAGEN_ON`` sin esperar a que la
+    ingesta reconstruya la tabla, y seguir rechazando tipos fuera del canon."""
+    from ingesta.esquema import EVENTOS_CONFIG
+
+    from dashboard import app as dash
+
+    # Reproduce el escenario del hallazgo: DB con ``evaluaciones`` pero SIN
+    # ``imagenes`` => ``_conectar`` usa el DDL local IMAGENES_SQL.
+    db = tmp_path / "respaldo.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE evaluaciones (id INTEGER PRIMARY KEY, ts_ms INTEGER)")
+    con.commit()
+    con.close()
+
+    monkeypatch.setenv("AULASENSE_DB", str(db))
+    con = dash._conectar()
+    try:
+        for tipo in EVENTOS_CONFIG:
+            con.execute(
+                "INSERT INTO config_eventos (device_id, ts_ms, tipo) VALUES (?, 1, ?)",
+                (DEVID, tipo),
+            )
+        con.commit()
+        creados = {fila[0] for fila in con.execute("SELECT tipo FROM config_eventos")}
+        # El CHECK sigue siendo un CHECK: un tipo inventado se rechaza.
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO config_eventos (device_id, ts_ms, tipo) VALUES (?, 2, 'NO_EXISTE')",
+                (DEVID,),
+            )
+    finally:
+        con.close()
+
+    assert creados == set(EVENTOS_CONFIG)
+    assert "IMAGEN_ON" in creados
+
+
+def test_internal_evento_guard_de_fuente_nat_403_y_loopback_ok(cliente, monkeypatch):
+    """[MENOR auditoria doble-ciego 2026-11-15] Guard de FUENTE de ``/internal/*``:
+    el tunel SSH+portproxy llega con la IP NAT del gateway (no loopback) => 403;
+    la maquina local (loopback) pasa; ``AULASENSE_INTERNAL_HOSTS`` es el opt-in
+    explicito que sustituye al default (minimo privilegio)."""
+    from dashboard import app as dash
+
+    monkeypatch.setattr(dash, "_ip_cliente", lambda request: "172.26.0.2")
+    nat = cliente.post("/internal/evento", json=MOTION_VALIDO)
+    assert nat.status_code == 403, "una fuente NAT (tunel) no puede inyectar eventos"
+    assert "fuente" in nat.json()["detail"]
+
+    monkeypatch.setattr(dash, "_ip_cliente", lambda request: "127.0.0.1")
+    assert cliente.post("/internal/evento", json=MOTION_VALIDO).status_code == 201
+
+    monkeypatch.setenv("AULASENSE_INTERNAL_HOSTS", "172.26.0.2")
+    monkeypatch.setattr(dash, "_ip_cliente", lambda request: "172.26.0.2")
+    assert cliente.post("/internal/evento", json=MOTION_VALIDO).status_code == 201
+
+
 def test_validacion_ui_panel_ventanas_y_export(cliente):
     html = cliente.get("/").text
     assert 'id="tabla-ventanas"' in html

@@ -64,6 +64,16 @@ def sha256_de(path: Path) -> str:
 
 
 # ---------------------------------------------------------------- consulta WSL
+# Filtro de "material de vision" para las FEATURES (auditoria doble-ciego 2026-11-15,
+# MEDIO): 'omitido' (fire-test) y 'error' (JPEG irrecoverable, SPEC §404-407) no tienen
+# descripcion/etiquetas/vision_tokens, asi que NO deben inflar n_fotos/tiene_imagen/
+# frac_ia_persona (features que dependen de la imagen existente). El GT foto<->onset de
+# eda.py/analizar_dataset.py SI las cuenta como evidencia fisica de captura, con nota.
+FILTRO_MATERIAL_VISION = (
+    "COALESCE(vision_estado,'') NOT IN ({estados}) "
+    "AND UPPER(COALESCE(descripcion,'')) NOT LIKE '%FIRE-TEST%'"
+).format(estados=",".join(f"'{e}'" for e in ad.ESTADOS_SIN_MATERIAL_VISION))
+
 CONSULTA_MODELO_PY = r'''# -*- coding: utf-8 -*-
 # Sonda SOLO-LECTURA (mode=ro) para el modelo de ocupacion: ventanas de 10 min con
 # evaluaciones/telemetria/imagenes/clima/onsets. Mismo patron del pipeline base.
@@ -83,8 +93,7 @@ res["tel_w"] = q("SELECT CAST(ts_ms/? AS INTEGER)*? t, AVG(die_temp_c), "
                  "FROM telemetria WHERE origen='real' GROUP BY t ORDER BY t", (W, W))
 res["img_w"] = q("SELECT CAST(ts_ms/? AS INTEGER)*? t, COUNT(*), "
                  "SUM(ia_persona IS NOT NULL), SUM(ia_persona=1) FROM imagenes "
-                 "WHERE origen='real' AND COALESCE(vision_estado,'')!='omitido' "
-                 "AND UPPER(COALESCE(descripcion,'')) NOT LIKE '%FIRE-TEST%' "
+                 "WHERE origen='real' AND __FILTRO_MATERIAL_VISION__ "
                  "GROUP BY t ORDER BY t", (W, W))
 res["clima"] = q("SELECT ts_ms, temperatura_c, humedad_pct, precipitacion_mm, viento_kmh "
                  "FROM fuentes_externas ORDER BY ts_ms")
@@ -95,6 +104,9 @@ res["onsets"] = q("SELECT id, ts_ms, score FROM eventos WHERE origen='real' "
 res["totals"] = q("SELECT COUNT(*), MIN(ts_ms), MAX(ts_ms) FROM evaluaciones WHERE origen='real'")[0]
 print(json.dumps(res, ensure_ascii=False))
 '''
+# Se resuelve por .replace (no .format): el script lleva llaves literales de dicts JSON.
+CONSULTA_MODELO_PY = CONSULTA_MODELO_PY.replace("__FILTRO_MATERIAL_VISION__",
+                                                FILTRO_MATERIAL_VISION)
 
 
 def consultar_wsl_modelo(payload: dict) -> dict:
@@ -189,6 +201,9 @@ def construir_dataset(wsl: dict) -> tuple[list[dict], dict]:
         filas.append(f)
     meta = {"n_ventanas_eval": len(ts), "n_filas_entrenables": len(filas),
             "n_filas_omitidas": len(omitidas), "omitidas_ejemplos": omitidas[:10],
+            "filtro_material_vision": ("las features tiene_imagen/n_fotos/frac_ia_persona "
+                                       "excluyen vision_estado 'omitido' y 'error' (JPEG "
+                                       "irrecoverable): no hay material de vision detras"),
             "nota": ("ventanas consecutivas (sin huecos de nodo offline); target = "
                      ">=1 evaluacion motion en la ventana SIGUIENTE (misma regla del "
                      "indicador, metodo del pipeline base)")}

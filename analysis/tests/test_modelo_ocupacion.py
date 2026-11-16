@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """F5a — tests del modelo/indicador de ocupacion (modelo_ocupacion.py): funciones puras
 y entrenamiento determinista contra filas sinteticas EN MEMORIA (nunca BD)."""
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -55,6 +56,30 @@ def test_features_null_safe_sin_romperse():
     f2 = mo.features_ventana(2 * W, v, _wsl_fake()["clima"], _wsl_fake()["prov"])
     assert f2["hora_provision"] == 1                 # evento de config dentro de la ventana
     assert f2["clima_temp_c"] == 20.0                # ±1 h mas cercano
+
+
+def test_filtro_material_vision_excluye_error_y_omitido():
+    """[MEDIO auditoria 2026-11-15] Decisión (a): las features que dependen de la
+    imagen (tiene_imagen/n_fotos/frac_ia_persona) NO cuentan filas sin material de
+    visión: 'error' (JPEG irrecoverable) junto a 'omitido' (fire-test) quedan fuera;
+    'pendiente' o estado NULL sí cuentan (la foto existe y está por describir)."""
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE imagenes (ts_ms INTEGER, origen TEXT, vision_estado TEXT, "
+                "descripcion TEXT, ia_persona INTEGER)")
+    con.executemany("INSERT INTO imagenes VALUES (?,?,?,?,?)", [
+        (0, "real", "hecho", "persona", 1),
+        (0, "real", "pendiente", None, None),
+        (0, "real", "error", None, None),           # JPEG irrecoverable (SPEC §404-407)
+        (0, "real", "omitido", "FIRE-TEST", None),  # fire-test
+        (0, "real", None, None, None),              # sin estado: cuenta
+        (0, "sintetico", "hecho", "", 1),           # sintetico: fuera
+    ])
+    n = con.execute("SELECT COUNT(*) FROM imagenes WHERE origen='real' AND "
+                    + mo.FILTRO_MATERIAL_VISION).fetchone()[0]
+    con.close()
+    assert n == 3
+    assert "'error'" in mo.FILTRO_MATERIAL_VISION
+    assert "FIRE-TEST" in mo.FILTRO_MATERIAL_VISION
 
 
 # ---------------------------------------------------------------- entrenamiento

@@ -105,3 +105,23 @@ def test_cobertura_gt_densidad_y_fotos():
     # tramo sin evaluaciones = sin-dato, no idle (nota honesta)
     r2 = eda.cobertura_gt({"eval5": [], "fotos": [], "onsets": []}, gt)
     assert r2["tramos"][0]["densidad_motion"] is None
+
+
+def test_cobertura_gt_vision_error_evidencia_fisica_con_nota():
+    """[MEDIO auditoria 2026-11-15] Decisión (b): una foto con vision_estado='error'
+    (JPEG irrecoverable) SIGUE contando como evidencia física de captura al onset
+    (`n_fotos_dentro`), pero la nota del informe la separa del material de visión."""
+    wsl = {"eval5": [[0, 100, 50, 0.5]],
+           "fotos": [[1, 100_000], [2, 120_000]],   # la 2 está rota (error)
+           "fotos_error": [[2, 120_000]],
+           "onsets": []}
+    gt = [{"sesion": "S", "inicio_ms": 0, "fin_ms": 300_000, "verdad_terreno": "motion"}]
+    r = eda.cobertura_gt(wsl, gt)
+    assert r["tramos"][0]["n_fotos_dentro"] == 2       # la rota cuenta como evidencia
+    assert r["n_fotos_vision_error"] == 1
+    assert ("1 con JPEG irrecoverable (error) contadas como evidencia fisica de captura, "
+            "no como material vision") in r["nota"]
+    # Sin filas 'error' la nota lo dice y el contador es 0 (modo --sin-wsl incluido).
+    r0 = eda.cobertura_gt({**wsl, "fotos_error": []}, gt)
+    assert r0["n_fotos_vision_error"] == 0
+    assert "sin fotos con JPEG irrecoverable (error)" in r0["nota"]

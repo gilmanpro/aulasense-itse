@@ -10,6 +10,8 @@ Entrada (SOLO lectura, nunca escribe BD ni dataset/):
     patrón heredado de .tmp/q_fotos2.py y .tmp/q_estado_fotos.py).
   - JPEG de evidencia validados con PIL ESTRICTO en el venv WSL (Pillow 13.0.0);
     el fire-test HTTP (id 56, vision_estado='omitido', descripcion FIRE-TEST) se EXCLUYE.
+    vision_estado='error' (JPEG irrecoverable) NO se excluye del GT foto↔onset: cuenta
+    como evidencia fisica de captura y el informe lo anota (auditoría 2026-11-15).
 
 Salida a docs/analisis/:
   - analisis.json         (machine-readable para F6a; determinista: version + sha256 de
@@ -60,11 +62,30 @@ BUCKET_SERIE_MS = 10_000         # granularidad de la serie temporal motion
 # y vision_estado='omitido'. Se excluye explicitamente de integridad JPEG y correlacion.
 RE_FIRE_TEST = re.compile(r"FIRE-TEST", re.IGNORECASE)
 
+# Tratamiento analitico del estado 'error' (auditoria doble-ciego 2026-11-15, MEDIO):
+# las ~20 fotos con JPEG irrecoverable (SPEC §404-407, anteriores a FixF) NO aportan
+# material de vision (sin descripcion/etiquetas/vision_tokens), pero SI son evidencia
+# fisica de que hubo captura al onset. Regla acordada: se EXCLUYEN de las features de
+# vision (modelo_ocupacion: n_fotos/tiene_imagen/frac_ia_persona) y se MANTIENEN en el
+# GT foto<->onset (eda/analizar_dataset), anotandolo de forma explicita en los informes.
+ESTADOS_SIN_MATERIAL_VISION: tuple[str, ...] = ("omitido", "error")
+
 
 # ------------------------------------------------------------------ utilidades
 def r4(x):
     """Redondeo determinista a 4 decimales (None pasa tal cual)."""
     return None if x is None else round(float(x), 4)
+
+
+def texto_vision_error(n: int) -> str:
+    """Nota canonica de informes: filas 'error' (JPEG irrecoverable) contadas como
+    evidencia fisica de captura y NO como material de vision (auditoria 2026-11-15).
+    Determinista: mismo texto en analisis.json, informe_metricas.md y eda.json."""
+    if not n:
+        return ("sin fotos con JPEG irrecoverable (error) en la BD (o modo --sin-wsl): "
+                "nada que anotar")
+    return (f"{n} con JPEG irrecoverable (error) contadas como evidencia fisica de "
+            "captura, no como material vision")
 
 
 def sha256_de(path: Path) -> str:
@@ -556,9 +577,16 @@ def construir_metricas(sesiones: dict, gt: list[dict], wsl: dict) -> dict:
     fins = [e for e in evs if e["tipo"] == "MOVIMIENTO_FIN"]
     imagenes_reales = [i for i in wsl["imagenes"] if i["origen"] == "real"]
     fire = re.compile(RE_FIRE_TEST.pattern, re.IGNORECASE)
+    # GT foto<->onset: SOLO se excluye el fire-test (descripcion FIRE-TEST u 'omitido').
+    # Las filas con vision_estado='error' (JPEG irrecoverable, sin material de vision)
+    # SE MANTIENEN aqui: la foto existe y es evidencia fisica de captura al onset
+    # (decision de la auditoria 2026-11-15; el efecto analitico se anota en el informe).
     fotos_usables = [i for i in imagenes_reales
                      if not (fire.search(i["descripcion_corta"]) or i["vision_estado"] == "omitido")]
     fotos_ts = [{"ts_ms": f["ts_ms"], "id": f["id"]} for f in fotos_usables]
+    # Filas 'error': sin material de vision. Se cuentan aparte para la nota honesta
+    # (aparecen en las features del modelo como excluidas, ver modelo_ocupacion.py).
+    n_vision_error = sum(1 for i in imagenes_reales if i["vision_estado"] == "error")
 
     gt_stats = wsl["gt_stats"]
     confusion = matriz_confusion(gt, gt_stats)
@@ -594,8 +622,12 @@ def construir_metricas(sesiones: dict, gt: list[dict], wsl: dict) -> dict:
             "sesiones_cubiertas": sorted({w["sesion"] for w in gt}),
         },
         "confusion": confusion,
-        "integridad_jpeg": integrar_pil_estados(wsl["jpeg"]),
-        "correlacion_foto_onset": aparear_fotos_onsets(fotos_ts, onsets),
+        "integridad_jpeg": {**integrar_pil_estados(wsl["jpeg"]),
+                            "vision_error_n": n_vision_error,
+                            "nota_vision_error": texto_vision_error(n_vision_error)},
+        "correlacion_foto_onset": {**aparear_fotos_onsets(fotos_ts, onsets),
+                                   "vision_error_en_gt_n": n_vision_error,
+                                   "nota_vision_error": texto_vision_error(n_vision_error)},
         "correlacion_foto_evento_fk": {
             "fotos": len(fotos_usables),
             "con_evento_id": sum(1 for f in fotos_usables if f["evento_id"] is not None),
@@ -744,6 +776,7 @@ def escribir_informe(md: dict, rutas_fig: list[str], out: Path) -> None:
         f"{ij['ausentes_no_purgadas']} · Purgadas(retencion): {ij['purgadas_retencion']}",
         f"- Excluidas fire-test (id 56 etc.): {ij['excluidas_fire_test']}",
         f"- **Tasa de integridad: {ij['tasa_integridad']}** (validas/(validas+rotas))",
+        f"- Nota vision: {ij['nota_vision_error']}",
         "",
         "## Correlacion foto↔onset (±%d s)" % cf["ventana_ms"],
         "",
@@ -754,6 +787,7 @@ def escribir_informe(md: dict, rutas_fig: list[str], out: Path) -> None:
         f"{len(cf.get('onsets_sin_foto', []))} {str(cf.get('onsets_sin_foto', []))[:120]}",
         f"- Lag foto−onset (ms): mediana {cf['lags_ms'].get('p50')} · p95 {cf['lags_ms'].get('p95')}",
         f"- FK evento_id en fila imagen: {md['correlacion_foto_evento_fk']['pct_fk']} %",
+        f"- Nota vision: {cf['nota_vision_error']}",
         "",
         "## Latencias evento→fila (recibido_en UTC − ts_ms)",
         "",
