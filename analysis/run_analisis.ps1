@@ -73,7 +73,15 @@ $a2 = @("analysis/eda.py")
 if ($NoFiguras) { $a2 += "--no-figuras" }
 if ($SinWsl) { $a2 += "--sin-wsl" }
 & $Python @a2
-if ($LASTEXITCODE -eq 0) { Add-Resultado "2:eda" "OK" "analysis/informe_eda.md + docs/analisis/eda.json + 5 figuras eda_*" }
+if ($LASTEXITCODE -eq 0) {
+    # En -SinWsl eda.py NO escribe nada (sin BD no hay metricas ni figuras): el detalle debe decir
+    # la verdad en cada modo (auditoria externa 2026-11-15, hallazgo MENOR).
+    if ($SinWsl) {
+        Add-Resultado "2:eda" "OK" "modo offline: sin artefactos (no hay eda.json/informe/figuras sin BD)"
+    } else {
+        Add-Resultado "2:eda" "OK" "analysis/informe_eda.md + docs/analisis/eda.json + 5 figuras eda_*"
+    }
+}
 else { Add-Resultado "2:eda" "FALLO" "exit $LASTEXITCODE" }
 
 Write-Host "`n== Paso 3/3: modelo/indicador de ocupacion (modelo_ocupacion.py) =="
@@ -95,5 +103,9 @@ if ($fallidos.Count -gt 0) {
     Write-Host ("RESULTADO GLOBAL: FALLO ({0} paso(s))" -f $fallidos.Count)
     exit 1
 }
-Write-Host "RESULTADO GLOBAL: OK - figuras regeneradas por cada script (11 en docs/analisis/graficos)"
+if ($SinWsl) {
+    Write-Host "RESULTADO GLOBAL: OK - modo offline: figuras solo del paso 1 (pipeline base); eda/modelo sin artefactos"
+} else {
+    Write-Host "RESULTADO GLOBAL: OK - figuras regeneradas por cada script (11 en docs/analisis/graficos)"
+}
 exit 0

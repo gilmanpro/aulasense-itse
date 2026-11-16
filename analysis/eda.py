@@ -664,7 +664,11 @@ def main(argv=None) -> int:
     ap.add_argument("--salida", default=str(RAIZ / "docs" / "analisis"))
     ap.add_argument("--informe", default=str(RAIZ / "analysis" / "informe_eda.md"))
     ap.add_argument("--no-figuras", action="store_true")
-    ap.add_argument("--sin-wsl", action="store_true", help="smoke local sin BD (fixture minima)")
+    ap.add_argument("--sin-wsl", action="store_true",
+                    help="modo offline sin BD WSL: usa solo las fuentes locales disponibles "
+                         "(dataset/sesion_*/registro_*.jsonl + docs/validacion_sesion*.csv) y NO "
+                         "escribe artefactos (ni eda.json, ni informe, ni figuras); solo valida el "
+                         "flujo completo hasta el calculo")
     ap.add_argument("--db", default=DB_WSL,
                     help="ruta BD dentro de WSL (default canonica; usar snapshot para tests de "
                          "determinismo con el nodo vivo: la BD real crece entre corridas)")
@@ -676,7 +680,9 @@ def main(argv=None) -> int:
     gt = ad.construir_ground_truth(sesiones, ad.cargar_validacion(rutas_val))
 
     if args.sin_wsl:
-        print("[aviso] modo --sin-wsl: EDA con wsl vacio (solo valida flujo)", file=sys.stderr)
+        print("[aviso] modo --sin-wsl: EDA offline con wsl vacio; NO se escriben artefactos "
+              "(eda.json/informe/figuras) — solo se valida el flujo con las fuentes locales",
+              file=sys.stderr)
         wsl = {"hist_hora": [], "stats_hora": [], "pps": [], "rssi_hist": [], "eval5": [],
                "rssi5": [], "sesiones": [], "idle_altos": [], "idle_altos_n": 0, "huecos": [],
                "ts_anomalos": [], "fotos": [], "fotos_error": [], "onsets": [], "config": [],

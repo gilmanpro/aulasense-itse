@@ -236,6 +236,12 @@ En esta distro la **BD canónica del pipeline** es `debian-aulasense:/home/aulas
 aulasense.db` (F5a/visión/forense leen de ahí; queries solo-lectura con `python3` URI `mode=ro` — en
 las distros no existe el CLI `sqlite3`).
 
+> **`claves/.env-wsl-nuevo` (propósito aclarado, auditoría 2026-11-15):** guarda la password del
+> usuario `aulasense` de esta distro nueva (claves `WSL_NEW_USER`/`WSL_NEW_PASS`), **generada por
+> código** (`secrets.token_hex(16)`) el 2026-11-15 para el `wsl --import`; gitignored vía `claves/*`
+> (regla 15) y el valor nunca se imprime. **No es un duplicado**: `claves/.env` solo lleva
+> `AULASENSE_ADMIN_USER`/`AULASENSE_ADMIN_PASSWORD`/`DASHSCOPE_API_KEY` (credenciales distintas).
+
 ## Perímetro de la publicación VPS `:10062` — nota formal de riesgo (auditoría 2026-11-15)
 
 **Los hechos:** el dashboard de `debian-aulasense` (interno `:8100`) se publica en

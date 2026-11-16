@@ -6,9 +6,15 @@
 >
 > **F24 (2026-11-12):** este directorio se AMPLÍA con módulos nuevos — `app_imagen.c/.h` (F24-c,
 > implementado; ver §9), `app_provision.c/.h` (F24-d), `app_ia_imagen.c/.h` (F24-e, opcional
-> spike-gated) — que comparten `Kconfig.projbuild`/`CMakeLists.txt`/este README. Contratos:
+> spike-gated **— no creado, ver veredicto abajo**) — que comparten `Kconfig.projbuild`/`CMakeLists.txt`/este README. Contratos:
 > `../../SPEC.md` §3.2–§3.4; decisiones D-F24-1..8: `../../PLAN.md` §11. F24-c/d/e añaden aquí su
 > sección de spec (NO reabren F3).
+>
+> **VEREDICTO F24-e (`app_ia_imagen.c/.h`, 2026-11-15):** **NO LANZADA / archivada documentada** —
+> el spike e0 se re-encuadró a backend (WSL) con veredicto **GO-COSTO CONDICIONAL** y calidad QVGA
+> pobre (10/327 ≥0,45); decisión del orquestador: **la visión API modo B cubre el objetivo**. Los
+> ficheros `app_ia_imagen.c/.h` NUNCA se crearon (no existen en disco ni en `main/`); estado completo
+> en `PLAN.md` §12.8 (anotación post-ejecución).
 >
 > Companion: `../../SPEC.md` §3.1 (contrato), `../../PLAN.md` D5 (decisión), `../../AGENTS.md`
 > (reglas duras: GPIO, secretos, edge-first). Fuente del pinout: analista de viabilidad 2026-11-12
