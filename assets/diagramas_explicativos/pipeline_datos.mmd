@@ -1,0 +1,25 @@
+flowchart LR
+    subgraph PLACA["En el ESP32-S3 (borde)"]
+        csi["CSI Wi-Fi 2,4 GHz<br/>~100 pps"] --> feat["Características<br/>amplitud y fase"]
+        feat --> det["Detector MLP<br/>529 parámetros<br/>umbral 0,5"]
+        det --> ev["Eventos<br/>motion / onset"]
+    end
+
+    subgraph SERVER["En el servidor (WSL debian-aulasense)"]
+        ing["Ingestas<br/>fotos + telemetry + SSE"]
+        db[("BD SQLite<br/>WAL · writer único")]
+        dash["Dashboard<br/>login scrypt · lockout 5/10/20<br/>búsqueda LIKE · chips"]
+        vis["Visión modo B<br/>pendiente → worker mediado<br/>→ hecho / error<br/>techos 120/día · 20/h"]
+        ana["Análisis<br/>run_analisis.ps1<br/>→ analisis.json"]
+        inf["Informes<br/>generar_informe.py<br/>→ docx / pptx"]
+
+        ing --> db
+        db --> dash
+        db --> vis
+        vis --> db
+        db --> ana
+        ana --> inf
+    end
+
+    ev --> ing
+    ev -. "telemetría y SSE" .-> dash

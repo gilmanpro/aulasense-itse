@@ -1,0 +1,59 @@
+digraph principio_csi {
+  graph [rankdir=TB, splines=spline, bgcolor="white", fontname="Segoe UI", fontsize=16,
+         pad=0.45, nodesep=0.55, ranksep=0.62, newrank=true];
+  node  [fontname="Segoe UI", fontsize=15, shape=box, style="rounded,filled",
+         fillcolor="#eef4fb", color="#3f6fa8", penwidth=1.5, margin="0.20,0.10"];
+  edge  [fontname="Segoe UI", fontsize=13, color="#3f6fa8", penwidth=1.7, arrowsize=0.8];
+
+  subgraph cluster_sala {
+    label=<<B>Sala del aula: las ondas de radio la llenan</B><BR/><FONT POINT-SIZE="13">Wi-Fi 2.4 GHz. El receptor mide cómo llega cada subportadora (CSI)</FONT>>;
+    fontsize=17; fontcolor="#1f3c5c"; style="rounded,dashed"; color="#7f9dbd"; bgcolor="#f7fbff"; margin=20;
+
+    tx [label="Router TX\n(antena emisora)", fillcolor="#dbeafe"];
+    rx [label="Receptor RX\nESP32-S3 mide el CSI", fillcolor="#dbeafe"];
+    { rank=same; tx; rx; }
+
+    persona [label="Persona cruza la sala\n= perturbación del canal",
+             style="rounded,filled,dashed", fillcolor="#fdecea", color="#c0392b", fontcolor="#8e2a20"];
+
+    tx -> rx [label="  ruta directa  ", color="#1f5fa8", penwidth=2.6];
+    tx -> rx [label="  reflexión en la pared  ", style=dashed, color="#6fa8dc", constraint=false];
+    tx -> rx [label="  reflexión en el suelo  ", style=dashed, color="#9cc3e5", constraint=false];
+    persona -> rx [label="atenúa y desvía la señal", color="#c0392b", fontcolor="#8e2a20", style=bold];
+  }
+
+  nota [label="La energía llega por varias rutas (multipath).\nCada subportadora acumula un retardo distinto:\nla persona cambia su amplitud y su fase.",
+        shape=note, style="filled", fillcolor="#fff8e1", color="#c9a227", fontsize=13];
+
+  sub [shape=plaintext, label=<
+    <TABLE BORDER="1" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" BGCOLOR="white" COLOR="#3f6fa8">
+      <TR><TD COLSPAN="7" BGCOLOR="#eef4fb"><B>Subportadoras OFDM capturadas (valores de ejemplo)</B></TD></TR>
+      <TR><TD BGCOLOR="#f7f9fb" ALIGN="LEFT">Subportadora</TD><TD>1</TD><TD>2</TD><TD>3</TD><TD>4</TD><TD>5</TD><TD>6</TD></TR>
+      <TR><TD BGCOLOR="#f7f9fb" ALIGN="LEFT">Amplitud |H|</TD><TD>0,82</TD><TD>0,74</TD><TD>0,91</TD><TD>0,68</TD><TD>0,79</TD><TD>0,86</TD></TR>
+      <TR><TD BGCOLOR="#f7f9fb" ALIGN="LEFT">Fase &#966; (rad)</TD><TD>-0,4</TD><TD>0,2</TD><TD>1,1</TD><TD>-0,9</TD><TD>0,5</TD><TD>-0,2</TD></TR>
+    </TABLE>>];
+
+  feats [label="Vector de características\n(amplitud y fase de las subportadoras\nen una ventana de tiempo)", fillcolor="#e8f5e9", color="#2e7d32"];
+
+  subgraph cluster_detector {
+    label=<<B>Detector en el chip (edge-first)</B>>;
+    fontsize=15; fontcolor="#7a5b00"; style="rounded,dashed"; color="#c9a227"; bgcolor="#fffdf3"; margin=16;
+
+    mlp [label="Red neuronal MLP 8 &#8594; 24 &#8594; 12 &#8594; 1\n529 parámetros · sin calibración\numbral de decisión 0,5",
+         fillcolor="#fff3cd", color="#b8860b"];
+    umd [label="UMD", fillcolor="#fff8e1", color="#c9a227"];
+    upd [label="UPD", fillcolor="#fff8e1", color="#c9a227"];
+    dif [label="DIF", fillcolor="#fff8e1", color="#c9a227"];
+    { rank=same; umd; upd; dif; }
+    mlp -> umd [arrowhead=none, style=dashed];
+    mlp -> upd [arrowhead=none, style=dashed];
+    mlp -> dif [arrowhead=none, style=dashed];
+  }
+
+  decision [label="Movimiento o reposo\n(decisión cada 250 ms)", fillcolor="#e3f2fd"];
+
+  rx -> sub [style=invis];
+  sub -> feats [label="la señal CSI se resume en un vector"];
+  feats -> mlp [label="8 valores por ventana"];
+  mlp -> decision [label="probabilidad de movimiento"];
+}

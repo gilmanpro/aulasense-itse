@@ -1,0 +1,52 @@
+digraph privacidad_y_seguridad {
+  graph [rankdir=TB, bgcolor="white", fontname="Segoe UI", fontsize=15,
+         pad=0.40, nodesep=0.55, ranksep=0.50, splines=line, newrank=true, compound=true];
+  node  [fontname="Segoe UI", fontsize=14, shape=box, style="rounded,filled",
+         fillcolor="#eef4fb", color="#3f6fa8", penwidth=1.5, margin="0.18,0.10"];
+  edge  [fontname="Segoe UI", fontsize=12, color="#3f6fa8", penwidth=1.5, arrowsize=0.8];
+
+  sala [label="AulaSense en la sala (ESP32-S3)\n1 JPEG QVGA solo al onset · metadata de movimiento · hash en la placa",
+        fillcolor="#dbeafe"];
+  split [label="¿Qué sale\ndel aula?", shape=diamond, style="filled", fillcolor="#eef4fb",
+         color="#3f6fa8", fontsize=15, margin="0.02,0.02"];
+  sala -> split;
+
+  subgraph cluster_sale {
+    label=<<B>LO QUE SALE DE LA SALA</B><BR/><FONT POINT-SIZE="12">mínimo, autenticado y con destino local</FONT>>;
+    fontsize=16; fontcolor="#1b5e20"; style="rounded,dashed"; color="#2e7d32"; bgcolor="#f4fbf5"; margin=16;
+
+    s1 [label="Metadata de movimiento\n(tipo, timestamp, métricas del nodo)", fillcolor="#e8f5e9", color="#2e7d32"];
+    s2 [label="1 JPEG QVGA SOLO en el onset\npor el broker MQTT autenticado", fillcolor="#e8f5e9", color="#2e7d32"];
+    s3 [label="Hash SHA-256 de la imagen\n(calculado en la placa)", fillcolor="#e8f5e9", color="#2e7d32"];
+  }
+
+  subgraph cluster_nosale {
+    label=<<B>LO QUE NO SALE, NUNCA</B><BR/><FONT POINT-SIZE="12">la arquitectura no lo produce o no lo procesa</FONT>>;
+    fontsize=16; fontcolor="#8e2a20"; style="rounded,dashed"; color="#c0392b"; bgcolor="#fdf6f6"; margin=16;
+
+    n1 [label="Video continuo: NUNCA\n(no hay streaming de cámara)", fillcolor="#fdecea", color="#c0392b", fontcolor="#6d1b12"];
+    n2 [label="Cara: no se procesa\nsin reconocimiento facial, ni en el\ndetector ni en la visión", fillcolor="#fdecea", color="#c0392b", fontcolor="#6d1b12"];
+    n3 [label="Credenciales: en .env gitignored\n(fuera del repositorio y de la nube)", fillcolor="#fdecea", color="#c0392b", fontcolor="#6d1b12"];
+  }
+
+  split -> s1 [label="sí: mínimo", lhead=cluster_sale];
+  split -> n1 [label="nunca", style=dashed, color="#c0392b", fontcolor="#8e2a20", lhead=cluster_nosale];
+  s1 -> s2;
+  s2 -> s3;
+  n1 -> n2 [style=invis];
+  n2 -> n3 [style=invis];
+
+  ctrl [label="Controles implementados\l· Login + cookie HttpOnly\l· Origin guard en /ws y /internal/evento\l· Guard de /internal por fuente\l· Fix F/S en doble capa (firmware + decoder)\l· Portal /cfg: comparación time-constant + 429\l· Retención y purga a 30 días\l",
+        fillcolor="#e3f2fd", color="#1f5fa8", fontsize=13, margin="0.22,0.14"];
+  ries [label="Riesgos aceptados (documentados)\l· HTTP sin TLS en el puerto público 10062\l· Contraseña MQTT corta → se recomiendan ACLs\l· Rotaciones de credenciales pendientes\l",
+        fillcolor="#fff8e1", color="#c9a227", fontsize=13, margin="0.22,0.14"];
+
+  s3 -> ctrl [style=invis];
+  n3 -> ries [style=invis];
+  ctrl -> ries [style=invis];
+
+  { rank=same; s1; n1; }
+  { rank=same; s2; n2; }
+  { rank=same; s3; n3; }
+  { rank=same; ctrl; ries; }
+}

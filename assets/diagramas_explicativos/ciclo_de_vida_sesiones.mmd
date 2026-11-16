@@ -1,0 +1,21 @@
+stateDiagram-v2
+    direction LR
+    [*] --> S1_grabada
+
+    state "S1 grabada (15/11, hoy)<br/>17.913 evaluaciones<br/>GT pasivo foto-corroborada" as S1_grabada
+    state "S2 automática (16/11, 10:50)<br/>22 min continuos<br/>velador + marcas idle opcionales" as S2
+    state "S3 automática (16/11, 11:20)<br/>22 min continuos" as S3
+    state "Consolidado<br/>462 filas, solo origen real" as CONS
+    state "Análisis<br/>run_analisis.ps1 → analisis.json" as ANA
+    state "Informes<br/>generar_informe.py → docx / pptx" as INF
+
+    S1_grabada --> S2 : ventana programada
+    S2 --> S3 : 11:20
+    S3 --> CONS : al cerrar S3
+    CONS --> ANA : 1 comando
+    ANA --> INF : 1 comando
+    INF --> [*]
+
+    note right of S2 : Espera programada, con un único reintento si el PC no arranca
+    note right of CONS : FPR se activa con marcas idle
+    note right of INF : Un comando por entrega

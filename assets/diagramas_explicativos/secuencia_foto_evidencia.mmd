@@ -1,0 +1,28 @@
+sequenceDiagram
+    autonumber
+    participant DET as Detector CSI (chip)
+    participant ESP as ESP32-S3
+    participant CAM as Cámara OV3660
+    participant BRK as Broker MQTT
+    participant ING as Ingesta + decoder
+    participant BD as BD SQLite
+    participant DSH as Dashboard
+    participant NAV as Navegador
+
+    DET->>ESP: onset de movimiento<br/>(decisión cada 250 ms)
+    ESP->>CAM: activar cámara SOLO en el onset<br/>(cooldown 15 s)
+    CAM-->>ESP: 1 JPEG QVGA 320x240
+    ESP->>ESP: sha256 + base64 EN LA PLACA<br/>(gate de memoria 120/64 KB)
+    ESP->>BRK: publish topic .../image<br/>(QoS 0, retain=false)
+    Note over ESP,BRK: MISMA conexión MQTT persistente (N1)<br/>latencias firmware medidas: 14-361 ms
+    BRK->>ING: entrega el mensaje<br/>(suscripción autenticada)
+    ING->>ING: magic JPEG + estructura (Fix S)<br/>sha256 + dedupe por hash
+    ING->>BD: INSERT fila canal='mqtt'<br/>vision_estado='pendiente'
+    Note over BRK,BD: ~1 s desde el broker hasta la fila en BD
+    BD->>DSH: consulta de la galería
+    DSH-->>NAV: imagen visible (sesión autenticada)
+
+    alt el publish MQTT falla
+        ESP->>ING: fallback HTTP POST :8001<br/>(Bearer token, canal alternativo N2)
+        ING->>BD: INSERT fila canal='http'
+    end

@@ -1,0 +1,51 @@
+digraph topologia_despliegue {
+  graph [rankdir=LR, splines=spline, bgcolor="white", fontname="Segoe UI", fontsize=15,
+         pad=0.40, nodesep=0.30, ranksep=0.70, compound=true];
+  node  [fontname="Segoe UI", fontsize=14, shape=box, style="rounded,filled",
+         fillcolor="#eef4fb", color="#3f6fa8", penwidth=1.5, margin="0.16,0.10"];
+  edge  [fontname="Segoe UI", fontsize=12, color="#3f6fa8", penwidth=1.6, arrowsize=0.8];
+
+  subgraph cluster_lan {
+    label=<<B>LAN local de la casa (zona de confianza)</B>>;
+    fontsize=17; fontcolor="#1b5e20"; style="rounded,dashed"; color="#2e7d32"; bgcolor="#f4fbf5"; margin=20;
+
+    nodo [label="ESP32-S3 GOOUUU v1.5\nfirmware ESPectre 3.2.0\ndetector CSI en el chip", fillcolor="#dbeafe"];
+    router [label="Router de casa\nWi-Fi + LAN", fillcolor="#dbeafe"];
+
+    subgraph cluster_pc {
+      label=<<B>PC Windows</B>>;
+      fontsize=15; fontcolor="#1f3c5c"; style="rounded"; color="#3f6fa8"; bgcolor="#ffffff"; margin=14;
+
+      subgraph cluster_wsl {
+        label=<<B>WSL2 · Debian 13</B><BR/><FONT POINT-SIZE="11">systemd · venv linux · datos ext4</FONT>>;
+        fontsize=14; fontcolor="#1f3c5c"; style="rounded,dashed"; color="#7f9dbd"; bgcolor="#f7fbff"; margin=12;
+
+        svc [label="debian-aulasense (canónica)\ningesta + dashboard\n:8100 · systemd", fillcolor="#e8f5e9", color="#2e7d32"];
+        decana [label="DECANA (histórica)\ndashboard :8000 · rollback", fillcolor="#fff8e1", color="#c9a227"];
+      }
+    }
+
+    nodo -> router [label="Wi-Fi 2,4 GHz", dir=both];
+    router -> svc [label="LAN"];
+  }
+
+  subgraph cluster_internet {
+    label=<<B>Internet (zona no confiable)</B>>;
+    fontsize=17; fontcolor="#8e2a20"; style="rounded,dashed"; color="#c0392b"; bgcolor="#fdf6f6"; margin=20;
+
+    subgraph cluster_vps {
+      label=<<B>VPS 167.114.169.134</B>>;
+      fontsize=15; fontcolor="#8e2a20"; style="rounded"; color="#c0392b"; bgcolor="#fff5f4"; margin=12;
+
+      vps [label="broker.gilman.pro:14769\nMQTT con autenticación\n(imagen + eventos)", fillcolor="#fdecea", color="#c0392b", fontcolor="#6d1b12"];
+      tunel [label="Túnel ssh -R (auto-start)\npuerto público 10062", fillcolor="#fdecea", color="#c0392b", fontcolor="#6d1b12"];
+    }
+
+    naveg [label="Navegadores de clientes\ndashboard web con login", fillcolor="#f4f4f4", color="#777777"];
+  }
+
+  svc -> vps [label="MQTT 14769", color="#c0392b", ltail=cluster_wsl, lhead=cluster_vps];
+  svc -> tunel [label="ssh -R 10062:127.0.0.1:8100\n(auto-start)", color="#c0392b", style=bold, ltail=cluster_wsl];
+  tunel -> naveg [label="HTTP :10062"];
+  decana -> tunel [label="rollback :8000", style=dotted, color="#c9a227", fontcolor="#8a6d00"];
+}
