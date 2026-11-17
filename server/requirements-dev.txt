@@ -5,7 +5,8 @@
 #     pyproject.toml a proposito; ver el comentario de [tool.pytest.ini_options]).
 #   - tools/tests/test_generar_informe.py ejercita tools/generar_informe.py, que genera el
 #     informe .docx y la presentacion .pptx => python-docx y python-pptx.
-#   - pytest: la suite completa (299 pruebas). YA esta en server/requirements.txt y
+#   - pytest: la suite completa (455 pruebas en server/tests: 453 passed, 1 skipped,
+#     1 xfailed; 465 si se suma tools/tests). YA esta en server/requirements.txt y
 #     server/requirements-linux.txt porque el server corre su propia suite dentro del venv
 #     (AGENTS.md regla 3); se repite aqui con la MISMA version para que un
 #     `pip install -r server/requirements-dev.txt` sobre un venv limpio de dev sea autosuficiente.

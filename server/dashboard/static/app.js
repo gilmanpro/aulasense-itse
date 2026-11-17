@@ -878,6 +878,9 @@ function parametrosGaleria() {
   if (texto) params.set("q", texto);
   if (galeriaCanal) params.set("canal", galeriaCanal);
   if (galeriaConIa) params.set("con_ia", "1");
+  // F26-a2 (SPEC §16.5/§16.6): pide también las columnas decision_* (opt-in;
+  // si la BD aún no tiene F26, el servidor devuelve la metadata de siempre).
+  params.set("decision", "1");
   params.set("limite", "200");
   return { device, params };
 }
@@ -913,6 +916,34 @@ function bloqueDescripcion(fila) {
   }
   const chips = chipsEtiquetas(fila.etiquetas);
   if (chips) caja.appendChild(chips);
+  return caja;
+}
+
+// F26-a2 (SPEC §16.5): decisión de aula de la imagen, solo si la BD F26 la trae
+// (``decision=1``). Sin el campo, la tarjeta queda EXACTAMENTE como antes.
+function bloqueDecisionAula(fila) {
+  const etiqueta = (fila.decision_etiqueta === null || fila.decision_etiqueta === undefined)
+    ? "" : String(fila.decision_etiqueta).trim();
+  if (!etiqueta) return null;
+  const caja = el("div", "pt-1 space-y-1");
+  const confianza = (fila.decision_confianza === null || fila.decision_confianza === undefined)
+    ? "" : ` (conf ${fmtNum(fila.decision_confianza, 2)})`;
+  const actividad = fila.decision_actividad
+    ? ` · actividad ${String(fila.decision_actividad)}` : "";
+  caja.appendChild(el("p", "text-[0.7rem] text-slate-200",
+    `Decisión de aula: ${etiqueta}${confianza}${actividad}`));
+  // badge derivado (SPEC §16.5): decision_cubre < 0.7, NO un estado nuevo.
+  const cubre = (fila.decision_cubre === null || fila.decision_cubre === undefined)
+    ? null : Number(fila.decision_cubre);
+  if (cubre !== null && Number.isFinite(cubre) && cubre < 0.7) {
+    const linea = el("div", "flex flex-wrap gap-1 pt-0.5");
+    const badge = el("span", "rounded px-1.5 py-0.5 text-[0.62rem] font-semibold",
+      "REVISIÓN_HUMANA");
+    badge.style.background = "#78350f"; // ámbar, mismo tono que el panel /salud
+    badge.style.color = "#fcd34d";
+    linea.appendChild(badge);
+    caja.appendChild(linea);
+  }
   return caja;
 }
 
@@ -975,6 +1006,8 @@ function tarjetaImagen(fila) {
   meta.appendChild(badges);
   caja.appendChild(meta);
   caja.appendChild(bloqueDescripcion(fila));
+  const decision = bloqueDecisionAula(fila);
+  if (decision) caja.appendChild(decision);
   return caja;
 }
 

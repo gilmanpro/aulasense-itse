@@ -20,8 +20,17 @@
 > D-F25-1), **servidor en WSL Debian** (§15), **worker de descripción IA con rate limits** (§7.3),
 > **login seguro + búsqueda en galería** (§9.2, §9.3) y el **esquema extendido** (§8.2: columnas
 > canal/descripcion/etiquetas/vision_* + tablas usuarios/sesiones_auth/intentos_login/vision_uso).
-> Variables nuevas en §12.1 (`claves/.env` gitignored). Decisiones D-F25-1..13 con evidencia en
-> `PLAN.md` §12; resumen en §14.1. Checklist vivo: v25.
+> Variables nuevas en §12.1 (F26: el archivo canónico pasó a ser el **`.env` ÚNICO raíz**, §16.8 —
+> `claves/` archivado). Decisiones D-F25-1..13 con evidencia en
+> `PLAN.md` §12; resumen en §14.1.
+>
+> **AMPLITUD F26 (2026-11-17, orden explícita del dueño):** **OTA real por comando MQTT con manifiesto
+> SHA-256 + rollback automático** (§16.1 — el gate quedó **enmendado con evidencia a 96/48**),
+> **provisioning FIJO sin token** (§16.2, reemplaza la "ruta privada" §3.3 — ya es la realidad flasheada:
+> build viva f26.6), **gate/heap interno observable sin latch** (§16.3), **decisión de aula Clef**
+> (§16.6), **monitoreo /salud + `estado_sistema`** (§16.7), **`.env` único** (§16.8), infraestructura
+> OTA :8101→túnel :10064 (§16.9) y **arquitectura real outbound-only** (§16.10). Decisiones D-F26-1..12
+> en `PLAN.md` §13. Checklist vivo: **v26**.
 
 ## 1. Hardware objetivo
 
@@ -174,6 +183,9 @@ Módulo NUEVO, calco del patrón endurecido DriveGuard (`archive/dashcam-ia/firm
 - **Criterio de prueba (F24-d):** flujo completo desconectando WiFi del router / credencial falsa → AP sube → config nueva vía ruta privada → reconecta como STA → AP off. 403/429 verificados. grep logs = CERO SSID/pass.
 
 ### 3.4 Parche `app_ia_imagen.c` (IA visión OPCIONAL, spike-gated, D-F24-5 — fase F24-e, SOLO si F24-e0 PASS)
+
+> **VEREDICTO 2026-11-15 (post-F24-e0): F24-e NO LANZADA.** El spike se re-encuadró a backend (WSL) con veredicto GO-COSTO y el módulo en-chip **nunca se creó en disco** (`app_ia_imagen.c/.h` inexistentes); la visión API modo B cubre el objetivo. Historia completa: PLAN §12.8, README del parche (veredicto en cabecera), AGENTS regla 14. El texto siguiente queda como spec histórica de la rama abandonada.
+
 - **La IA principal YA EXISTE** = detector CSI neuronal (§3, edge-first C1). Esta es una **capa de visión opcional adicional** sobre la imagen capturada, **default n** (`AULASENSE_IA_IMAGEN`).
 - **Modelo: detección de PERSONA** (ESP-Detection **ESPDet-Pico** 0.36M params / input 224², vía ESP-WHO `pedestrian_detect` / esp-dl `espdet_pico` escala humana, verificado en F24-a). **Compatibilidad IDF (ENMIENDA E6, `.tmp/f24a_spec_implementable.md` §4/§6):** ESP-WHO **SÍ soporta IDF v5.5** (tabla README "Supported ESP-IDF version", leída 2026-11-12: v5.4 ✔ · **v5.5 ✔** · v6.0 ✔ · v6.1 ✔) → compatible con nuestra IDF 5.5.6; **CORREGÍA al F23 que decía "solo 5.4"**. ESP-Detection/ESP-DL requieren IDF v5.3+; ESPDet-Pico >7 FPS en ESP32-S3 (tabla 224² = 126.2 ms S3). "Camera and the DL model now run asynchronously" (coherente con inferencia asíncrona abajo). **NO caras** (no reintroducir detección facial — E1), **NO COCO/YOLO completo** (inviable en S3 verificado F23: YOLO11n 320² 961 ms ~1 FPS / 8 MB flash; YOLO26n exige 16 MB PSRAM; `.tmp/f23_research_viabilidad.md:94-97,195-196`). espdet_pico 224²: 120 ms ~7.7 FPS (research:100,197).
 - **SPIKE CON GATE DURO (F24-e0, time-boxed ≤200 steps):** antes de comprometer F24-e, un spike mide coexistencia esp-dl + ESPectre en el N16R8. **Gate (todos, medidos en placa):** (1) `csi_accepted_pps` no cae >10 % vs F1c (≥90 pps); (2) heap interno libre ≥120 KB AND largest block ≥64 KB durante captura+inferencia; (3) arena esp-dl cabe en PSRAM (`MALLOC_CAP_SPIRAM`, 8 MB libre); (4) latencia inferencia ≤2 s asíncrona; (5) `detection_avg_us` no se degrada >20 %. **Si CUALQUIERA falla → rama ABANDONADA, NO se hace F24-e**, se documenta la limitación en PROPUESTA/SPEC ("la capa de visión IA no cabe junto al detector CSI en este hardware — verificado en spike") y se entrega sin ella (orden explícita del usuario: "si no se puede no lo hagas").
@@ -205,8 +217,16 @@ C:\Python315\python.exe tools\gen_firmware_config.py   # lee .env → sdkconfig.
 #   F24: también genera AULASENSE_UPLOAD_TOKEN (secrets.token_hex(16)) → .env + sdkconfig.defaults.local
 # Fallback nativo: Improv Serial por navegador (Chrome 151+, espectre.dev/tools/flash) o espectre.cmd provision
 #   (clave por ESPECTRE_WIFI_PASSWORD env var, NUNCA argv). BOOT 3 s → Improv (recovery preservado).
-# F24-d FALLBACK AP: si STA falla 3 reintentos → AP AULASENSE-CFG-xxxx → http://192.168.4.1/cfg/<token>
-#   (token mostrado UNA vez en serial al generarse; ruta privada no adivinable).
+# F24-d FALLBACK AP → REEMPLAZADO por F26 (SPEC §16.2, REALIDAD FLASHEA en la build viva):
+#   si STA falla 3 ciclos → AP FIJA 'AULASENSE-CFG' (WPA2, pass canónica solo en .env+NOTES)
+#   → portal SIN token http://192.168.4.1/cfg (rutas exactas /cfg, /cfg/estado, /cfg/wifi).
+#   Recuperación remota = rollback OTA (§16.1); UART/BOOT solo in situ.
+# F26 · OTA (SPEC §16.1): NO se flashea para actualizar — se publica el comando MQTT
+#   check|apply (helper ingesta_mqtt.publicar_comando_ota) y la placa baja el bin por el
+#   túnel :10064 con verificación SHA-256 + rollback automático. Paso a paso: docs/NOTES_operacion.md.
+#   ESTADO DEL TERRENO 2026-11-17: BUILD ÚNICA F26 en vigor (placa viva f26.6 válida); la única
+#   reflasheada UART autorizada fue la 'destraba' f26.3 (gate 120/64 inalcanzable → enmendado
+#   96/48); desde ahí TODO cambio de firmware viaja por OTA (f26_g1_ota.md §0a/2).
 
 # F1d · Config MQTT al broker (lee .env, PATCH /mqtt, nunca imprime clave; user nodo electiva)
 C:\Python315\python.exe tools\config_mqtt.py    # scheme/host/port/user/pass/topic_prefix desde .env
@@ -224,7 +244,9 @@ server\.venv\Scripts\python.exe tools\purga_imagenes.py --dias 30   # default .e
 # Demo / Análisis
 powershell tools\start_demo.ps1     # ingesta(+receptor) + dashboard + openmeteo; PIDs en .tmp/demo_pids.json
 powershell tools\stop_demo.ps1      # mata SOLO los procesos que arrancó el launcher
-powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_sesion1.csv
+powershell analysis\run_analisis.ps1     # SIN flags --origen/--validacion (no existen): el pipeline
+#   cubre origen=real de forma inherente y autodescubre las validaciones por glob docs\validacion_sesion*.csv
+#   (parámetros reales: -Python, -Distro, -SinWsl, -NoFiguras). Corrección F26-f1 a la doc vieja.
 ```
 
 ## 5. Direct HTTP (LAN, feedback en vivo E8)
@@ -385,7 +407,7 @@ powershell analysis\run_analisis.ps1 --origen real --validacion docs\validacion_
   (verificada 200 el 2026-11-09, skill qwen-web-search); base pay-as-you-go
   `https://maas.qwencloudapi.com/compatible-mode/v1`.
 - **Resolución de key POR CÓDIGO (nunca escrita/impresa por el modelo):** env `DASHSCOPE_API_KEY` →
-  `claves/.env` → `auth.json` (providers alibaba-token-plan/-cn, key `sk-sp-*`; patrón skills qwen-*).
+  `.env` raíz único (F26 §16.8; antes `claves/.env` en F25) → `auth.json` (providers alibaba-token-plan/-cn, key `sk-sp-*`; patrón skills qwen-*).
   Key vacía → worker **idle honesto** (regla 13: el sistema funciona sin IA).
 - **ToS Token Plan (D-F25-5, OBLIGATORIO):** la key `sk-sp-` es SOLO para uso interactivo en
   herramientas de agente ("must not be used for automation scripts, custom application backends…").
@@ -601,6 +623,10 @@ CREATE INDEX IF NOT EXISTS idx_vision_uso_ts ON vision_uso(ts_ms);
 - **Tests (F24-b2):** API metadata 200, foto 200 con nosniff, foto 404 purgada, id inválido 404/422, path traversal rechazado, Origin guard heredado intacto, XSS escapado.
 
 ### 9.2 Login seguro del dashboard (D-F25-8 — fase F25-e)
+> **Nota F26-f1:** desde F26 (D-F26-6, §16.8) las credenciales viven en el **`.env` ÚNICO de la
+> raíz**; donde este apartado dice `claves/.env` léase `.env` raíz (el texto F25 se conserva como
+> historia de la decisión). La exposición real hoy incluye el túnel público `:10062` tras login
+> (SPEC §15/§16.10), no solo loopback.
 **El dashboard pasa de "solo loopback sin auth" a "loopback + auth" (defensa en profundidad). El bind
 loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 - **Usuario admin único inicial:** `admin` (username en `claves/.env` `AULASENSE_ADMIN_USER`);
@@ -677,7 +703,10 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 
 **Integridad:** los joins son por ventana temporal (no inner join estricto → un evento sin telemetría/clima/imagen igual sale con null/0). `smoke_consolida.py` (F24-f2) valida que el CSV carga en pandas, el esquema coincide, y los joins no duplican filas. **CERO sintético mezclado** (filtro origen=real). El export es reproducible (rerun regenera desde SQLite).
 
-## 11. Guion de demo (C8/E3, detalle en docs/guion_demo.md)
+## 11. Guion de demo (C8/E3, detalle en docs/guion_demo.md — CREADO F26-f1, vigente post-F26)
+> La versión de esta sección es el esquema histórico F3/F24; el guion **real vigente** (ruta
+> pública con login, panel /salud, galería con decisión Clef, disparo `check` de OTA en vivo,
+> portal in-situ si aplica, fallbacks y honestidad) está en [`docs/guion_demo.md`](docs/guion_demo.md).
 1. `start_demo.ps1` → ingesta(+receptor imagen) + dashboard + openmeteo (PIDs en `.tmp/demo_pids.json`).
 2. Nodo flasheado y provisionado; abrir Monitor + dashboard `http://127.0.0.1:8000`.
 3. Zona quieta → `idle`, WS2812 tenue.
@@ -694,12 +723,18 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
   - `AULASENSE_UPLOAD_PORT` (default 8001).
   - `AULASENSE_UPLOAD_TOKEN` (Bearer token del receptor; **generado `secrets.token_hex(16)` por gen_firmware_config.py**, nunca impreso ni commiteado).
   - `AULASENSE_IMG_RETENCION_DIAS` (default 30; purga §7.1).
-- WiFi del nodo: Kconfig defaults por `tools/gen_firmware_config.py` desde `.env` → `sdkconfig.defaults.local` (gitignored, `CONFIG_ESPECTRE_WIFI_*` nativos), o NVS vía Improv Serial / AP privado F24. **La clave real NUNCA en docs/logs/argv/evidencias.**
+- WiFi del nodo: Kconfig defaults por `tools/gen_firmware_config.py` desde `.env` → `sdkconfig.defaults.local` (gitignored, `CONFIG_ESPECTRE_WIFI_*` nativos), o NVS vía Improv Serial / portal AP F26 (§16.2; antes "AP privado F24" con token — obsoleto). **La clave real NUNCA en docs/logs/argv/evidencias.**
 - MQTT: `tools/config_mqtt.py` lee `.env`, `PATCH /mqtt` (user nodo electiva); nunca imprime clave. Clave nueva → `secrets.token_hex(16)` en código.
-- **Token de ruta privada `/cfg/<token>` (§3.3):** capacidad local generada con `esp_fill_random` en el chip, mostrada UNA vez en serial. NO es contraseña WiFi/MQTT; nunca en logs recurrentes ni MQTT.
+- **Token de ruta privada `/cfg/<token>` (§3.3): OBSOLETO desde la build F26** (portal FIJO sin
+  token — §16.2, realidad flasheada: la build viva lo usa). La key NVS vieja `aulasense_prov/cfg_token`
+  queda inofensiva en campo; el texto histórico se conserva abajo como historia del diseño F24-d.
 - Red 2.4 GHz obligatoria. Plan B demo: hotspot móvil.
 
 ### 12.1 Variables F25 (nombres en `.env.example` / `claves/.env.example`; valores vacíos o placeholder)
+> **F26 (D-F26-6, §16.8): este diseño queda SUSTITUIDO por el `.env` ÚNICO en la raíz** —
+> `claves/.env` ya NO es fuente (archivado como `claves/*.bak-f26`, gitignored); loaders sin
+> prioridad `claves/`; `reset_admin.py` escribe el `.env` raíz. El texto siguiente se conserva como
+> historia F25; donde diga "claves/.env" léase "`.env` raíz (§16.8)".
 - **`claves/.env` (carpeta NUEVA `aulasense/claves/`, gitignored `claves/*` + `!claves/.env.example`;
   D-F25-9):** `AULASENSE_ADMIN_USER=admin`, `AULASENSE_ADMIN_PASSWORD=` (GENERADA por código
   `secrets.token_hex(16)` en F25-e; entrega al dueño por canal local = el archivo en disco; NUNCA
@@ -765,8 +800,8 @@ loopback y el Origin guard NO cambian (exposición Windows: D-F25-3/§15).**
 - **D-F25-5 — ToS TP: daemon autónomo con sk-sp- PROHIBIDO (backend de aplicación).** Modo A daemon solo con sk-*; modo B agente-mediado interactivo (default TP, patrón sancionado Skill/Agent). Guarda testeable en CLI/unit.
 - **D-F25-6 — Rate limits visión obligatorios:** 120/día + 20/h configurables, contadores persistentes (vision_uso), dedupe hash_sha256, backoff exponencial máx 2, interruptible SIGTERM/--stop, presupuesto medido en Paso 0 (~1k tokens/imagen estimado, usage real registrado).
 - **D-F25-7 — Búsqueda galería: LIKE parametrizado (descripcion/etiquetas) + filtros canal/estado.** FTS5 solo si >5k imágenes o >100 ms (criterio de escalado documentado).
-- **D-F25-8 — Login: admin único, Argon2id (fallback scrypt stdlib), cookie HttpOnly+SameSite=Lax, sesión 12 h absoluta + 2 h idle, lockout progresivo 5/10/20 fallos→60 s/15 min/1 h con 429+Retry-After, logout, reset_admin.py local.** Password generada por código→claves/.env. Origin guard intacto y extendido a /login. Dashboard = loopback+auth.
-- **D-F25-9 — claves/.env en aulasense/claves/ (gitignored).** Entrega al dueño por canal local (archivo en disco); nunca impresa/commiteada; .env raíz sigue para WiFi/MQTT.
+- **D-F25-8 — Login: admin único, Argon2id (fallback scrypt stdlib), cookie HttpOnly+SameSite=Lax, sesión 12 h absoluta + 2 h idle, lockout progresivo 5/10/20 fallos→60 s/15 min/1 h con 429+Retry-After, logout, reset_admin.py local.** Password generada por código→claves/.env *(F26: → `.env` raíz único, §16.8)*. Origin guard intacto y extendido a /login. Dashboard = loopback+auth *(F26: + exposición pública por túnel :10062 tras login, §16.10)*.
+- **D-F25-9 — claves/.env en aulasense/claves/ (gitignored).** Entrega al dueño por canal local (archivo en disco); nunca impresa/commiteada; .env raíz sigue para WiFi/MQTT. **← SUPERADA por D-F26-6 (§16.8): `.env` ÚNICO raíz; `claves/` archivado `*.bak-f26`; loaders sin prioridad claves/.**
 - **D-F25-10 — Diagrama técnico graphic-arq-software:** C4 contenedores+flujo ESP32→broker→WSL→dashboard; assets/diagrama_tecnico.dsl/.svg/.png.
 - **D-F25-11 — Póster qwen-imagen (@6-medios):** auto-selección modelo barato, Paso 0, coste ~$0,03–0,075/imagen; assets/poster_funcionamiento.png.
 - **D-F25-12 — Video: guion (4-documentos) → escenas HappyHorse t2v 480P 5 s ≤8 clips (6-medios, Paso 0 por skill, clip de prueba medido antes del lote, ~$0,07/s) → TTS opcional qwen-audio español → ensamblaje FFmpeg por 5-dev (graphic-video fuera del roster de 6-medios).** Entregable docs/video_aulasense.mp4 + SRT.
@@ -849,8 +884,8 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
   informe A §2.2). El vendor OTA service NUNCA se invoca (no se usan `check_ota`/`start_ota`).
 - **Manifiesto** (JSON, servido por el estático WSL §16.9):
   ```json
-  {"version": "f26.1", "url": "http://167.114.169.134:<puerto>/firmware-f26.1.bin",
-   "sha256": "<64 hex minúsculas>", "size": 1407872}
+  {"version": "f26.1", "url": "http://167.114.169.134:10064/firmware-f26.1.bin",
+   "sha256": "<64 hex minúsculas>", "size": 1418720}
   ```
   `version` = semántica libre nuestra (string no vacío; NO semver vendor). URL absoluta HTTP (D3 del
   dueño: HTTP+SHA256+rollback; TLS post-entrega). `sha256` del binario exacto; `size` en bytes.
@@ -880,8 +915,14 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
   descarga es ESPERADO y se documenta** (NOTES_operacion + /salud muestra "OTA en curso" desde
   OTA_INICIO, sin falsa alarma de frescura).
 - **Gates de inicio (heap INTERNO, nunca el free_memory_kb de diagnósticos que es PSRAM):**
-  `heap_caps_get_free_size(MALLOC_CAP_INTERNAL) ≥ AULASENSE_OTA_HEAP_MIN_KB` (default 120) AND
-  `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL, …) ≥ AULASENSE_OTA_BLOCK_MIN_KB` (default 64).
+  `heap_caps_get_free_size(MALLOC_CAP_INTERNAL) ≥ AULASENSE_OTA_HEAP_MIN_KB` AND
+  `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL, …) ≥ AULASENSE_OTA_BLOCK_MIN_KB`.
+  **ENMENDADO F26-g1 (2026-11-17): umbrales vigentes 96/48 KB** (los defaults contractuales 120/64
+  resultaron INALCANZABLES en régimen medido: 0/200 muestras con free ≥120 — real 101–106/56 pre-
+  quiesce, 103/48 post-quiesce; los dos primeros apply fueron rechazados limpiamente por el gate,
+  anti-brick funcionando). La enmienda se aplicó vía Kconfig con evidencia en BD y está citada en
+  README del parche §14.2 (`f26_g1_ota.md` §0a/0b); recalibración futura SOLO con datos, nunca a
+  ciegas.
   Si no pasa → `OTA_ERROR` {etapa:"gate_heap", internal_free_kb, internal_largest_block_kb} sin
   descargar. Tarea OTA prioridad ≤4 (NUNCA loop=5), stack medido (patrón ENMIENDA E7).
 - **Rollback (D-F26-3, OBLIGATORIO antes de la 1ª OTA):** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` +
@@ -895,7 +936,7 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
 - **Evento `FIRMWARE`** al arrancar (retain, sufjo `aulasense_config` kind config): {version,
   compile_time, idf, build_sha256_prefix} — versión visible en BD/dashboard sin serial.
 - **Particiones INTOCABLES:** `partitions.csv` dual-app actual (ota_0/ota_1 @0x20000/0x200000,
-  0x1E0000 c/u). El bin DEBE caber (check_sizes en build; hoy 1 407 872 B, margen ≈558 KB). Ampliar
+  0x1E0000 c/u). El bin DEBE caber (check_sizes en build; hoy 1 418 720 B — f26.6 —, margen ≈547 KB). Ampliar
   slots exigiría UART in situ → NO se hace (informe A §2.1).
 - **Espejo regla 17:** `app_ota.c/.h` se añaden a la lista de espejo parche↔main (diff cero + hash);
   enganches en `app_main.cpp` (subscribe OTA, timer self-check, inyección de publisher) DOCUMENTADOS
@@ -1060,13 +1101,19 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
   | ingesta activa | `estado_sistema.ts_ms` fresco ≤90 s | ≤90 s | >90 s | >5 min |
   | MQTT conectado | `estado_sistema.mqtt_conectado` (is_connected) | 1 | — | 0 (+SISTEMA_MQTT_CAIDO) |
   | frescura telemetría | MAX(ts_ms) de `telemetria` | ≤5 min | 5–10 min | >10 min (+SISTEMA_TELEMETRIA_STALE) |
-  | heap placa INTERNO | última `telemetria.internal_free_kb` | ≥120 KB | <120 KB (umbral regla 2; el gate actúa a los configurados) | <64 KB |
+  | heap placa INTERNO | última `telemetria.internal_free_kb` | ≥120 KB (barra a2, regla 2) | <120 KB | <64 KB |
+  | gate de captura VIVO (referencia) | umbrales reales del firmware | captura habilitada con ~103/56 KB | el gate actúa a los **95/24 KB vivos** (re-evalúa por onset, sin latch; OTA a 96/48 post-quiesce) | GATE_OFF publicado |
   | RSSI | `wifi_rssi_dbm` | ≥−80 | <−80 dBm | — |
   | colas visión+decisión | pendiente/error de `imagenes` | pendiente=0 | pendiente>0 | error>20% del lote |
   | consumo día | `vision_uso`/`clef_uso` ventana móvil | <topes | ≥80% tope | tope alcanzado |
   | disco | `shutil.disk_usage(AULASENSE_DATOS_DIR)` | <85% | ≥85% (+SISTEMA_DISCO_WARN) | ≥95% |
   | túneles | `datos/tuneles_estado.json` (verbo salud Windows) | state=running | stale>10 min | state≠running (+SISTEMA_TUNEL_CAIDO) |
   | OTA en curso | retain `ota`.estado=downloading | informativo | — | — (SUPRIME la alarma de frescura: el agujero es esperado) |
+
+  > **Nota de calibración F26 (medido):** el régimen real del banco es 103–106/56 KB internos →
+  > el check muestra **warn** porque la barra verde codificada en a2 es la umbral de regla 2 (120),
+  > no la del gate vivo (95/24); el warn es **cosmético** (0 GATE_OFF reales; `f26_c3_evidencia.md` §3).
+  > Ajuste post-entrega opcional: barra a 95 o al umbral vivo del retain `heap_interno`.
 - **Panel `/salud`** (estático bajo sesión, mismo origin guard): semáforo por check +
   `ultima_actividad_ms` + tarjeta cámara/gate (`imagen_estado` retain + `config_eventos` recientes:
   GATE_OFF/DESCARTE/INIT/CAMARA_ERROR) + decisión de aula agregada. `esc()` en todo dato dinámico.
@@ -1134,8 +1181,9 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
   wsl-port tunnels update pub-aulasense-ota --auto-start true
   ```
   CLI: `C:\Users\Gilman\Desktop\APPplicaciones\05-WSL-Redes\wsl-port\wsl+ssh\wsl-port-unified\.venv\Scripts\wsl-port.exe`.
-  Puerto candidato **10064** (validar en panel `puertos-disponibles.gilman.pro` + `tunnels list`;
-  la API "available" es poco fiable para puerto específico — informe B §2). `--auto-start`/`--enabled`
+  Puerto **10064 ASIGNADO Y VERIFICADO** (F26-b: libre en `tunnels list` + TCP-test externo;
+  `tunneles add … --remote-port 10064` → state=running remote=0.0.0.0:10064; verificación HTTP 200
+  externa al manifiesto en g1; la API "available" es poco fiable para puerto específico — informe B §2). `--auto-start`/`--enabled`
   solo existen en `tunnels update`. NUNCA tocar túneles ajenos. Verificación: HTTP 200 externo al
   manifiesto + `tunnels list` state=running remote=0.0.0.0:<puerto>.
 - **NO ruta del dashboard** (rompería guard de login + mezclaría superficie de datos personales con
@@ -1156,7 +1204,7 @@ VPS 167.114.169.134 = SOLO broker Mosquitto (:14769 TCP/:14770 WS/:14771 TLS/:14
 WSL debian-aulasense = servidor que gestiona TODO (NAT, systemd, venv linux, sin Docker)
   ├─ ingesta MQTT (writer único SQLite ext4 ~/aulasense-datos/aulasense.db; heartbeat estado_sistema)
   ├─ dashboard :8100 ──túnel pub-aulasense-8100──► VPS :10062 (público, login)
-  ├─ estático OTA :8101 ──túnel pub-aulasense-ota──► VPS :1006x (público, solo bins+manifiesto)
+  ├─ estático OTA :8101 ──túnel pub-aulasense-ota──► VPS :10064 (público, solo bins+manifiesto; puerto asignado y verificado — §16.9)
   ├─ receptor HTTP :8001 (ALTERNATIVO LAN-only, Bearer; MQTT es primario)
   ├─ worker visión → DASHSCOPE (TP allowlist, modo B agente-mediado, rate limits)
   └─ worker Clef → OpenRouter Decisions API (cascada clef-flash texto → clef imagen si conf<0.6)

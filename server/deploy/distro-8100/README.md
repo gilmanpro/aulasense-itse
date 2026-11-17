@@ -9,5 +9,7 @@ del stack :8000 (`../aulasense-*.service`, WSL `Debian`/Windows nativo): `aulase
 `aulasense-dashboard` difiere (`AULASENSE_PORT=8100` + `AULASENSE_ORIGINS_EXTRA` con `:8100` y `:10062`).
 Instalar (root DENTRO de `debian-aulasense`): `cp aulasense-*.service /etc/systemd/system/ &&
 systemctl daemon-reload && systemctl enable --now aulasense-ingesta.service aulasense-dashboard.service`.
+F26-b: esta coleccion incluye tambien `aulasense-ota.service` (estatico :8101 loopback para el
+manifiesto/bins OTA, detras del tunel `pub-aulasense-ota`) — ver `../README_wsl.md` §OTA.
 Codigo en `/home/aulasense/aulasense`, datos en `/home/aulasense/aulasense-datos`; esta ingesta es
 escritora unica de la DB: NUNCA debe correr a la vez que la del stack :8000 (AGENTS.md regla 3).

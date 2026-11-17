@@ -1,0 +1,51 @@
+# AulaSense — servidor estatico OTA (F26-b, SPEC §16.9 / D-F26-9).
+# Publica /home/aulasense/aulasense-ota/ (manifest.json + firmware-<ver>.bin) al bind
+# VM-local :8101 (0.0.0.0 bajo NAT WSL, sin portproxy LAN — ver abajo); la superficie EXTERNA es unicamente el tunel SSH
+# wsl-port `pub-aulasense-ota` (VPS :1006x). NO es ruta del dashboard: el bin no se
+# mezcla con la superficie de datos personales ni con el guard de login.
+# Instalacion (root dentro de debian-aulasense): ver server/deploy/README_wsl.md §OTA.
+[Unit]
+Description=AulaSense estatico OTA (:8101 loopback; manifiesto + bins firmware, sin datos personales)
+Documentation=file:///home/aulasense/aulasense/server/deploy/README_wsl.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# no-root (hardening): sirve como el usuario dedicado; nada escribe aqui.
+User=aulasense
+Group=aulasense
+# F26 (D-F26-6): el EnvironmentFile canonico es el .env UNICO de la raiz del repo WSL
+# (chmod 600, rsync NO lo pisa). Este servicio no necesita variables del .env; se
+# declara por coherencia con las demas units.
+EnvironmentFile=/home/aulasense/aulasense/.env
+# Mismo venv linux del proyecto. Bind 0.0.0.0 = VM-local NAT (SPEC 16.9, misma
+# reinterpretacion que el dashboard 15): el conector del tunel wsl-port alcanza el
+# servicio por la IP NAT de la distro (verificado en vivo F26-b: con --bind
+# 127.0.0.1 el tunel daba "empty reply"; con 0.0.0.0 el NAT sigue sin portproxy
+# Windows/LAN). La superficie EXTERNA es unicamente el tunel pub-aulasense-ota.
+ExecStart=/home/aulasense/venvs/aulasense/bin/python -m http.server 8101 --bind 0.0.0.0 --directory /home/aulasense/aulasense-ota
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+KillSignal=SIGTERM
+# --- Hardening (coherente con las units F25-auditoria) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+# http.server SOLO lee: con ProtectHome=read-only basta (el venv y la carpeta OTA
+# quedan legibles; cero escrituras).
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+UMask=0077
+MemoryMax=128M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

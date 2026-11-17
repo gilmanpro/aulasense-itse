@@ -1,7 +1,8 @@
 # check_parche_drift.ps1 — verificador del ESPEJO firmware/parche_aulasense <-> vendor Native (AGENTS regla 17).
 #
-# Compara, con Get-FileHash SHA256, los 6 fuentes propios + Kconfig.projbuild entre
-# firmware/parche_aulasense/ y firmware/espectre/src/cpp/frontend/native/app/main/.
+# Compara, con Get-FileHash SHA256, los 8 fuentes propios (incl. app_ota.c/.h — F26,
+# regla 17 actualizada) + Kconfig.projbuild entre firmware/parche_aulasense/ y
+# firmware/espectre/src/cpp/frontend/native/app/main/.
 # De CMakeLists.txt compara SOLO la lista SRCS (la cabecera del parche es un comentario
 # canonico por convencion README §6; el resto del fichero es del vendor).
 #
@@ -22,7 +23,7 @@ function Get-SrcsLineas([string]$ruta) {
     }
 }
 
-foreach ($f in 'app_imagen.c', 'app_imagen.h', 'app_feedback.c', 'app_feedback.h', 'app_provision.c', 'app_provision.h', 'Kconfig.projbuild') {
+foreach ($f in 'app_imagen.c', 'app_imagen.h', 'app_feedback.c', 'app_feedback.h', 'app_provision.c', 'app_provision.h', 'app_ota.c', 'app_ota.h', 'Kconfig.projbuild') {
     $a = Join-Path $parche $f
     $b = Join-Path $vendor $f
     if (-not (Test-Path -LiteralPath $a)) { $diffs.Add("FALTA en parche: $f"); continue }
@@ -39,7 +40,7 @@ if (Compare-Object $srcsParche $srcsVendor) {
 }
 
 if ($diffs.Count -eq 0) {
-    Write-Output 'ESPEJO OK: 6 fuentes + Kconfig.projbuild (hash) + SRCS de CMakeLists coinciden'
+    Write-Output 'ESPEJO OK: 8 fuentes (incl. app_ota.*) + Kconfig.projbuild (hash) + SRCS de CMakeLists coinciden'
     exit 0
 }
 Write-Output "DRIFT DETECTADO ($($diffs.Count) diferencia(s)):"

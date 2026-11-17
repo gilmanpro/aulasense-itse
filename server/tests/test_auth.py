@@ -469,8 +469,11 @@ def test_reset_admin_regenera_limpia_y_no_imprime(cliente, credenciales_tmp, mon
     assert "regenerada en" in salida
     assert "longitud 32" in salida
 
-    # El valor NUNCA se imprime.
-    nuevo = credenciales_tmp["ruta"].read_text(encoding="utf-8")
+    # El valor NUNCA se imprime. F26 (SPEC 16.8): reset_admin escribe en el .env
+    # UNICO de la raiz (seam aislado por conftest via AULASENSE_ENV_RAIZ).
+    from pathlib import Path as _P
+    nuevo = _P(os.environ["AULASENSE_ENV_RAIZ"]).read_text(encoding="utf-8")
+    assert "AULASENSE_ADMIN_PASSWORD" in nuevo
     assert f"AULASENSE_ADMIN_PASSWORD={password_vieja}" not in nuevo
     password_nueva = nuevo.split("AULASENSE_ADMIN_PASSWORD=", 1)[1].splitlines()[0].strip()
     assert len(password_nueva) == 32

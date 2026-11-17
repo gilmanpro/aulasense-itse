@@ -4,13 +4,14 @@ Uso (acceso fisico al PC = el dueño; NUNCA por red):
   server\\.venv\\Scripts\\python.exe tools/reset_admin.py
   server\\.venv\\Scripts\\python.exe tools/reset_admin.py --usuario admin --db <ruta.db>
 
-Que hace (D-F25-8, mitigacion del encierro R-F25-3):
+Que hace (D-F25-8, mitigacion del encierro R-F25-3; destino F26, SPEC 16.8):
 - Genera una password NUEVA con ``secrets.token_hex(16)`` (por codigo, regla 8/15).
-- La escribe en ``claves/.env`` (``AULASENSE_ADMIN_PASSWORD``; crea el archivo con
-  ``AULASENSE_ADMIN_USER=admin`` si no existia).
+- La escribe en el ``.env`` UNICO de la raiz (``AULASENSE_ADMIN_PASSWORD``; crea
+  el par user/password si no existia). Ya NO escribe ``claves/.env``: ese archivo
+  quedo migrado y archivado en ``claves/*.bak-f26`` (F26-b).
 - Actualiza el hash del usuario en la BD (crea el usuario si no existe).
 - Limpia los lockouts (``intentos_login``) y las sesiones abiertas del usuario.
-- Imprime SOLO "regenerada en claves/.env" + longitud: la password NUNCA se
+- Imprime SOLO "regenerada en <ruta>" + longitud: la password NUNCA se
   imprime, ni se pasa por argv, ni se escribe en logs.
 
 Este CLI escribe por BD (writer unico de auth) y no necesita el dashboard vivo.

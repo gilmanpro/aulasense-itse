@@ -18,18 +18,34 @@ Derivados de ``ts_ms`` (hora local del PC):
 - ``dia_semana``: entero 0-6 con lunes=0;
 - ``franja_horaria``: etiqueta categorial "00-05" | "06-11" | "12-17" | "18-23".
 
+**Regla de validez temporal (F26-h3, 2026-11-17):** el CLI aplica por defecto la venta
+``[2026-01-01T00:00:00Z, ahora+1h]`` sobre ``eventos.ts_ms`` y sobre el join de
+``imagenes`` por FK. Filas documentadas fuera de venta (NO se editan en la BD — regla 10
+AGENTS):
+- imagen ``id=56``: ts_ms = 3.589.525.831.468 (epoca ~año 2083). Fire-test del receptor
+  :8001 con epoca absurda por autocorreccion de reloj; queda excluida del join por la venta.
+- familia con desfase +2963 s del 2026-11-17 (autocorreccion de reloj WSL post-reinicio):
+  dentro de ``ahora+1h`` al momento del export, se CONSERVA (se documenta, no se borra);
+  el analisis la lee por orden de ``id`` (monotono del nodo), no por ``ts_ms``.
+Conteo de filtrados por la regla queda en ``ExportadorConsolidado.filtrados_por_venta``
+y se imprime en el resumen JSON del CLI. El parametro de clase ``filtro_ts`` queda OFF
+por defecto (API historica intacta para tests/otros llamantes).
+
 Uso:
   server\\.venv\\Scripts\\python.exe analysis/export_consolida.py
   server\\.venv\\Scripts\\python.exe analysis/export_consolida.py --db ruta.db --out ruta.csv
+  # --sin-filtro-ts desactiva la venta F26-h3 (export "crudo" con origen=real unicamente)
 
 Reproducible: mismo SQLite -> mismo CSV (orden ``ts_ms, id``, sin marcas de
-generacion). Nunca escribe en el .db.
+generacion; unico campo dependiente del reloj: el techo ``ahora+1h`` de la venta, que
+solo afecta a filas futuras — ninguna en el dataset actual). Nunca escribe en el .db.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sqlite3
 import sys
@@ -81,6 +97,10 @@ VENTANA_CLIMA_MS = 3_600_000
 VENTANA_CONFIG_MS = 60_000
 TIPOS_PROVISION = ("CFG_GUARDADA", "AP_FALLBACK")
 
+# Venta de validez temporal del CLI (F26-h3; ver docstring). Techo = ahora + 1 h.
+TS_VENTA_MIN_MS = 1_767_225_600_000          # 2026-01-01T00:00:00Z
+TS_VENTA_MARGEN_FUTURO_MS = 3_600_000        # +1 h de tolerancia de reloj
+
 _CAMPOS_TELEMETRIA = (
     "detection_avg_us",
     "runtime_load_percent",
@@ -100,10 +120,18 @@ def _franja_horaria(hora: int) -> str:
 
 
 class ExportadorConsolidado:
-    """Lee SQLite (solo lectura) y escribe el consolidado por evento."""
+    """Lee SQLite (solo lectura) y escribe el consolidado por evento.
 
-    def __init__(self, db_path: str | Path) -> None:
+    ``filtro_ts``: venta opcional ``(min_ms, max_ms)`` (F26-h3). OFF por defecto
+    (API historica); el CLI la enciende con [2026-01-01, ahora+1h]. Cuando esta
+    activa, las filas fuera de venta NO se exportan (y NO se editan en la BD) y
+    quedan listadas en ``self.filtrados_por_venta`` con su conteo."""
+
+    def __init__(self, db_path: str | Path,
+                 filtro_ts: tuple[int, int] | None = None) -> None:
         self.db_path = Path(db_path)
+        self.filtro_ts = filtro_ts
+        self.filtrados_por_venta: dict[str, list[list[int]]] = {}
         self._conn = self._conectar_lectura(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._tiene_eventos = self._tabla_existe("eventos")
@@ -162,10 +190,17 @@ class ExportadorConsolidado:
     def _imagen_de_evento(self, evento_id: int) -> dict[str, Any]:
         if not self._tiene_imagenes:
             return {}
+        venta = ""
+        params: tuple = (evento_id,)
+        if self.filtro_ts is not None:
+            # Venta F26-h3: una imagen con ts fuera de epoca no es evidencia de la
+            # fila aunque el FK la apunte (p. ej. id 56, epoca ~2083, FIRE-TEST).
+            venta = " AND ts_ms BETWEEN ? AND ?"
+            params = (evento_id, *self.filtro_ts)
         fila = self._conn.execute(
             "SELECT ia_persona, ia_score, imagen_purgada FROM imagenes "
-            "WHERE evento_id = ? AND origen = 'real' ORDER BY id LIMIT 1",
-            (evento_id,),
+            "WHERE evento_id = ? AND origen = 'real'" + venta + " ORDER BY id LIMIT 1",
+            params,
         ).fetchone()
         return dict(fila) if fila is not None else {}
 
@@ -244,16 +279,39 @@ class ExportadorConsolidado:
         if not self._tiene_eventos:
             return []
         sesion = "sesion_id" if self._eventos_tiene_sesion else "NULL AS sesion_id"
+        venta = ""
+        params: tuple = ()
+        if self.filtro_ts is not None:
+            venta = " AND ts_ms BETWEEN ? AND ?"
+            params = tuple(self.filtro_ts)
         return self._conn.execute(
             "SELECT id, device_id, ts_ms, tipo, score, duracion_ms, "
             + sesion
-            + " FROM eventos WHERE origen = 'real' ORDER BY ts_ms, id"
+            + " FROM eventos WHERE origen = 'real'" + venta + " ORDER BY ts_ms, id",
+            params,
         ).fetchall()
+
+    def _contabilizar_filtrados(self) -> None:
+        """Regla F26-h3 CON conteo: filas `origen=real` fuera de la venta (id, ts_ms),
+        por tabla, para documentarlas SIN tocarlas (regla 10)."""
+        if self.filtro_ts is not None and self._tiene_eventos:
+            lo, hi = self.filtro_ts
+            cuenta: dict[str, list[list[int]]] = {}
+            for tabla in ("eventos", "imagenes"):
+                if tabla == "imagenes" and not self._tiene_imagenes:
+                    continue
+                cuenta[tabla] = [[int(i), int(t)] for i, t in self._conn.execute(
+                    f"SELECT id, ts_ms FROM {tabla} "
+                    "WHERE origen = 'real' AND (ts_ms < ? OR ts_ms > ?) ORDER BY id",
+                    (lo, hi),
+                ).fetchall()]
+            self.filtrados_por_venta = cuenta
 
     def exportar(self, out_path: str | Path) -> int:
         """Escribe el CSV y devuelve el numero de filas (0 si no hay eventos)."""
         destino = Path(out_path)
         destino.parent.mkdir(parents=True, exist_ok=True)
+        self._contabilizar_filtrados()
         filas = [self._fila(evento) for evento in self._eventos()]
         with open(destino, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(COLUMNAS), extrasaction="ignore")
@@ -273,18 +331,39 @@ def main(argv: list[str] | None = None) -> int:
         help="ruta de la SQLite (default: env AULASENSE_DB o server/datos/aulasense.db)",
     )
     ap.add_argument("--out", default=str(OUT_DEFECTO), help="CSV de salida")
+    ap.add_argument(
+        "--sin-filtro-ts",
+        action="store_true",
+        help="desactiva la venta de validez temporal F26-h3 "
+        "(por defecto: ts fuera de [2026-01-01T00:00Z, ahora+1h] se DOCUMENTA+FILTRA, "
+        "nunca se edita la BD)",
+    )
     args = ap.parse_args(argv)
 
     db_path = Path(args.db or os.getenv("AULASENSE_DB") or DB_DEFECTO)
     if not db_path.exists():
         print(f"[consolida] ERROR: DB inexistente: {db_path}", file=sys.stderr)
         return 1
-    exportador = ExportadorConsolidado(db_path)
+    filtro = None
+    if not args.sin_filtro_ts:
+        techo = int(datetime.now().timestamp() * 1000) + TS_VENTA_MARGEN_FUTURO_MS
+        filtro = (TS_VENTA_MIN_MS, techo)
+    exportador = ExportadorConsolidado(db_path, filtro_ts=filtro)
     try:
         n = exportador.exportar(args.out)
     finally:
         exportador.cerrar()
+    resumen = {
+        "filas_exportadas": n,
+        "venta_ts_ms": filtro,
+        "filtrados_por_venta": {
+            tabla: {"n": len(pares), "ids": [i for i, _ in pares]}
+            for tabla, pares in exportador.filtrados_por_venta.items()
+        },
+        "salida": str(args.out),
+    }
     print(f"[consolida] {n} eventos reales -> {args.out}")
+    print(json.dumps(resumen, ensure_ascii=False))
     return 0
 
 

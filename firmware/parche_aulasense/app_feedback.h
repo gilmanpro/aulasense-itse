@@ -39,6 +39,24 @@ typedef bool (*app_feedback_connected_fn)(void);
 void app_feedback_set_mqtt_publisher(app_feedback_publish_fn publish, app_feedback_connected_fn connected);
 
 /**
+ * F26 (SPEC §16.3): registra el publicador del estado RETAIN `heap_interno`. La funcion
+ * inyectada publica {internal_free_kb, internal_largest_block_kb, ts_ms} cada ~30 s en
+ * `{topic_prefix}/{device_id}/heap_interno` con retain=true (lambda del app sobre
+ * `publish_suffix("heap_interno", payload, true)` en el MISMO transporte de Native).
+ * Medido con heap_caps MALLOC_CAP_INTERNAL: NUNCA el free_memory_kb de read_diagnostics
+ * (PSRAM-inclusive). Sin publicador la metrica no se emite (degradacion a silencio normal).
+ */
+void app_feedback_set_heap_publisher(app_feedback_publish_fn publish,
+                                     app_feedback_connected_fn connected);
+
+/**
+ * F26 (SPEC §16.1): pausa/reanuda la PUBLICACION de telemetria (die temp + heap_interno)
+ * durante la descarga OTA. El "agujero" de telemetria es ESPERADO y esta documentado
+ * (NOTES_operacion / panel salud muestra "OTA en curso"). Buzzer y LED no se pausan.
+ */
+void app_feedback_pausar(bool pausa);
+
+/**
  * Inicializa buzzer (LEDC), WS2812 (RMT/led_strip), sensor de die temp y la tarea propia
  * (prioridad baja: nunca compite con el detector). Idempotente.
  *

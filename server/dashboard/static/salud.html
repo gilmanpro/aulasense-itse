@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>AulaSense — salud del sistema</title>
+<!--
+  F26-a2 (SPEC §16.7): panel estático de salud del sistema (ruta /salud).
+  HTML+JS vanilla, sin CDN ni build: debe funcionar aunque no haya red externa.
+  Lee GET /api/salud (login por cookie) desde /static/salud.js cada 30 s.
+  Paleta heredada del dashboard (index.html): slate oscuro + semáforo.
+-->
+<style>
+  :root {
+    color-scheme: dark;
+    --fondo: #020617;
+    --tarjeta: #0f172a;
+    --borde: #1e293b;
+    --texto: #e2e8f0;
+    --muted: #94a3b8;
+    --tenue: #64748b;
+    --verde: #2ecc71;
+    --warn: #f1c40f;
+    --critico: #e74c3c;
+    --info: #3498db;
+    --sindato: #7f8c8d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--fondo); color: var(--texto);
+    font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; font-size: 14px;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .55rem;
+    padding: .8rem 1rem; border-bottom: 1px solid var(--borde);
+  }
+  header h1 { margin: 0; font-size: 1.15rem; letter-spacing: .01em; }
+  .sub-cab { color: var(--muted); font-size: .74rem; }
+  .crece { margin-left: auto; }
+  #ultima-lectura { font-size: .72rem; color: var(--muted); }
+  .btn {
+    border: 0; border-radius: .5rem; padding: .35rem .7rem; font-size: .78rem;
+    cursor: pointer; background: #1d4ed8; color: #fff; text-decoration: none;
+  }
+  .btn:hover { background: #2563eb; }
+  .btn:disabled { opacity: .6; cursor: progress; }
+  .btn-sutil { background: #1e293b; color: var(--texto); }
+  .btn-sutil:hover { background: #334155; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 1rem; display: grid; gap: .9rem; }
+
+  .banner { padding: .55rem .8rem; border-radius: .5rem; font-size: .82rem; }
+  .banner[hidden] { display: none; }
+  #banner-ota { background: #1e3a8a; border: 1px solid #1d4ed8; color: #dbeafe; }
+  #banner-error { background: #7f1d1d; border: 1px solid #b91c1c; color: #fecaca; }
+
+  .seccion {
+    background: var(--tarjeta); border: 1px solid var(--borde);
+    border-radius: .9rem; padding: .8rem;
+  }
+  .seccion > h2 { margin: 0 0 .5rem; font-size: .95rem; }
+  h3.subtitulo { margin: .7rem 0 .35rem; font-size: .8rem; color: #cbd5e1; }
+  .nota-seccion { margin: 0 0 .5rem; font-size: .72rem; color: var(--tenue); }
+
+  .fila {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: .45rem;
+    padding: .4rem .2rem; border-bottom: 1px solid var(--borde);
+  }
+  .fila:last-child { border-bottom: 0; }
+  .dot {
+    width: .85rem; height: .85rem; border-radius: 50%; align-self: center; flex: 0 0 auto;
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, .6);
+  }
+  .fila .nom { font-size: .85rem; font-weight: 600; }
+  .fila .est { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .fila .val { font-size: .78rem; font-variant-numeric: tabular-nums; }
+  .fila .det { flex-basis: 100%; font-size: .72rem; color: var(--muted); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr; gap: .9rem; }
+  @media (min-width: 860px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+  .grid-metricas {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: .5rem; margin-top: .5rem;
+  }
+  .metrica { background: #111c31; border-radius: .5rem; padding: .45rem .55rem; }
+  .metrica .k {
+    font-size: .64rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  }
+  .metrica .v { font-size: .95rem; font-weight: 600; margin-top: .1rem; }
+
+  .valor-grande { margin: .1rem 0; font-size: 1.25rem; font-weight: 700; }
+  .bloque { padding: .2rem 0; }
+  .muted { color: var(--muted); }
+  .nota { margin: .35rem 0 0; font-size: .7rem; color: var(--tenue); }
+  .vacio { color: var(--sindato); font-size: .8rem; margin: .25rem 0; }
+  .caja-sindato {
+    border: 1px dashed #475569; border-radius: .5rem; padding: .6rem .7rem;
+    background: rgba(127, 140, 141, .08); color: #cbd5e1; font-size: .8rem; margin: .35rem 0;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+  .chip { border-radius: 999px; padding: .13rem .58rem; font-size: .72rem; font-weight: 600; }
+  .chip-verde { background: #14532d; color: #86efac; }
+  .chip-warn { background: #713f12; color: #fde68a; }
+  .chip-critico { background: #7f1d1d; color: #fecaca; }
+  .chip-info { background: #1e3a8a; color: #bfdbfe; }
+  .chip-sin-dato { background: #334155; color: #cbd5e1; }
+  .chip-neutro { background: #1e293b; color: #cbd5e1; border-radius: 999px; padding: .1rem .5rem; font-size: .68rem; }
+  .chip-fuente { background: #312e81; color: #c7d2fe; border-radius: 999px; padding: .1rem .5rem; font-size: .68rem; }
+  .badge-revision {
+    background: #78350f; color: #fcd34d; border-radius: .35rem; padding: 0 .4rem;
+    font-size: .62rem; font-weight: 700; letter-spacing: .04em;
+  }
+
+  .item { padding: .35rem .2rem; border-bottom: 1px solid var(--borde); font-size: .78rem; }
+  .item:last-child { border-bottom: 0; }
+  .item-linea { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; }
+  .item-sub { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .1rem; font-size: .7rem; color: var(--muted); }
+  .fuerte { font-weight: 600; }
+  .mono { font-variant-numeric: tabular-nums; }
+
+  .barra { height: .5rem; background: #1e293b; border-radius: 999px; overflow: hidden; margin: .35rem 0; }
+  .barra > div { height: 100%; border-radius: 999px; background: var(--info); }
+
+  footer.pie { color: var(--tenue); font-size: .72rem; line-height: 1.45; padding: .2rem .2rem 1.2rem; }
+  footer.pie p { margin: .15rem 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Salud del sistema</h1>
+    <span class="sub-cab">AulaSense · semáforo F26</span>
+    <span id="chip-global" class="chip chip-sin-dato" role="status" aria-live="polite">cargando…</span>
+    <span class="crece"></span>
+    <span id="ultima-lectura">última lectura OK: —</span>
+    <button id="btn-actualizar" class="btn" type="button">Actualizar</button>
+    <a class="btn btn-sutil" href="/">← dashboard</a>
+  </header>
+
+  <main>
+    <!-- Anti-falsa-alarma OTA (SPEC §16.7): la pausa de telemetría es esperada. -->
+    <div id="banner-ota" class="banner" role="status" hidden>
+      OTA en curso — la pausa de telemetría es esperada
+    </div>
+    <!-- Fetch fallido: se avisa y se limpian los paneles (nunca datos viejos como frescos). -->
+    <div id="banner-error" class="banner" role="alert" hidden>
+      sin datos (¿sesión caducada?)
+    </div>
+
+    <section class="seccion" aria-labelledby="t-checks">
+      <h2 id="t-checks">Semáforo de checks</h2>
+      <p class="nota-seccion">
+        «sin dato» (gris) = la fuente F26 todavía no publicó el dato; NO es una caída.
+      </p>
+      <div id="lista-checks"><p class="vacio">cargando…</p></div>
+    </section>
+
+    <section class="seccion" aria-labelledby="t-camara">
+      <h2 id="t-camara">Cámara / gate (imagen_estado + config_eventos)</h2>
+      <div id="camara-contenido"><p class="vacio">cargando…</p></div>
+    </section>
+
+    <section class="seccion" aria-labelledby="t-decision">
+      <h2 id="t-decision">Decisión de aula (Clef)</h2>
+      <div id="decision-contenido"><p class="vacio">cargando…</p></div>
+    </section>
+
+    <section class="seccion" aria-labelledby="t-placa">
+      <h2 id="t-placa">Placa (heap interno vs memoria libre)</h2>
+      <div id="placa-contenido"><p class="vacio">cargando…</p></div>
+    </section>
+
+    <div class="grid-2">
+      <section class="seccion" aria-labelledby="t-disco">
+        <h2 id="t-disco">Disco</h2>
+        <div id="disco-contenido"><p class="vacio">cargando…</p></div>
+      </section>
+      <section class="seccion" aria-labelledby="t-consumo">
+        <h2 id="t-consumo">Consumo de Credits</h2>
+        <div id="consumo-contenido"><p class="vacio">cargando…</p></div>
+      </section>
+    </div>
+
+    <section class="seccion" aria-labelledby="t-tuneles">
+      <h2 id="t-tuneles">Túneles WSL→VPS</h2>
+      <div id="tuneles-contenido"><p class="vacio">cargando…</p></div>
+    </section>
+
+    <footer class="pie">
+      <p id="pie-nota"></p>
+      <p id="pie-actividad">última actividad: —</p>
+    </footer>
+  </main>
+
+  <noscript>
+    <p style="padding: 0 1rem 2rem; color: #fecaca;">
+      Este panel necesita JavaScript para leer /api/salud; sin él no se pinta ningún dato.
+    </p>
+  </noscript>
+
+  <script defer src="/static/salud.js"></script>
+</body>
+</html>

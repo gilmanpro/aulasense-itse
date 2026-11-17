@@ -28,8 +28,11 @@ Alcance (fase F25-d2)
 Resolucion de la key (SIEMPRE por codigo; NUNCA se imprime)
 -----------------------------------------------------------
 1) variable de entorno ``DASHSCOPE_API_KEY`` del proceso;
-2) ``claves/.env`` (``AULASENSE_CLAVES_ENV`` la sobreescribe: tests);
-3) ``.env`` de la raiz (``AULASENSE_ENV_RAIZ`` la sobreescribe);
+2) ``.env`` UNICO de la raiz (F26, SPEC 16.8; ``AULASENSE_ENV_RAIZ`` la
+   sobreescribe: tests) — fuente canonica;
+3) ``claves/.env`` (``AULASENSE_CLAVES_ENV`` la sobreescribe: tests) — SOLO
+   lectura retrocompatible en ultimo lugar (las fuentes quedaron archivadas
+   en ``claves/*.bak-f26``; ya no hay preferencia sobre la raiz);
 4) ``auth.json`` de OpenCode (providers ``alibaba-token-plan`` /
    ``alibaba-token-plan-cn``; en esta maquina se verifico en
    ``%USERPROFILE%\\.local\\share\\opencode\\auth.json``; tambien se prueba
@@ -357,11 +360,12 @@ def _leer_archivo(ruta: Path) -> dict[str, str]:
 
 
 def valor_env(nombre: str, defecto: str = "") -> str:
-    """Prioridad: entorno del proceso -> ``claves/.env`` -> ``.env`` de la raiz."""
+    """F26 (SPEC 16.8): entorno del proceso -> ``.env`` UNICO de la raiz (canonico)
+    -> ``claves/.env`` SOLO como lectura retrocompatible de ultimo lugar."""
     del_proceso = os.environ.get(nombre)
     if del_proceso not in (None, ""):
         return str(del_proceso)
-    for ruta in (ruta_claves_env(), ruta_env_raiz()):
+    for ruta in (ruta_env_raiz(), ruta_claves_env()):
         valor = _leer_archivo(ruta).get(nombre)
         if valor not in (None, ""):
             return str(valor)
@@ -407,7 +411,7 @@ def clasificar_clave(valor: str) -> str:
 def resolver_clave(
     *, env_path: Path | None = None, claves_path: Path | None = None
 ) -> Clave:
-    """Resuelve la key SIN imprimirla: env -> claves/.env -> .env -> auth.json."""
+    """Resuelve la key SIN imprimirla: env -> .env raiz (canonico) -> claves/.env (retro) -> auth.json."""
     rutas_env = (
         Path(env_path) if env_path else ruta_env_raiz(),
         Path(claves_path) if claves_path else ruta_claves_env(),
@@ -417,7 +421,7 @@ def resolver_clave(
     if del_proceso:
         return Clave(del_proceso, clasificar_clave(del_proceso), "env")
 
-    for ruta, etiqueta in ((rutas_env[1], "claves/.env"), (rutas_env[0], ".env")):
+    for ruta, etiqueta in ((rutas_env[0], ".env"), (rutas_env[1], "claves/.env")):
         valor = str(_leer_archivo(ruta).get("DASHSCOPE_API_KEY") or "").strip()
         if valor:
             return Clave(valor, clasificar_clave(valor), etiqueta)

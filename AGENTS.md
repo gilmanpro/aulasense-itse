@@ -3,7 +3,7 @@
 Este archivo lo lee todo agente que trabaje en el repo. Respétalo al pie de la letra.
 Hereda las reglas duras del proyecto anterior (DriveGuard, `../archive/dashcam-ia/AGENTS.md` tras el
 archivado) **con las correcciones del dominio CSI**. Plan maestro: `PLAN.md`. Especificación: `SPEC.md`.
-Checklist vivo: `../.tmp/checklist.md` (en `iot2\.tmp\checklist.md`, **v25**; v24 archivada en `checklist_pre_v25.md`).
+Checklist vivo: `../.tmp/checklist.md` (en `iot2\.tmp\checklist.md`, **v26**; v25 archivada en `checklist_pre_v26.md`).
 
 ## Qué es esto
 Sensor de movimiento/ocupación dinámica con IA **en el borde** (ESP32-S3 GOOUUU v1.5): detector
@@ -20,7 +20,8 @@ HTTP :8001 queda alternativo. El servidor (ingesta+dashboard+worker visión) cor
 (systemd, venv linux, sin Docker; datos en ext4; Windows fallback). El dashboard gana **login seguro**
 (admin único, Argon2id/scrypt, cookie HttpOnly+SameSite, lockout progresivo) y **búsqueda por texto**
 en la galería (descripciones IA de Qwen vision con rate limits obligatorios y cumplimiento ToS del
-Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas SOLO por código).
+Token Plan). Credenciales de auth/IA en **`.env` ÚNICO de la raíz** (F26 D-F26-6; gitignored,
+generadas SOLO por código; el `claves/.env` de F25 quedó archivado como referencia histórica).
 
 ## Reglas duras
 1. **Edge-first:** el detector ML corre EN el ESP32-S3. Ningún procesamiento de sensing/IA se mueve al
@@ -42,7 +43,11 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
      tarea dedicada de baja prioridad (NUNCA desde el loop del detector CSI), cola corta en PSRAM
      (si se llena: se DESCARTA la imagen y el EVENTO SIGUE — el evento es la fuente de verdad).
    - **Gate de memoria:** si heap interno libre < 120 KB o largest block < 64 KB → captura
-     auto-deshabilitada con log honesto; el CSI sigue detectando.
+     auto-deshabilitada con log honesto; el CSI sigue detectando. **F26 (SPEC §16.3): umbrales
+     VIVOS 95/24 KB y re-evaluación en CADA onset (sin latch permanente; cola de onsets
+     drop-oldest); el gate OTA es 96/48 post-quiesce (§16.1 enmendado). Métrica útil:
+     `internal_free_kb`/`internal_largest_block_kb` (heap INTERNO), NUNCA `free_memory_kb`
+     (≈8,2 MB = PSRAM).**
    - **Consentimiento de aula documentado** (obligatorio: las imágenes pueden capturar personas = datos
      personales). **Retención y borrado configurables** (default 30 días; `tools/purga_imagenes.py`
      marca `imagen_purgada=1` y CONSERVA la fila+ia → el dataset NO se rompe). Imágenes **gitignored**.
@@ -72,17 +77,33 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
 5. **ESP-IDF v5.5.6** (NO v5.4): el SDK ESPectre requiere ≥5.5.3 y docs/CLI.md recomienda 5.5.6.
    Desviación documentada de la regla E5 original (v5.4 queda instalado para el archive). Comando
    canónico: `eim run "idf.py …" v5.5.6`. **NO usar** `. $env:IDF_PATH\export.ps1` (exige python sano en
-   PATH, que está roto).
+   PATH, que está roto). **F26 (estado 2026-11-17):** la BUILD ÚNICA de referencia es la familia F26
+   (placa viva f26.6, espejo 10/10); ningún cambio de firmware se flashea por UART — viaja por OTA
+   (SPEC §16.1). La ÚNICA reflasheada UART autorizada fue la "destraba" f26.3 (el gate contractual
+   120/64 era inalcanzable y hacía la primera OTA imposible por OTA — evidencia `f26_g1_ota.md` §0a;
+   umbrales enmendados a 96/48). Builds de chequeo: `idf.py build` simple, NO `set-target` a posteriori
+   (lección c2).
 6. **PROHIBIDO USB device stack** en el firmware (CONFIG_USB_* / tinyusb / UAC): re-muxea el PHY 19/20
-   y apaga el JTAG por el que se reflashea = riesgo de brick (lección F18-A de DriveGuard). En S3 la
-   consola de ESPectre es UART (TinyUSB CDC solo S2) — no activar ninguna opción USB-device. Verificar
-   sdkconfig ANTES de cada flash.
-7. **Secretos:** jamás escribas contraseñas reales en el repo. WiFi/MQTT van en `.env` (copiado de
-   `.env.example`, gitignored) y en `sdkconfig.defaults.local` (gitignored, generado por
-   `tools/gen_firmware_config.py`) o en la NVS de la placa (Improv Serial). La clave WiFi del CLI de
+   y apaga el JTAG por el que se reflashea = riesgo de brick (lección F18-A de DriveGuard). La
+   **consola** de este build S3 es **USB-Serial-JTAG, NO UART** (`CONFIG_ESP_CONSOLE_UART_NUM=-1`;
+   evidencia `sdkconfig:1460-1465` e `inv_ota_provision.md` §2.5 — corrige la afirmación vieja "en S3
+   la consola de ESPectre es UART"): lo PROHIBIDO sigue siendo el **USB device stack** (TinyUSB CDC
+   solo aplica a S2), no el USB-Serial-JTAG nativo por el que sale la consola y por el que se
+   reflashea. El monitor de la fase F26 es `tools/lee_serial.py` por JTAG (solo lectura, sin reset;
+   evitar `idf.py monitor` para sondeo). No activar ninguna opción USB-device. Verificar sdkconfig
+   ANTES de cada flash.
+7. **Secretos:** jamás escribas contraseñas reales en el repo. **F26 (D-F26-6, SPEC §16.8): el
+   archivo canónico es el `.env` ÚNICO en la raíz** (gitignored, secciones ordenadas WiFi/MQTT/
+   PROVISION_AP/UPLOAD/ADMIN/IA/VISION/CLEF/MONITOREO/WSL/REMOTO); `claves/` quedó archivado
+   (`*.bak-f26`) y los loaders ya no le dan prioridad. Firmware WiFi/MQTT va además en
+   `sdkconfig.defaults.local` (gitignored, generado por `tools/gen_firmware_config.py`) o en la NVS
+   de la placa (Improv Serial / portal AP fijo). Única excepción publicada por **orden explícita del
+   dueño**: la pass canónica del AP de provisioning (`itse-aulasense`) — solo en `.env` +
+   `docs/NOTES_operacion.md` (capacidad local, no credencial de red). La clave WiFi del CLI de
    ESPectre va por `ESPECTRE_WIFI_PASSWORD` (env var), **NUNCA por argv ni impresa**. Si un componente
    necesita una clave nueva, genérala con `secrets.token_hex(16)` en código. `tools/config_mqtt.py` lee
-   `.env` y nunca imprime la clave.
+   `.env` y nunca imprime la clave. La pass SSH del VPS NO entra (la gestiona wsl-port; rotación
+   pendiente — NUNCA imprimirla ni serializar el objeto túnel completo, solo `state`/`remote`).
 8. **Temporales:** siempre en `.tmp/` de este proyecto o en `iot2\.tmp\`. Nunca en %TEMP%/AppData.
 9. **Idioma:** documentación, comentarios de código y mensajes de commit en español; identificadores,
    variables y comandos en inglés.
@@ -114,19 +135,34 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
     **N1** = la imagen viaja por la MISMA conexión MQTT persistente del nodo — prohibido abrir otra
     conexión por imagen; **N2** = fallback HTTP :8001 (hoy re-habilitado en `debian-aulasense` con
     caveat de ruteo LAN, README_wsl). El
-    dashboard sirve la galería SOLO en loopback **con login** (bind loopback intacto; exposición
-    Windows solo 127.0.0.1, SPEC §15). `datos/imagenes/` gitignored.
-    Purga con `imagen_purgada` conserva la fila (dataset intacto). La IA de visión persona es OPCIONAL
-    (`AULASENSE_IA_IMAGEN` default n), spike-gated F24-e0: si no coexiste con el CSI, se ABANDONA
-    documentado (orden del usuario: "si no se puede no lo hagas"). **La IA principal YA ES el detector
+    dashboard sirve la galería tras **login** con bind local (loopback en Windows; VM-local en WSL
+    :8100) y exposición pública SOLO por el túnel VPS `:10062` tras el guard de Origin
+    (SPEC §15/§16.10). `datos/imagenes/` gitignored.
+    Purga con `imagen_purgada` conserva la fila (dataset intacto). La IA de visión persona en-chip es
+    OPCIONAL (`AULASENSE_IA_IMAGEN` default n), spike-gated F24-e0: si no coexiste con el CSI, se
+    ABANDONA documentado (orden del usuario: "si no se puede no lo hagas") — **veredicto 2026-11-15:
+    F24-e NO LANZADA, archivada documentada** (el spike se re-encuadró a backend con veredicto
+    GO-COSTO; el módulo en-chip nunca se creó en disco — PLAN §12.8 y README del parche). **La IA
+    principal YA ES el detector
     CSI neuronal en-chip** (edge-first C1); la visión es capa adicional, no la reemplaza.
-15. **`claves/.env` (F25, D-F25-9):** las credenciales del dashboard (admin) y la key de IA viven en
-    `aulasense/claves/.env` — carpeta NUEVA **gitignored** (`claves/*` + `!claves/.env.example`).
-    **Generación SOLO por código** (`secrets.token_hex(16)` para la password admin en F25-e;
-    `tools/reset_admin.py` la regenera). **Entrega al dueño por canal local** (el archivo en disco;
-    el orquestador indica la ruta, NUNCA el valor). Prohibido: imprimirla en logs/reportes/evidencia
-    `.tmp/`, escribirla en docs o commitearla. El `.env` raíz sigue para WiFi/MQTT/upload; el loader
-    lee ambos (claves/ prioridad para auth/IA). El modelo NUNCA asigna contraseñas.
+    **F26 (estado 2026-11-17):** el gate de captura VIVO es 95/24 KB internos SIN latch (re-evalúa
+    cada onset; SPEC §16.3) y la observabilidad es nativa: retain `imagen_estado` (camara_ok/
+    gate_off/captura_habilitada/build), sufijo `heap_interno` (30 s) y columnas
+    `telemetria.internal_free_kb`/`internal_largest_block_kb` — el estado de cámara se verifica REMOTO
+    (BD ro/dashboard), sin serial salvo anomalía. 81 fotos reales en BD (60 con decisión Clef; NO
+    "~130"). Calidad JPEG regulable post-entrega (`jpeg_quality` en `app_imagen.c:653`) via OTA.
+15. **`.env` ÚNICO en la raíz (F26 D-F26-6, SPEC §16.8 — reemplaza el `claves/.env` de F25 D-F25-9):**
+    todas las credenciales del proyecto (auth admin, IA `DASHSCOPE_API_KEY`/`OPENROUTER_API_KEY`,
+    broker, upload, PROVISION_AP, monitoreo, remoto) viven en `aulasense/.env` — archivo NUEVO único
+    editable por humanos, **gitignored**, generado/migrado por `tools/consolidar_env.py --unificar`
+    (valores copiados byte-a-byte por código; el modelo nunca los ve ni imprime). **Generación SOLO
+    por código** (`secrets.token_hex(16)`; `tools/reset_admin.py` reescribe en el `.env` raíz).
+    **Entrega al dueño por canal local** (el archivo en disco; la ruta, NUNCA el valor). Prohibido:
+    imprimirla en logs/reportes/evidencia `.tmp/`, escribirla en docs o commitearla — con la única
+    excepción de la pass canónica del AP, publicada por orden explícita del dueño en `.env`+NOTES.
+    Las fuentes viejas (`claves/.env`, `claves/.env-wsl-nuevo`) quedaron archivadas como
+    `claves/*.bak-f26` (gitignored); `claves/.env.example` es referencia histórica. rsync a WSL con
+    `--exclude '.env'` + chmod 600. El modelo NUNCA asigna contraseñas.
 16. **Presupuesto de Credits (F25, D-F25-6, OBLIGATORIO):** toda llamada a modelos de pago (visión,
     imagen, video, TTS) lleva **rate limit configurable** (visión: `AULASENSE_VISION_MAX_DIA=120` +
     `AULASENSE_VISION_MAX_HORA=20`, contadores persistentes), **dedupe por hash**, **backoff
@@ -140,7 +176,8 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
     dentro del turno del agente (prohibido dejarlas en background entre turnos); el incidente de dos
     procesos solapados costó 3 descripciones duplicadas y 2.972 tokens.
 17. **Espejo `parche_aulasense` ↔ `main/` con DIFF CERO (obligatorio):** todo archivo del parche
-    (`app_imagen.*`, `app_provision.*`, `app_feedback.*`, `Kconfig.projbuild`, `CMakeLists.txt`)
+    (`app_imagen.*`, `app_provision.*`, `app_feedback.*`, `app_ota.*` — F26), `Kconfig.projbuild`,
+    `CMakeLists.txt`)
     debe quedar IDÉNTICO entre `firmware/parche_aulasense/` y el árbol vivo
     `firmware/espectre/src/cpp/frontend/native/app/main/` al cerrar cualquier tarea de placa
     (verificar con diff/hash; `f24d_reconciliacion.md` §3 es el patrón). Los ficheros sin espejo por
@@ -156,7 +193,7 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
   /login, /logout, estáticos de login y /internal/* (Origin guard, máquina local); cookie
   HttpOnly+SameSite=Lax, sesión 12 h absoluta + 2 h idle, lockout progresivo por IP+usuario
   (5/10/20 fallos → 60 s/15 min/1 h, 429+Retry-After), logout, `tools/reset_admin.py` local.
-  Password admin generada por código → `claves/.env` (regla 15), hash Argon2id/scrypt.
+  Password admin generada por código → `.env` raíz único (regla 15, SPEC §16.8), hash Argon2id/scrypt.
 - **Exposición WSL (F25, D-F25-3, reinterpreta el bind):** el server primario corre en WSL Debian
   (NAT). Dentro de la VM el dashboard bind `0.0.0.0` es **VM-local** (NAT sin portproxy LAN =
   inalcanzable desde la LAN); la **superficie expuesta en Windows sigue siendo SOLO 127.0.0.1**
@@ -164,9 +201,10 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
   ORIGINS_EXTRA exacto). **NO tocar `.wslconfig` global** (8 distros comparten la VM; mirrored
   per-distro imposible, WSL#13706). El receptor :8001 LAN→WSL es OPT-IN (portproxy+firewall); con
   MQTT primario no hace falta. Origin guard y login intactos en todos los casos.
-- **Galería de imágenes SOLO loopback (F24, reemplaza "cero endpoints de imágenes" v23):** el dashboard
+- **Galería de imágenes tras login (F24, reemplaza "cero endpoints de imágenes" v23):** el dashboard
   NUNCA acepta uploads; sirve fotos de evidencia por id de BD en `GET /api/imagenes/{id}/foto` (bind
-  127.0.0.1, nosniff, ruta validada bajo datos/imagenes/, 404 si purgada). El **upload** va a un receptor
+  127.0.0.1 en Windows / VM-local :8100 en WSL; exposición pública solo por el túnel :10062 con
+  sesión+Origin guard; nosniff, ruta validada bajo datos/imagenes/, 404 si purgada). El **upload** va a un receptor
   HTTP SEPARADO dentro de la ingesta (`POST /internal/imagen`, LAN :8001, **Bearer token** obligatorio,
   JPEG magic, ≤64 KB, device allowlist, rate-limit 1/10 s → 401/413/422/429). Bind del receptor
   `AULASENSE_UPLOAD_HOST` (vacío=desactivado; NUNCA 0.0.0.0 default). **F25: las imágenes SÍ viajan
@@ -177,10 +215,20 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
   serial, 404 sin pista). POST con Origin/Referer guard (403), cooldown NVS 5 s (429), **NUNCA loguea
   SSID/pass** (solo longitudes), cabeceras seguridad (nosniff/DENY/no-referrer/CSP text-only). Patrón
   heredado endurecido DriveGuard `app_portal.c`. BOOT 3 s → Improv nativo PRESERVADO.
+  ← **F26 (D-F26-4, SPEC §16.2): reemplazado por portal FIJO SIN token** — AP `AULASENSE-CFG` (SSID
+  fijo, WPA2 con pass canónica `itse-aulasense`, publicada por orden explícita del dueño: capacidad
+  local que exige asociación física al AP, no credencial de red) + rutas explícitas `GET /cfg` (form
+  HTML), `GET /cfg/estado` (JSON), `POST /cfg/wifi`; token NVS eliminado del código; guardas HEREDADAS
+  intactas (Origin/Referer 403, cooldown 429, body ≤255 B, nunca loguear pass, cabeceras duras);
+  `AP_ERROR` publicado en TODAS las ramas de fallo del AP. **REALIDAD FLASHEA (c2→f26.6): la build
+  viva ya usa el portal fijo sin token — NO queda pendiente de flasheo; la primera OTA E2E por aire
+  y el rollback están demostrados (g1/g2). Pasos operativos: `docs/NOTES_operacion.md`.**
 - **MQTT con auth** (usuario `electiva`, clave en `.env`): el broker es compartido → `topic_prefix=
   aulasense/v1/devices` aísla nuestros topics. La ingesta valida el esquema; los paquetes no llevan
   datos personales identificables.
-- **Direct HTTP del nodo (:62587)** es para LAN confiable: el firmware acepta solo orígenes listados,
+- **Direct HTTP del nodo (:62587)** es para LAN confiable **y SOLO LAN (zero-asunción-LAN D-F26-10: el
+  servidor JAMÁS alcanza a la placa en operación remota — toda gestión remota viaja por MQTT iniciado
+  por la placa; recovery remoto = rollback OTA, SPEC §16.10)**: el firmware acepta solo orígenes listados,
   exige preflight Private Network Access, limita cuerpo/colas/clientes/rate, nunca devuelve claves.
   Nuestras tools envían `Origin: https://test.espectre.dev` (permitido por defecto, igual que el CLI).
 - **XSS**: todo dato dinámico del dashboard se interpola escapado (`esc()`/`textContent`).
@@ -201,31 +249,39 @@ Token Plan). Credenciales de auth/IA en **`claves/.env`** (gitignored, generadas
 ## Estructura
 ```
 aulasense/
-├─ PLAN.md SPEC.md README.md AGENTS.md .gitignore .env.example
-├─ claves/                  # F25: .env de auth/IA (GITIGNORED, generado por código) + .env.example
+├─ PLAN.md SPEC.md README.md AGENTS.md .gitignore .env.example .env   # F26: .env ÚNICO raíz (gitignored)
+├─ claves/                  # HISTÓRICO F25: fuentes archivadas `*.bak-f26` (GITIGNORED; la autoridad es .env raíz)
 ├─ firmware/
 │   ├─ espectre/            # vendor ESPectre tag 3.2.0 (GITIGNORED, clon por tag, GPLv3)
 │   └─ parche_aulasense/    # derivado propio: app_feedback.c/.h (F3), app_imagen.c/.h (F24-c,
-│                           #   +transporte MQTT F25-c), app_provision.c/.h (F24-d),
-│                           #   app_ia_imagen.c/.h (F24-e opt), Kconfig, CMake
+│                           #   +transporte MQTT F25-c, +observabilidad/gate-sin-latch F26),
+│                           #   app_provision.c/.h (F24-d; F26: AP fija + portal sin token),
+│                           #   app_ota.c/.h (F26-c1: OTA por comando MQTT + manifiesto SHA-256 +
+│                           #   rollback bootloader), Kconfig, CMake
+│                           #   (F24-e visión en-chip: NO lanzada, archivada 2026-11-15 — PLAN §12.8)
 ├─ server/
 │   ├─ ingesta/             # ingesta_mqtt.py (+decoder image MQTT F25) + esquema.py + receptor_imagen.py
 │   ├─ dashboard/           # app.py + auth.py (F25 login) + static/ (FastAPI + WS + Chart.js +
 │   │                       #   galería F24 + búsqueda F25, loopback+auth)
 │   ├─ vision/              # F25: cliente.py (worker descripción IA, rate limits, modos A/B)
+│   │                       #   F26: clef.py (decisión de aula, cascada clef-flash→clef, §16.6)
 │   ├─ deploy/              # F25: units systemd WSL + README_wsl.md
+│   │                       #   F26: + aulasense-ota.service (estático :8101 → túnel :10064)
 │   ├─ ble/                 # receptor_ble.py (opcional, bleak; fuera de WSL)
 │   ├─ fuentes/             # openmeteo.py (gratis sin key)
 │   ├─ datos/               # aulasense.db + exports + imagenes/ (gitignored; tras cutover F25 la DB
 │   │                       #   canónica vive en ~/aulasense-datos/ ext4 de WSL)
 │   └─ tests/               # pytest (ambos runtimes: Windows py3.15 + WSL py3.13)
 ├─ analysis/                # eda.py, modelo_ocupacion.py, export_consolida.py, smoke_consolida.py (F24)
-│                           #   run_analisis.ps1 · dataset/consolidado.csv (esquema §10.1)
+│                           #   clef_resumen.py (F26-h3) · run_analisis.ps1 · dataset/consolidado.csv (esquema §10.1)
 ├─ tools/                   # start_demo/stop_demo.ps1, gen_firmware_config.py, config_mqtt.py,
 │   │                       #   lee_serial.py, purga_imagenes.py (F24), session_logger.py (F3)
 │   │                       #   F25: vision_describe.py, reset_admin.py, wsl_aulasense.ps1
-│   └─ generadores/         # gen_informe.py / gen_presentacion.py (docs/INFORME.docx, PRESENTACION.pptx)
-├─ docs/                    # README.md (índice), PROPUESTA.md, guion_demo.md, fuentes.md, Word/PPTX
+│   │                       #   F26: clef_decide.py, consolidar_env.py (--unificar .env único)
+│   └─ generar_informe.py   # GENERADOR único de docs/entrega/INFORME.docx + PRESENTACION.pptx
+│                           #   (la ruta vieja con subcarpeta de generadores no existe — D-F26-12)
+├─ docs/                    # README.md (índice), PROPUESTA.md, fuentes.md, guion_demo.md (F26-f1),
+│                           #   NOTES_operacion.md (F26-f1: manual de operación del dueño), Word/PPTX
 │                           #   F25: guion_video.md, video_subtitulos.srt, video_aulasense.mp4
 ├─ assets/                  # figuras EDA/modelo, diagramas; F25: diagrama_tecnico.*, 
 │                           #   poster_funcionamiento.png, video/ (escenas/audio intermedios)
@@ -237,6 +293,9 @@ aulasense/
 # Firmware (ESP-IDF 5.5.6 vía eim; NO python del PATH):
 cd firmware/espectre/src/cpp/frontend/native/app
 eim run "idf.py set-target esp32s3" v5.5.6; eim run "idf.py build" v5.5.6; eim run "idf.py -p COM6 flash monitor" v5.5.6
+# BUILD ÚNICA F26 EN VIGOR (placa viva f26.6): NO volver a flashear por UART — la única reflasheada
+# autorizada fue la "destraba" f26.3 (orquestador, 2026-11-17; gate 120/64 inalcanzable → 96/48).
+# TODO cambio futuro de firmware viaja por OTA (check→apply; SPEC §16.1, docs/NOTES_operacion.md).
 # Fallback CLI (si el app lo requiere): .\espectre.cmd native build --chip s3 --backend local  (IDF_PATH de eim)
 # NO usar . $env:IDF_PATH\export.ps1 (python roto).
 
@@ -255,18 +314,24 @@ server\.venv\Scripts\python.exe tools/purga_imagenes.py --dias 30   # default .e
 
 # Demo / análisis:
 powershell tools/start_demo.ps1 ; powershell tools/stop_demo.ps1
-powershell analysis/run_analisis.ps1 --origen real --validacion docs/validacion_sesion1.csv
+powershell analysis/run_analisis.ps1    # SIN flags --origen/--validacion (NO existen): origen=real es
+#   inherente al pipeline y las validaciones se autodescubren por glob docs/validacion_sesion*.csv.
+#   Parámetros reales: -Python, -Distro, -SinWsl, -NoFiguras.
 
 # F25 · Runtime WSL (primario; skill wsl-manager-cli; NUNCA dos stacks vivos):
 powershell tools/wsl_aulasense.ps1 status          # systemctl is-active ×3 + URL del dashboard
 powershell tools/wsl_aulasense.ps1 start           # arranca servicios WSL (ingesta/dashboard/vision)
 powershell tools/wsl_aulasense.ps1 stop            # para servicios WSL
+powershell tools/wsl_aulasense.ps1 salud           # F26: /api/salud + túneles SOLO state/remote → datos/tuneles_estado.json
 powershell tools/wsl_aulasense.ps1 refresh-portproxy  # WSL_IP cambió tras reboot (admin; fallback sin admin)
-wsl -d Debian -- ~/venvs/aulasense/bin/python -m pytest server/tests -q   # tests en runtime WSL
+wsl -d Debian -- sh -c 'cd /home/aulasense/aulasense && ~/venvs/aulasense/bin/python -m pytest server/tests analysis/tests -q'   # tests en runtime WSL (el `cd` es obligatorio: sin él, `server/tests` no resuelve)
 # F25 · Visión (modo B agente-mediado con key TP; modo A daemon SOLO sk-* pay-as-you-go):
 #   el agente lanza: tools/vision_describe.py --once --limit 30   (rate limits/dedupe/backoff en el CLI)
-# F25 · Reset admin (acceso físico del dueño; regenera password en claves/.env, nunca la imprime):
+# F25/F26 · Reset admin (acceso físico del dueño; regenera password en el .env ÚNICO raíz —
+#   F26 §16.8: ya NO en claves/.env —, nunca la imprime):
 #   tools/reset_admin.py
+# F26 · OTA: disparo check|apply por MQTT con el helper publicar_comando_ota de la ingesta —
+#   paso a paso y verificaciones en docs/NOTES_operacion.md (NUNCA apply sin sha externo verificado).
 ```
 
 ## Estilo

@@ -6,9 +6,10 @@
  *  - Captura SOLO en la transición idle->motion: 1 JPEG QVGA 320x240 (quality 12) de la OV3660,
  *    fb_count=2 con los framebuffers en PSRAM (CAMERA_FB_IN_PSRAM).
  *  - Cooldown de 15 s (`AULASENSE_IMAGEN_COOLDOWN_S`): 2 onsets seguidos -> 1 sola imagen.
- *  - Cola corta de onsets en PSRAM (`AULASENSE_IMAGEN_QUEUE`=2 slots) + buffers JPEG de
- *    <= 8 KB en PSRAM. Si la cola se llena -> se DESCARTA la imagen, se loguea y se emite
- *    `IMAGEN_DESCARTE`; el EVENTO motion sigue su curso por MQTT (la imagen es accesoria).
+ *  - Cola corta de onsets en PSRAM (`AULASENSE_IMAGEN_QUEUE`=4 slots F26) + buffers JPEG de
+ *    <= 8 KB en PSRAM. Si la cola se llena -> DROP-OLDEST (F26: sale el onset mas antiguo,
+ *    entra el nuevo; se emite `IMAGEN_DESCARTE`); el EVENTO motion sigue su curso por MQTT
+ *    (la imagen es accesoria).
  *  - CANAL PRIMARIO (F25-c, D-F25-1): tras capturar, la tarea propia codifica el JPEG en base64
  *    estándar SIN saltos (mbedtls_base64_encode), calcula sha256 del JPEG crudo (mbedtls_sha256)
  *    y publica el envelope JSON de SPEC §6.2 en `{topic_prefix}/{device_id}/image` con el
@@ -19,11 +20,17 @@
  *    `http://CONFIG_AULASENSE_UPLOAD_HOST:PORT/internal/imagen` con `Authorization: Bearer`,
  *    `X-Device-Id`, `X-Ts-Ms`, `Content-Type: application/octet-stream`. `X-Ia-*` se OMITEN
  *    (la IA de visión es F24-e, opcional). Backoff 2/4/8 s y máximo 3 reintentos.
- *  - GATE DE MEMORIA: antes de capturar se comprueba el heap INTERNO. Si libre <
- *    `AULASENSE_IMAGEN_HEAP_MIN_KB` (120) o el mayor bloque libre <
- *    `AULASENSE_IMAGEN_HEAP_BLOCK_MIN_KB` (64) -> captura auto-deshabilitada con ESP_LOGW +
- *    evento `IMAGEN_GATE_OFF`; se re-habilita con histéresis (umbral + 20 KB). El CSI sigue
- *    detectando en todo momento: la foto es accesoria, el evento es la verdad.
+ *  - GATE DE MEMORIA (F26: SIN LATCH y medido SIEMPRE contra heap INTERNO puro): antes de cada
+ *    captura se comprueba el heap interno. Si libre <
+ *    `AULASENSE_IMAGEN_HEAP_MIN_KB` (120 default, 95 vivo) o el mayor bloque libre <
+ *    `AULASENSE_IMAGEN_HEAP_BLOCK_MIN_KB` (64 default, 24 vivo) -> captura auto-deshabilitada con
+ *    ESP_LOGW + evento `IMAGEN_GATE_OFF`; se RE-EVALUA en CADA onset y se re-habilita con
+ *    histéresis (umbral + 20 KB) de forma inmediata. El CSI sigue detectando en todo momento.
+ *  - OBSERVABILIDAD F26 (SPEC §16.3): `IMAGEN_INIT` al terminar el init (camera/pid/prueba/heap),
+ *    `CAMARA_ERROR` en TODAS las rutas de fallo (antes mudas) y estado RETAIN `imagen_estado`
+ *    re-publicado en cada conexión MQTT y al cambiar el estado (mata el silencio de arranque:
+ *    informe A §3.2). Cola de onsets DROP-OLDEST (4 slots default F26). `app_imagen_pausar()`
+ *    corta la captura durante una descarga OTA (la foto es accesoria, SPEC §16.1).
  *
  * Diseño de hilos (no negociable, README §9 y AGENTS §Estilo):
  *  - El hook de estado (prio 5, tarea del loop de Native) solo compara y encola: O(1).
@@ -164,6 +171,10 @@ void app_imagen_set_mqtt_image(app_imagen_publish_topic_fn publish,
     (void)topic_prefix;
 }
 
+void app_imagen_set_state_publisher(app_imagen_publish_fn state_publish) { (void)state_publish; }
+
+void app_imagen_pausar(bool pausa) { (void)pausa; }
+
 bool app_imagen_init(const char *device_id) {
     (void)device_id;
     ESP_LOGI(TAG_OFF, "imagen deshabilitada por Kconfig (AULASENSE_IMAGEN=n)");
@@ -198,6 +209,8 @@ static const char *TAG = "aulasense.imagen";
 #define IMAGEN_HTTP_TIMEOUT_MS 4000
 #define IMAGEN_REINTENTOS 3
 #define IMAGEN_HISTERESIS_KB 20
+#define IMAGEN_EVT_REINTENTOS_MAX 120U  /* F26-c3: reintentos ESPACIADOS 1 s del anillo de
+                                         * eventos (ventana pre-connected del arranque) */
 
 /*
  * F25-c (SPEC §3.2.1/§6.2). El tope del b64 va en #define DURO (16384) a propósito: el dispatch
@@ -223,6 +236,8 @@ typedef struct {
 
 typedef struct {
     char json[IMAGEN_EVENT_PAYLOAD_MAX];
+    int64_t sig_intento_ms; /* 0 = intentable ya; >0 = no reintentar antes de esa marca */
+    uint8_t intentos;       /* reintentos consumidos (F26-c3) */
 } imagen_evento_t;
 
 static app_imagen_publish_fn s_publish_fn = NULL;
@@ -265,6 +280,16 @@ static int64_t s_ultima_captura_us = 0;
 static uint32_t s_subidas_ok = 0;
 static uint32_t s_descartes = 0;
 
+/* ---- F26 (SPEC §16.3): observabilidad de la camara + estado retain ---- */
+static uint16_t s_camara_pid = 0;                       /* PID leido del sensor (0x3660 esperado) */
+static uint32_t s_prueba_bytes = 0;                     /* bytes del JPEG de la prueba de arranque */
+static char s_camara_err[24] = "";                      /* esp_err_to_name del ultimo fallo ("" si no) */
+static bool s_pipeline_ok = false;                      /* prueba de captura del arranque */
+static volatile bool s_pausada = false;                 /* pausa OTA: la foto es accesoria */
+static volatile bool s_estado_dirty = true;             /* retain imagen_estado a re-publicar */
+static bool s_estado_prev_connected = false;            /* edge de conexion MQTT (re-publicar) */
+static app_imagen_publish_fn s_state_publish_fn = NULL; /* retain imagen_estado (baked en el lambda) */
+
 /* Estado debounced propio (se compara para no capturar por evaluación, solo por transición). */
 static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_last_motion = false;
@@ -278,6 +303,8 @@ static void publicar_evento(const char *evento, const char *detalle) {
         return;
     }
     imagen_evento_t ev;
+    ev.sig_intento_ms = 0;
+    ev.intentos = 0;
     const long long ts_ms = (long long)(esp_timer_get_time() / 1000LL);
     const int n = snprintf(ev.json, sizeof(ev.json),
                            "{\"timestamp_ms\":%lld,\"evento\":\"%s\",\"detalle\":\"%s\"}", ts_ms,
@@ -291,25 +318,74 @@ static void publicar_evento(const char *evento, const char *detalle) {
     }
 }
 
+/* Adelanto: vive en la seccion de estado retain (mas abajo). */
+static void estado_publish_try(void);
+
 void app_imagen_publish_pending(void) {
-    if (s_event_queue == NULL || s_publish_fn == NULL) {
+    if (s_event_queue == NULL) {
         return;
     }
-    imagen_evento_t ev;
-    while (xQueueReceive(s_event_queue, &ev, 0) == pdTRUE) {
-        if (s_publish_fn(ev.json)) {
-            ESP_LOGD(TAG, "evento de imagen publicado en aulasense_config");
-        } else {
-            ESP_LOGW(TAG, "evento de imagen no publicado: MQTT sin conexion");
+    /* F26 (SPEC §16.3): en CADA reconexion MQTT se re-publica el retain imagen_estado: el
+     * fallo de arranque ya no se pierde por haber ocurrido antes de conectar (informe A §3.2).
+     * El edge se detecta sondeando connected() (el callback del transporte lo posee el vendor
+     * de Native: NO se pisa). */
+    const bool conectado = (s_image_connected_fn != NULL) ? s_image_connected_fn()
+                                : (s_connected_fn != NULL ? s_connected_fn() : true);
+    if (conectado && !s_estado_prev_connected) {
+        s_estado_dirty = true;
+    }
+    s_estado_prev_connected = conectado;
+
+    if (s_publish_fn != NULL) {
+        /* F26-c3 (arriesgo de c2): el primer connected() del arranque llega a los ~16 s y los
+         * eventos encolados ANTES se perdian al primer publish fallido. Re-intento con tope y
+         * ESPACIO TEMPORAL de 1 s (el pump corre cada 10 ms: sin espacio, los intentos se
+         * quemaban en ~30 ms). Patron: EVENT_REINTENTOS de app_provision, mejorado. */
+        imagen_evento_t ev;
+        const int64_t ahora_ms = esp_timer_get_time() / 1000LL;
+        for (int n = 0; n < IMAGEN_EVENT_QUEUE_LENGTH; ++n) {
+            if (xQueuePeek(s_event_queue, &ev, 0) != pdTRUE) {
+                break;
+            }
+            if (ev.sig_intento_ms > ahora_ms) {
+                break; /* cabecera no madura: FIFO, los demas tampoco */
+            }
+            if (xQueueReceive(s_event_queue, &ev, 0) != pdTRUE) {
+                break;
+            }
+            if (s_publish_fn(ev.json)) {
+                ESP_LOGD(TAG, "evento de imagen publicado en aulasense_config");
+                continue;
+            }
+            if (ev.intentos < IMAGEN_EVT_REINTENTOS_MAX) {
+                ev.intentos++;
+                ev.sig_intento_ms = ahora_ms + 1000LL;
+                if (xQueueSend(s_event_queue, &ev, 0) != pdTRUE) {
+                    ESP_LOGW(TAG, "evento de imagen no re-encolable (cola lena): descartado");
+                }
+            } else {
+                ESP_LOGW(TAG, "evento de imagen no publicado (agotado): descartado");
+            }
         }
     }
+    estado_publish_try();
 }
 
 /* ------------------------------------------------------------------------------------------
  * Heap interno (compartido por el gate de memoria y los logs del canal MQTT)
+ *
+ * F26 (D-F26-5, informe COM6): la version F24 usaba xPortGetFreeHeapSize() para el "libre".
+ * Con CONFIG_SPIRAM_USE_MALLOC=y ese numero INCLUYE los ~8 MB de PSRAM (el campo historico
+ * free_memory_kb~8206 venia de ahi): el gate comparaba una magnitud mezclada y el "latch"
+ * efectivo dependia solo del mayor bloque interno, que la histeresis +20 KB nunca recupero en
+ * el sitio. Fix: medir SIEMPRE heap_caps con MALLOC_CAP_INTERNAL (8BIT: los allocations del
+ * pipeline JPEG son de datos). Umbrales vivos 95/24 KB intactos (sdkconfig) — el ajuste, si
+ * los datos de c3 lo piden, viaja por OTA (no segunda UART).
  * ---------------------------------------------------------------------------------------- */
 
-static size_t heap_interno_libre(void) { return xPortGetFreeHeapSize(); }
+static size_t heap_interno_libre(void) {
+    return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 
 static size_t heap_interno_bloque_mayor(void) {
     return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -444,6 +520,7 @@ static bool gate_captura_ok(void) {
     if (s_gate_ok) {
         if (libre < min_libre || mayor < min_mayor) {
             s_gate_ok = false;
+            s_estado_dirty = true;
             ESP_LOGW(TAG,
                      "IMAGEN_GATE_OFF: heap interno libre %u KB (min %d) o mayor bloque %u KB "
                      "(min %d) — captura deshabilitada, el CSI sigue detectando",
@@ -452,12 +529,78 @@ static bool gate_captura_ok(void) {
             publicar_evento("IMAGEN_GATE_OFF", "heap interno bajo: captura off");
         }
     } else if (libre >= (min_libre + histeresis) && mayor >= (min_mayor + histeresis)) {
+        /* F26 (D-F26-5b): SIN latch permanente — el gate se re-evalua en CADA onset y la
+         * recuperacion es inmediata al cruzar umbral+histeresis (+20 KB, norma vigente).
+         * Queda visible: IMAGEN_ON en la primera captura re-habilitada + imagen_estado. */
         s_gate_ok = true;
+        s_estado_dirty = true;
         ESP_LOGI(TAG,
-                 "IMAGEN_GATE_ON (histeresis +%d KB): heap interno %u KB, mayor bloque %u KB",
+                 "IMAGEN_GATE_ON (histeresis +%d KB): heap interno %u KB, mayor bloque %u KB — "
+                 "captura RE-HABILITADA",
                  IMAGEN_HISTERESIS_KB, (unsigned)(libre / 1024U), (unsigned)(mayor / 1024U));
     }
     return s_gate_ok;
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Estado retain `imagen_estado` (F26, SPEC §16.3): snapshot re-publicado en cada conexion
+ * MQTT y al cambiar estados. Formato EXACTO del contrato (a1 lo da de alta en esquema.py):
+ *   {"camara_ok":bool,"camara_pid":"0x%04x","camara_err":"",  "pipeline_ok":bool,
+ *    "captura_habilitada":bool,"gate_off":bool,"descartes":N,"imagenes_ok":N,
+ *    "internal_free_kb":N,"internal_largest_block_kb":N,"build":"<fw>","imagen_habilitado":true,
+ *    "pausada":bool,"cooldown_s":N,"ts_ms":N}
+ * Extra sobre el JSON de SPEC: "pausada" y "cooldown_s" (aditivo, sin datos personales).
+ * ---------------------------------------------------------------------------------------- */
+
+static void estado_publish_try(void) {
+    if (!s_estado_dirty || s_state_publish_fn == NULL) {
+        return;
+    }
+    char json[448];
+    const long long ts_ms = (long long)(esp_timer_get_time() / 1000LL);
+    const int n = snprintf(json, sizeof(json),
+                           "{\"camara_ok\":%s,\"camara_pid\":\"0x%04x\",\"camara_err\":\"%s\","
+                           "\"pipeline_ok\":%s,\"captura_habilitada\":%s,\"gate_off\":%s,"
+                           "\"descartes\":%u,\"imagenes_ok\":%u,"
+                           "\"internal_free_kb\":%u,\"internal_largest_block_kb\":%u,"
+                           "\"build\":\"%s\",\"imagen_habilitado\":true,\"pausada\":%s,"
+                           "\"cooldown_s\":%d,\"ts_ms\":%lld}",
+                           s_camera_ok ? "true" : "false", (unsigned)s_camara_pid, s_camara_err,
+                           s_pipeline_ok ? "true" : "false", s_gate_ok ? "true" : "false",
+                           s_gate_ok ? "false" : "true", (unsigned)s_descartes,
+                           (unsigned)s_subidas_ok,
+                           (unsigned)(heap_interno_libre() / 1024U),
+                           (unsigned)(heap_interno_bloque_mayor() / 1024U),
+                           CONFIG_AULASENSE_FW_VERSION, s_pausada ? "true" : "false",
+                           CONFIG_AULASENSE_IMAGEN_COOLDOWN_S, ts_ms);
+    if (n <= 0 || n >= (int)sizeof(json)) {
+        ESP_LOGW(TAG, "imagen_estado no cabe (%d): se omite esta publicacion", n);
+        return;
+    }
+    if (s_state_publish_fn(json)) {
+        s_estado_dirty = false;
+        ESP_LOGD(TAG, "imagen_estado retain publicado");
+    }
+    /* Si fallo (MQTT sin conexion): queda dirty; ademas el edge de reconexion en el pump
+     * vuelve a marcar dirty (clausula F26) para re-publicar tras cada caida del broker. */
+}
+
+void app_imagen_set_state_publisher(app_imagen_publish_fn state_publish) {
+    s_state_publish_fn = state_publish;
+    s_estado_dirty = true;
+}
+
+/* Pausa de captura para OTA (SPEC §16.1): drena la cola y corta nuevos encolados; la FOTO es
+ * accesoria, el EVENTO motion sigue su curso. Replicar el "reanudar" al abortar la descarga. */
+void app_imagen_pausar(bool pausa) {
+    s_pausada = pausa;
+    s_estado_dirty = true;
+    if (pausa && s_onset_queue != NULL) {
+        imagen_onset_t desc;
+        while (xQueueReceive(s_onset_queue, &desc, 0) == pdTRUE) {
+        }
+    }
+    ESP_LOGI(TAG, "captura %s (OTA)", pausa ? "PAUSADA" : "REANUDADA");
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -515,10 +658,15 @@ static bool camera_init(void) {
 
     const esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
+        /* F26 (SPEC §16.3): la ruta era MUDA (solo ESP_LOGE, informe A §3.1). CAMARA_ERROR
+         * viaja por el publisher aulasense_config inyectado. */
+        snprintf(s_camara_err, sizeof(s_camara_err), "%s", esp_err_to_name(err));
+        s_camara_pid = 0;
         ESP_LOGE(TAG, "esp_camera_init fallo: %s (0x%x) — captura deshabilitada", esp_err_to_name(err),
                  err);
         return false;
     }
+    s_camara_err[0] = '\0';
 
     sensor_t *s = esp_camera_sensor_get();
     uint16_t pid = 0;
@@ -527,6 +675,7 @@ static bool camera_init(void) {
         /* QVGA 320x240 ya viene en la config; algunos sensores la ignoran al arrancar. */
         s->set_framesize(s, FRAMESIZE_QVGA);
     }
+    s_camara_pid = pid;
     ESP_LOGI(TAG,
              "imagen init ok: camera=%s (PID=0x%04x, OV3660_PID=0x%04x) QVGA 320x240 JPEG q%d "
              "fb_count=%d PSRAM",
@@ -697,6 +846,9 @@ static bool jpeg_sintaxis_ok(const uint8_t *d, size_t n) {
 }
 
 static void procesar_onset(const imagen_onset_t *onset) {
+    if (s_pausada) {
+        return; /* pausa OTA: la foto es accesoria (SPEC §16.1) */
+    }
     ESP_LOGI(TAG, "onset recibido ts=%lld score=%.3f camera=%s gate=%s (diagnostico F24-c)",
              (long long)onset->ts_ms, (double)onset->score, s_camera_ok ? "ok" : "off",
              s_gate_ok ? "open" : "closed");
@@ -787,11 +939,20 @@ static void procesar_onset(const imagen_onset_t *onset) {
 static void imagen_task(void *arg) {
     (void)arg;
     imagen_onset_t onset;
+    uint32_t contadores_vistos = 0;
+    bool gate_visto = s_gate_ok;
     ESP_LOGI(TAG, "tarea de imagen arrancada (prio %d, stack %d): esperando onsets",
              IMAGEN_TASK_PRIORITY, IMAGEN_TASK_STACK_SIZE);
     for (;;) {
         if (xQueueReceive(s_onset_queue, &onset, pdMS_TO_TICKS(500)) == pdTRUE) {
             procesar_onset(&onset);
+        }
+        /* F26: imagen_estado se refresca cuando cambian contadores/gate (barato: 2 enters). */
+        const uint32_t contadores = s_descartes * 4096U + s_subidas_ok;
+        if (contadores != contadores_vistos || s_gate_ok != gate_visto) {
+            contadores_vistos = contadores;
+            gate_visto = s_gate_ok;
+            s_estado_dirty = true;
         }
     }
 }
@@ -908,11 +1069,14 @@ bool app_imagen_init(const char *device_id) {
     preparar_destino(device_id);
     preparar_mqtt_imagen();
 
-    /* Cola de onsets en PSRAM (2 slots por defecto). */
+    /* Cola de onsets en PSRAM (4 slots por defecto desde F26). */
     s_onset_storage = heap_caps_malloc(CONFIG_AULASENSE_IMAGEN_QUEUE * sizeof(imagen_onset_t),
                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_onset_storage == NULL) {
+        /* F26: rutas de fallo que antes eran mudas ahora publican CAMARA_ERROR (SPEC §16.3). */
         ESP_LOGE(TAG, "no se pudo reservar la cola de onsets en PSRAM: modulo apagado");
+        publicar_evento("CAMARA_ERROR", "etapa=cola_onsets_psram");
+        s_estado_dirty = true;
         return false;
     }
     s_onset_queue = xQueueCreateStatic(CONFIG_AULASENSE_IMAGEN_QUEUE, sizeof(imagen_onset_t),
@@ -920,14 +1084,18 @@ bool app_imagen_init(const char *device_id) {
     s_event_queue = xQueueCreate(IMAGEN_EVENT_QUEUE_LENGTH, sizeof(imagen_evento_t));
     if (s_onset_queue == NULL || s_event_queue == NULL) {
         ESP_LOGE(TAG, "no se pudo crear la cola de eventos/onsets: modulo apagado");
+        publicar_evento("CAMARA_ERROR", "etapa=colas");
+        s_estado_dirty = true;
         return false;
     }
 
-    /* Pool de buffers JPEG en PSRAM: QUEUE slots de 8 KB (16 KB con el default). */
+    /* Pool de buffers JPEG en PSRAM: QUEUE slots de 8 KB (32 KB con el default F26). */
     for (size_t i = 0; i < (size_t)CONFIG_AULASENSE_IMAGEN_QUEUE; ++i) {
         s_jpeg_pool[i] = heap_caps_malloc(IMAGEN_JPEG_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_jpeg_pool[i] == NULL) {
             ESP_LOGE(TAG, "PSRAM insuficiente para el buffer JPEG %u: modulo apagado", (unsigned)i);
+            publicar_evento("CAMARA_ERROR", "etapa=pool_jpeg_psram");
+            s_estado_dirty = true;
             return false;
         }
     }
@@ -937,6 +1105,9 @@ bool app_imagen_init(const char *device_id) {
     s_camera_ok = camera_init();
     if (!s_camera_ok) {
         /* Degradación honesta: el feedback y el CSI siguen; solo no hay evidencia. */
+        char detalle[96];
+        snprintf(detalle, sizeof(detalle), "etapa=esp_camera_init esp_err=%s", s_camara_err);
+        publicar_evento("CAMARA_ERROR", detalle);
         ESP_LOGW(TAG, "sin camara: el nodo sigue detectando movimiento por CSI (sin imagenes)");
     } else {
         /*
@@ -946,19 +1117,38 @@ bool app_imagen_init(const char *device_id) {
          */
         camera_fb_t *prueba = esp_camera_fb_get();
         if (prueba != NULL) {
+            s_pipeline_ok = true;
+            s_prueba_bytes = (uint32_t)prueba->len;
             ESP_LOGI(TAG, "prueba de captura: %u B (%.1f KB) %dx%d fmt=%d (no se sube: solo medicion)",
                      (unsigned)prueba->len, (double)prueba->len / 1024.0, (int)prueba->width,
                      (int)prueba->height, (int)prueba->format);
             esp_camera_fb_return(prueba);
         } else {
+            /* F26: init OK pero DVP/GDMA sin frames es ahora DISTINGUIBLE en remoto (informe A §3.1). */
+            s_pipeline_ok = false;
+            snprintf(s_camara_err, sizeof(s_camara_err), "fb_get_null");
             ESP_LOGW(TAG, "prueba de captura: esp_camera_fb_get devolvio NULL");
+            publicar_evento("CAMARA_ERROR", "etapa=prueba_captura esp_err=fb_get_null");
         }
     }
+    /* F26 (SPEC §16.3): IMAGEN_INIT al TERMINAR el init, en ambas rutas (cubre las mudas). */
+    {
+        char detalle[160];
+        snprintf(detalle, sizeof(detalle),
+                 "camera=%s pid=0x%04x prueba_captura_bytes=%u heap_int_kb=%u/%u "
+                 "imagen_habilitado=true",
+                 s_camera_ok ? "ok" : "off", (unsigned)s_camara_pid, (unsigned)s_prueba_bytes,
+                 (unsigned)(heap_interno_libre() / 1024U),
+                 (unsigned)(heap_interno_bloque_mayor() / 1024U));
+        publicar_evento("IMAGEN_INIT", detalle);
+    }
+    s_estado_dirty = true;
 
     if (xTaskCreate(imagen_task, "aulasense_img", IMAGEN_TASK_STACK_SIZE, NULL, IMAGEN_TASK_PRIORITY,
                     &s_task) != pdPASS) {
         s_task = NULL;
         ESP_LOGE(TAG, "no se pudo crear la tarea de imagen (prio %d)", IMAGEN_TASK_PRIORITY);
+        publicar_evento("CAMARA_ERROR", "etapa=tarea");
         return false;
     }
 
@@ -976,6 +1166,10 @@ void app_imagen_on_state(bool motion, float score) {
     if (s_onset_queue == NULL) {
         return;
     }
+    /* Pausa OTA (SPEC §16.1): la foto es accesoria; durante la descarga no se encola nada. */
+    if (s_pausada) {
+        return;
+    }
 
     /* Comparación y actualización del estado previo: sección crítica mínima, sin llamadas. */
     bool changed = false;
@@ -991,10 +1185,25 @@ void app_imagen_on_state(bool motion, float score) {
 
     imagen_onset_t onset = {.ts_ms = esp_timer_get_time() / 1000LL, .score = score};
     if (xQueueSend(s_onset_queue, &onset, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "IMAGEN_DESCARTE: cola de onsets llena (%d) — el evento sigue por MQTT",
-                 CONFIG_AULASENSE_IMAGEN_QUEUE);
-        publicar_evento("IMAGEN_DESCARTE", "cola de onsets llena");
-        s_descartes++;
+        /* F26 (D-F26-5b): DROP-OLDEST — con la cola llena se expulsa el onset MAS ANTIGUO y
+         * entra el nuevo (la evidencia mas reciente gana; con drop-new+cooldown la rafaga de
+         * movimiento quedaba representada por la foto vieja). El EVENTO motion NO se toca:
+         * sigue por MQTT como fuente de verdad (regla 2). */
+        imagen_onset_t viejo;
+        if (xQueueReceive(s_onset_queue, &viejo, 0) == pdTRUE &&
+            xQueueSend(s_onset_queue, &onset, 0) == pdTRUE) {
+            ESP_LOGW(TAG, "cola de onsets llena (%d): descartado el MAS ANTIGUO (ts=%lld), "
+                          "entra el nuevo — el evento sigue por MQTT",
+                     CONFIG_AULASENSE_IMAGEN_QUEUE, (long long)viejo.ts_ms);
+            publicar_evento("IMAGEN_DESCARTE", "cola de onsets llena (drop-oldest)");
+            s_descartes++;
+        } else {
+            ESP_LOGW(TAG, "IMAGEN_DESCARTE: cola de onsets llena (%d) — el evento sigue por MQTT",
+                     CONFIG_AULASENSE_IMAGEN_QUEUE);
+            publicar_evento("IMAGEN_DESCARTE", "cola de onsets llena");
+            s_descartes++;
+        }
+        s_estado_dirty = true;
     }
 }
 

@@ -26,6 +26,7 @@
 #include <stdio.h>
 
 #include "esp_err.h"
+#include "esp_heap_caps.h" /* F26: heap_interno retain (SPEC §16.3) */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -154,6 +155,14 @@ bool app_feedback_init(void) {
 
 bool app_feedback_start_temp(void) { return false; }
 
+void app_feedback_set_heap_publisher(app_feedback_publish_fn publish,
+                                     app_feedback_connected_fn connected) {
+    (void)publish;
+    (void)connected;
+}
+
+void app_feedback_pausar(bool pausa) { (void)pausa; }
+
 void app_feedback_on_state(bool motion, float score) {
     (void)motion;
     (void)score;
@@ -190,6 +199,12 @@ void app_feedback_publish_pending(void) {}
 #define TEMP_PERIOD_US (30LL * 1000LL * 1000LL)
 #define TEMP_PAYLOAD_MAX 96
 
+/* F26 (SPEC §16.3): retain heap_interno por el MISMO canal periodico del parche (30 s,
+ * patron del publisher de aulasense_temp). NUNCA confundir con free_memory_kb de
+ * read_diagnostics (PSRAM-inclusive, ~8.2 MB). */
+#define HEAP_RETAIN_PERIOD_US (30LL * 1000LL * 1000LL)
+#define HEAP_PAYLOAD_MAX 128
+
 /* ------------------------------------------------------------------------------------------
  * Estado del módulo
  * ---------------------------------------------------------------------------------------- */
@@ -202,8 +217,15 @@ typedef struct {
 static app_feedback_publish_fn s_publish_fn = NULL;
 static app_feedback_connected_fn s_connected_fn = NULL;
 
+/* F26: publicador del retain heap_interno (lambda del app con suffix+retain horneados) y
+ * pausa de telemetria para la descarga OTA (SPEC §16.1). */
+static app_feedback_publish_fn s_heap_publish_fn = NULL;
+static app_feedback_connected_fn s_heap_connected_fn = NULL;
+static volatile bool s_pausado = false;
+
 static QueueHandle_t s_state_queue = NULL;
 static QueueHandle_t s_temp_queue = NULL;
+static QueueHandle_t s_heap_queue = NULL;
 static TaskHandle_t s_task = NULL;
 
 static led_strip_handle_t s_strip = NULL;
@@ -343,6 +365,9 @@ static void temp_sample_and_post(void) {
     if (s_temp_sensor == NULL || s_temp_queue == NULL) {
         return;
     }
+    if (s_pausado) {
+        return; /* OTA en curso: telemetria en pausa (el "agujero" es ESPERADO y documentado) */
+    }
     float celsius = 0.0f;
     esp_err_t err = temperature_sensor_get_celsius(s_temp_sensor, &celsius);
     if (err != ESP_OK) {
@@ -373,6 +398,40 @@ static void temp_sample_and_post(void) {
     }
 }
 
+/*
+ * F26 (SPEC §16.3): mide el heap INTERNO con heap_caps (NUNCA xPortGetFreeHeapSize: con
+ * SPIRAM_USE_MALLOC mezcla PSRAM) y encola el retain heap_interno {internal_free_kb,
+ * internal_largest_block_kb, ts_ms}. Se encola SIEMPRE (ventana 30 s, cola 2 con
+ * latest-wins): el pump lo publica cuando el broker este conectado, y el retain queda
+ * fresco en el broker entre conexiones.
+ */
+static void heap_sample_and_post(void) {
+    if (s_heap_queue == NULL || s_pausado) {
+        return;
+    }
+    char payload[HEAP_PAYLOAD_MAX];
+    const long long ts_ms = (long long)(esp_timer_get_time() / 1000LL);
+    const int written = snprintf(payload, sizeof(payload),
+                                 "{\"internal_free_kb\":%u,\"internal_largest_block_kb\":%u,"
+                                 "\"ts_ms\":%lld}",
+                                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL |
+                                                                    MALLOC_CAP_8BIT) / 1024U),
+                                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                                             MALLOC_CAP_8BIT) /
+                                            1024U),
+                                 ts_ms);
+    if (written <= 0 || written >= (int)sizeof(payload)) {
+        return;
+    }
+    if (xQueueSend(s_heap_queue, payload, 0) != pdTRUE) {
+        /* Latest-wins: si la cola esta llena (broker caido 60+ s), expulsa el mas viejo. */
+        char viejo[HEAP_PAYLOAD_MAX];
+        if (xQueueReceive(s_heap_queue, viejo, 0) == pdTRUE) {
+            (void)xQueueSend(s_heap_queue, payload, 0);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------------------------------
  * Tarea propia del módulo (prioridad 3)
  * ---------------------------------------------------------------------------------------- */
@@ -381,6 +440,7 @@ static void feedback_task(void *arg) {
     (void)arg;
     /* El primer muestreo de die temp ocurre al cumplirse el primer periodo (30 s de vida). */
     int64_t last_temp_us = esp_timer_get_time();
+    int64_t last_heap_us = esp_timer_get_time();
     feedback_event_t event;
 
     for (;;) {
@@ -398,6 +458,10 @@ static void feedback_task(void *arg) {
             last_temp_us = now_us;
             temp_sample_and_post();
         }
+        if ((now_us - last_heap_us) >= HEAP_RETAIN_PERIOD_US) {
+            last_heap_us = now_us;
+            heap_sample_and_post();
+        }
     }
 }
 
@@ -408,6 +472,21 @@ static void feedback_task(void *arg) {
 void app_feedback_set_mqtt_publisher(app_feedback_publish_fn publish, app_feedback_connected_fn connected) {
     s_publish_fn = publish;
     s_connected_fn = connected;
+}
+
+/* F26 (SPEC §16.3): publicador del retain heap_interno (el lambda del app hornea el suffix
+ * "heap_interno" y retain=true sobre publish_suffix del transporte nativo). */
+void app_feedback_set_heap_publisher(app_feedback_publish_fn publish,
+                                     app_feedback_connected_fn connected) {
+    s_heap_publish_fn = publish;
+    s_heap_connected_fn = connected;
+}
+
+/* F26 (SPEC §16.1): pausa de TELEMETRIA durante la descarga OTA (die temp + heap_interno).
+ * El buzzer/LED (feedback local, C11) NO se pausan: no tocan el transporte. */
+void app_feedback_pausar(bool pausa) {
+    s_pausado = pausa;
+    ESP_LOGI(TAG, "telemetria %s (OTA)", pausa ? "PAUSADA" : "REANUDADA");
 }
 
 bool app_feedback_start_temp(void) {
@@ -436,7 +515,8 @@ bool app_feedback_init(void) {
 
     s_state_queue = xQueueCreate(FEEDBACK_QUEUE_LENGTH, sizeof(feedback_event_t));
     s_temp_queue = xQueueCreate(2, TEMP_PAYLOAD_MAX);
-    if (s_state_queue == NULL || s_temp_queue == NULL) {
+    s_heap_queue = xQueueCreate(2, HEAP_PAYLOAD_MAX); /* F26: retain heap_interno (latest-wins) */
+    if (s_state_queue == NULL || s_temp_queue == NULL || s_heap_queue == NULL) {
         ESP_LOGE(TAG, "no se pudo crear la cola del feedback: modulo apagado");
         return false;
     }
@@ -500,15 +580,28 @@ void app_feedback_on_state(bool motion, float score) {
 }
 
 void app_feedback_publish_pending(void) {
-    if (s_temp_queue == NULL || s_publish_fn == NULL) {
-        return;
+    if (s_temp_queue != NULL && s_publish_fn != NULL) {
+        char payload[TEMP_PAYLOAD_MAX];
+        while (xQueueReceive(s_temp_queue, payload, 0) == pdTRUE) {
+            if (s_publish_fn(payload)) {
+                ESP_LOGD(TAG, "die_temp publicada en aulasense_temp");
+            } else {
+                ESP_LOGW(TAG, "die_temp no publicada: MQTT sin conexion");
+            }
+        }
     }
-    char payload[TEMP_PAYLOAD_MAX];
-    while (xQueueReceive(s_temp_queue, payload, 0) == pdTRUE) {
-        if (s_publish_fn(payload)) {
-            ESP_LOGD(TAG, "die_temp publicada en aulasense_temp");
-        } else {
-            ESP_LOGW(TAG, "die_temp no publicada: MQTT sin conexion");
+    /* F26: retain heap_interno (publish_suffix "heap_interno" retain=true, horneado en el
+     * lambda inyectado). Si el broker no esta conectado el payload VUELVE a la cola
+     * (latest-wins: el de 30 s anterior pierde) para no quedar mudo hasta el proximo tick. */
+    if (s_heap_queue != NULL && s_heap_publish_fn != NULL) {
+        if (s_heap_connected_fn == NULL || s_heap_connected_fn()) {
+            char payload[HEAP_PAYLOAD_MAX];
+            while (xQueueReceive(s_heap_queue, payload, 0) == pdTRUE) {
+                if (!s_heap_publish_fn(payload)) {
+                    (void)xQueueSend(s_heap_queue, payload, 0);
+                    break;
+                }
+            }
         }
     }
 }

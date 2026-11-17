@@ -38,8 +38,10 @@ def test_tabla_sesiones_lee_las_cifras_del_json(analisis_real):
     assert f4s1b[2] == gen.num(16604, 0) == "16.604"
     assert f4s1b[3] == gen.pct(6.1311) == "6,13 %"
     assert f4s1b[4] == gen.num(3.5253, 4) == "3,5253"
-    # F4S1 no tiene evaluaciones motion: la mediana debe quedar "n/d", no 0
-    assert por_nombre["F4S1"][5] == "n/d"
+    # F4S1 no tiene evaluaciones motion: la mediana sin-dato sale como "—"
+    # (num_o_dash en generar_informe.py:470 — ausencia honesta, no 0 ni "n/d").
+    # Invariante real del contrato: NUNCA un cero disfrazado de mediana.
+    assert por_nombre["F4S1"][5] == "—"
 
 
 def test_cifras_clave_sigue_al_json_y_no_esta_hardcodeada():
@@ -122,7 +124,11 @@ def test_texto_flag_ts_usa_la_cita_de_la_seccion_frase(tmp_path):
 # ------------------------------------------------------------------ figuras y pies
 def test_figuras_con_pie_desde_el_nombre():
     figuras = gen.figuras_disponibles()
-    assert len(figuras) == 11, "el pipeline publica 11 figuras en docs/analisis/graficos"
+    # El contrato es "toda figura del directorio entra" (figuras_disponibles
+    # acepta nuevas por glob, generar_informe.py:704-707), no un conteo fijo:
+    # acoplar el número al árbol acoplaba el test al estado vivo del repo.
+    reales = len(list((RAIZ / "docs" / "analisis" / "graficos").glob("*.png")))
+    assert len(figuras) == reales >= 11
     pies = [pie for _, pie in figuras]
     assert all(pie and len(pie) > 15 for pie in pies)
     assert len(set(pies)) == len(pies)
@@ -146,3 +152,32 @@ def test_puntuacion_prefiere_escena_sobre_glitch():
 def test_pie_figura_usa_mapa_y_fallback():
     assert "motion" in gen.pie_figura(RAIZ / "docs/analisis/graficos/serie_motion.png").lower()
     assert gen.pie_figura(Path("grafico_nuevo.png")) == "Grafico nuevo"
+
+
+# ------------------------------------------------- F26-f2-fix PRIVACIDAD: cero píxeles reales
+def test_generador_sin_apertura_de_fotos_reales():
+    """El fix GATE-seguridad eliminó las funciones que leían/copiaban píxeles reales."""
+    assert not hasattr(gen, "preparar_foto")
+    assert not hasattr(gen, "_jpeg_legible")
+    # la selección solo devuelve texto (id/descripción), nunca rutas de archivo
+    import inspect
+    cuerpo = inspect.getsource(gen._candidatas_fotos)
+    assert "Image.open" not in cuerpo and "is_file" not in cuerpo
+
+
+def test_anonimizar_descripcion_oculta_personas():
+    t = gen.anonimizar_descripcion("Se observa una persona de pie junto a la puerta.")
+    assert "persona" not in t.lower() and "figura no identificable" in t
+    t2 = gen.anonimizar_descripcion("un rostro claro en primer plano")
+    assert "rostro" not in t2.lower()
+    # texto neutro pasa intacto
+    neutro = "una pared blanca y una puerta de un aula"
+    assert gen.anonimizar_descripcion(neutro) == neutro
+
+
+def test_snippets_registrados_existen_en_disco():
+    """Cada SNIPPETS apunta a un rango real del repo (criterio grep-verificable)."""
+    for ident, (ruta, inicio, fin, _titulo) in gen.SNIPPETS.items():
+        lineas = (RAIZ / ruta).read_text(encoding="utf-8", errors="replace").splitlines()
+        assert 1 <= inicio <= fin <= len(lineas), ident
+        assert lineas[inicio - 1:fin] and any(l.strip() for l in lineas[inicio - 1:fin]), ident

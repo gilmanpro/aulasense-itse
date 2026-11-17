@@ -1,8 +1,9 @@
 {
   "cobertura_gt": {
     "densidad_motion_mediana": 0.0841,
+    "n_fotos_vision_error": 20,
     "n_tramos_motion": 35,
-    "nota": "densidad = fraccion de evaluaciones motion dentro del tramo GT (buckets de 5 s pesados por solape); tramo sin evaluaciones = sin-dato, no idle",
+    "nota": "densidad = fraccion de evaluaciones motion dentro del tramo GT (buckets de 5 s pesados por solape); tramo sin evaluaciones = sin-dato, no idle. 20 con JPEG irrecoverable (error) contadas como evidencia fisica de captura, no como material vision",
     "pct_tramos_cubiertos": 97.1429,
     "tramos": [
       {
@@ -353,6 +354,456 @@
       "IMAGEN_GATE_OFF",
       1794719072517,
       "heap interno bajo: captura off"
+    ],
+    [
+      "IMAGEN_GATE_OFF",
+      1794780465171,
+      "heap interno bajo: captura off"
+    ],
+    [
+      "IMAGEN_GATE_OFF",
+      1794868994172,
+      "heap interno bajo: captura off"
+    ],
+    [
+      "IMAGEN_DESCARTE",
+      1794887850532,
+      "cola de onsets llena"
+    ],
+    [
+      "IMAGEN_DESCARTE",
+      1794887856170,
+      "cola de onsets llena"
+    ],
+    [
+      "IMAGEN_GATE_OFF",
+      1794887865344,
+      "heap interno bajo: captura off"
+    ],
+    [
+      "IMAGEN_ON",
+      1794910790905,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794910994071,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911009598,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911027828,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911099950,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911118740,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911141929,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911164889,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911185494,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911216586,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911238211,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911257593,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911289240,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911306782,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911328399,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911348528,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911363930,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911425768,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911447380,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911471632,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911489360,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911773813,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794911829420,
+      "captura QVGA en el onset"
+    ],
+    [
+      "OTA_CHECK",
+      1794913900932,
+      "origen=comando id=ota-1794913900279 local=f26.1 fw_remota=f2"
+    ],
+    [
+      "OTA_ERROR",
+      1794913939534,
+      "etapa=gate_heap internal_free_kb=105 internal_largest_block_"
+    ],
+    [
+      "OTA_ERROR",
+      1794914023924,
+      "etapa=gate_heap internal_free_kb=103 internal_largest_block_"
+    ],
+    [
+      "FIRMWARE",
+      1794915410882,
+      "version=f26.3 compile_time=Nov 17 2026 06:32:07 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_CHECK",
+      1794916264572,
+      "origen=comando id=ota-1794916263859 local=f26.3 fw_remota=f2"
+    ],
+    [
+      "OTA_OK",
+      1794916304280,
+      "version=f26.4 sha256_ok=true bytes=1418736"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794916308128,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2166 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794916322703,
+      "version=f26.4 compile_time=Nov 17 2026 06:47:22 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_OK",
+      1794916413172,
+      "detalle=self-check rollback cancelado"
+    ],
+    [
+      "OTA_CHECK",
+      1794919169889,
+      "origen=comando id=ota-1794919169145 local=f26.4 fw_remota=f2"
+    ],
+    [
+      "OTA_OK",
+      1794919208084,
+      "version=f26.5 sha256_ok=true bytes=1418720"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794919211943,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2170 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794919226497,
+      "version=f26.5 compile_time=Nov 17 2026 07:35:17 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_OK",
+      1794919316989,
+      "detalle=self-check rollback cancelado"
+    ],
+    [
+      "OTA_CHECK",
+      1794919937230,
+      "origen=comando id=ota-1794919936220 local=f26.5 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794919941344,
+      "version_objetivo=f26.6 size=1418720 slot=app1 post_quiesce f"
+    ],
+    [
+      "OTA_OK",
+      1794919973568,
+      "version=f26.6 sha256_ok=true bytes=1418720"
+    ],
+    [
+      "FIRMWARE",
+      1794919992693,
+      "version=f26.6 compile_time=Nov 17 2026 07:49:02 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_OK",
+      1794920083502,
+      "detalle=self-check rollback cancelado"
+    ],
+    [
+      "OTA_CHECK",
+      1794921312331,
+      "origen=comando id=ota-1794921311602 local=f26.6 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794921318186,
+      "version_objetivo=f26.6-badsha size=1418720 slot=app0 post_qu"
+    ],
+    [
+      "OTA_ERROR",
+      1794921351770,
+      "etapa=sha256 esp_err=ESP_ERR_INVALID_CRC bytes=0"
+    ],
+    [
+      "OTA_CHECK",
+      1794927398524,
+      "origen=comando id=ota-1794924435328 local=f26.6 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794927405013,
+      "version_objetivo=f26.7-test size=1418416 slot=app0 post_quie"
+    ],
+    [
+      "OTA_OK",
+      1794924476149,
+      "version=f26.7-test sha256_ok=true bytes=1418416"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794924479970,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2214 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794924494615,
+      "version=f26.7-test compile_time=Nov 17 2026 08:58:14 idf=v5."
+    ],
+    [
+      "OTA_ERROR",
+      1794924689980,
+      "etapa=self-check accion=rollback-inmediato"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794924691808,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2216 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794924701382,
+      "version=f26.6 compile_time=Nov 17 2026 07:49:02 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_CHECK",
+      1794924857839,
+      "origen=comando id=ota-1794924856792 local=f26.6 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794924869443,
+      "version_objetivo=f26.7-test size=1418416 slot=app0 post_quie"
+    ],
+    [
+      "OTA_OK",
+      1794924902337,
+      "version=f26.7-test sha256_ok=true bytes=1418416"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794924906186,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2219 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794924920893,
+      "version=f26.7-test compile_time=Nov 17 2026 08:58:14 idf=v5."
+    ],
+    [
+      "OTA_ERROR",
+      1794925116191,
+      "etapa=self-check accion=rollback-inmediato"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794925118042,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2225 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794925132612,
+      "version=f26.6 compile_time=Nov 17 2026 07:49:02 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_CHECK",
+      1794925255307,
+      "origen=comando id=ota-1794925254362 local=f26.6 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794925258817,
+      "version_objetivo=f26.7-test size=1418416 slot=app0 post_quie"
+    ],
+    [
+      "OTA_OK",
+      1794925290446,
+      "version=f26.7-test sha256_ok=true bytes=1418416"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794925295273,
+      "camera=ok pid=0x3660 prueba_captura_bytes=4887 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794925309858,
+      "version=f26.7-test compile_time=Nov 17 2026 08:58:14 idf=v5."
+    ],
+    [
+      "OTA_ERROR",
+      1794925505275,
+      "etapa=self-check accion=rollback-inmediato"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794925507146,
+      "camera=ok pid=0x3660 prueba_captura_bytes=4887 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794925521694,
+      "version=f26.6 compile_time=Nov 17 2026 07:49:02 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_CHECK",
+      1794925711028,
+      "origen=comando id=ota-1794925710060 local=f26.6 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794925715245,
+      "version_objetivo=f26.5 size=1418720 slot=app0 post_quiesce f"
+    ],
+    [
+      "OTA_OK",
+      1794925747080,
+      "version=f26.5 sha256_ok=true bytes=1418720"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794925751002,
+      "camera=ok pid=0x3660 prueba_captura_bytes=2227 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794925765589,
+      "version=f26.5 compile_time=Nov 17 2026 07:35:17 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_OK",
+      1794925856050,
+      "detalle=self-check rollback cancelado"
+    ],
+    [
+      "OTA_CHECK",
+      1794925884213,
+      "origen=comando id=ota-1794925883285 local=f26.5 fw_remota=f2"
+    ],
+    [
+      "OTA_INICIO",
+      1794925887905,
+      "version_objetivo=f26.6 size=1418720 slot=app1 post_quiesce f"
+    ],
+    [
+      "OTA_OK",
+      1794925921484,
+      "version=f26.6 sha256_ok=true bytes=1418720"
+    ],
+    [
+      "IMAGEN_INIT",
+      1794925925342,
+      "camera=ok pid=0x3660 prueba_captura_bytes=4953 heap_int_kb=1"
+    ],
+    [
+      "FIRMWARE",
+      1794925939896,
+      "version=f26.6 compile_time=Nov 17 2026 07:49:02 idf=v5.5.6 b"
+    ],
+    [
+      "OTA_OK",
+      1794926030386,
+      "detalle=self-check rollback cancelado"
+    ],
+    [
+      "IMAGEN_ON",
+      1794927044291,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794927100184,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794927116669,
+      "captura QVGA en el onset"
+    ],
+    [
+      "IMAGEN_ON",
+      1794930631627,
+      "captura QVGA en el onset"
     ]
   ],
   "eda_version": "f5a-2.0",
@@ -363,45 +814,49 @@
     "C:\\Users\\Gilman\\Desktop\\1-Universidad\\itse\\iot2\\aulasense\\docs\\analisis\\graficos\\eda_sesiones_comparativa.png",
     "C:\\Users\\Gilman\\Desktop\\1-Universidad\\itse\\iot2\\aulasense\\docs\\analisis\\graficos\\eda_cobertura_gt.png"
   ],
-  "generado_utc": "2026-11-15T20:04:10+00:00",
+  "generado_utc": "2026-11-17T18:36:36+00:00",
   "hash_inputs": {
-    "EDA": "6d5813379ab7b0c5e2a67f2b302d1fff4a64bd8a12678bbd0643e40befcbafe1",
-    "PIPELINE": "287d9d761c1f2050cf484d5442e528f394f1b5af1c929e3eecbdc6f90b06e4c8",
+    "EDA": "3fa11675307a0c37838f7613201ccba3a6d892818b18c6ee9794ed57a87af746",
+    "PIPELINE": "73163f68dcf20de354956726e60581c82d2c76a5e35c88975cc3f2e8fd3547cd",
     "dataset/sesion_1/registro_F4S1.jsonl": "2d3132960649b6273777ffbd1f399dd748d71826783e5de453d5a49bebd39aad",
     "dataset/sesion_1/registro_F4S1B.jsonl": "425561dd1fdabfad2553b861759622f79033011d667cc294de04d9ac6aaee8eb",
-    "docs/validacion_sesion1.csv": "ee0cc521ce264198d3c18bea0f320f91ff64ef5a8786760206f2ae1483acf21b"
+    "dataset/sesion_2b/registro_S2B.jsonl": "fdde5bd03debc0c38f0307fd2a7d521e2e759e57a3f10cf00abaa2ec4a59ff32",
+    "dataset/sesion_3b/registro_S3B.jsonl": "6b05716e7993150ea947c602e3fc125ddf150daf821e299358536ecb87e55a93",
+    "docs/validacion_sesion1.csv": "ee0cc521ce264198d3c18bea0f320f91ff64ef5a8786760206f2ae1483acf21b",
+    "docs/validacion_sesion2b.csv": "96045a58906cf14b6e45be5bfafb6ac97f10396a9e0f0b92447281095676295e",
+    "docs/validacion_sesion3b.csv": "96045a58906cf14b6e45be5bfafb6ac97f10396a9e0f0b92447281095676295e"
   },
   "outliers_motivo": [
     {
       "ejemplos": [
+        {
+          "gap_s": 55972.1,
+          "t_fin_ms": 1794861662436,
+          "t_ini_ms": 1794805690333
+        },
+        {
+          "gap_s": 18365.7,
+          "t_fin_ms": 1794887843822,
+          "t_ini_ms": 1794869478116
+        },
         {
           "gap_s": 12673.4,
           "t_fin_ms": 1794731753315,
           "t_ini_ms": 1794719079944
         },
         {
-          "gap_s": 728.9,
-          "t_fin_ms": 1794734653751,
-          "t_ini_ms": 1794733924848
+          "gap_s": 4976.3,
+          "t_fin_ms": 1794788446031,
+          "t_ini_ms": 1794783469779
         },
         {
-          "gap_s": 690.9,
-          "t_fin_ms": 1794765561155,
-          "t_ini_ms": 1794764870216
-        },
-        {
-          "gap_s": 612.5,
-          "t_fin_ms": 1794744090191,
-          "t_ini_ms": 1794743477718
-        },
-        {
-          "gap_s": 574.6,
-          "t_fin_ms": 1794740366829,
-          "t_ini_ms": 1794739792211
+          "gap_s": 1825.9,
+          "t_fin_ms": 1794924447140,
+          "t_ini_ms": 1794922621192
         }
       ],
-      "gap_max_s": 12673.4,
-      "gap_mediana_s": 302.1,
+      "gap_max_s": 55972.1,
+      "gap_mediana_s": 400.9,
       "motivo": "nodo offline/re-enganche (eventos NODO_OFFLINE/ONLINE; época R3 monótona del nodo, sin SNTP — SPEC §13)",
       "n": 40,
       "tipo": "HUECO_SERIE"
@@ -435,7 +890,7 @@
         ]
       ],
       "motivo": "score >= 0.50 con state='idle': burst CSI espontáneo (F4 registró movimiento real sin caminata dirigida) o borde de histéresis del detector ESPectre — no re-entrenable aquí, se reporta",
-      "n": 1890,
+      "n": 3188,
       "tipo": "IDLE_SCORE_ALTO"
     },
     {
@@ -454,149 +909,149 @@
   "pps_autocorrelacion": {
     "acf": [
       1.0,
-      0.9593,
-      0.9261,
-      0.8994,
-      0.8723,
-      0.8521,
-      0.8364,
-      0.8249,
-      0.8222,
-      0.8243,
-      0.8249,
-      0.8253,
-      0.823,
-      0.8218,
-      0.8181,
-      0.8123,
-      0.8082,
-      0.8018,
-      0.798,
-      0.7968,
-      0.793,
-      0.7871,
-      0.7832,
-      0.7791,
-      0.7752,
-      0.7718,
-      0.7699,
-      0.7689,
-      0.7699,
-      0.7694,
-      0.7618,
-      0.7548,
-      0.7464,
-      0.7393,
-      0.7329,
-      0.7291,
-      0.7216,
-      0.7159,
-      0.7141,
-      0.7132,
-      0.7107,
-      0.7076,
-      0.7085,
-      0.7073,
-      0.7022,
-      0.6986,
-      0.6981,
-      0.6986,
-      0.7011,
-      0.7068,
-      0.7127,
-      0.7174,
-      0.7181,
-      0.7179,
-      0.7162,
-      0.7178,
-      0.7164,
-      0.7132,
-      0.712,
-      0.7105,
-      0.7081,
-      0.7094,
-      0.7077,
-      0.7055,
-      0.705,
-      0.6993,
-      0.6954,
-      0.6942,
-      0.6926,
-      0.6909,
-      0.6886,
-      0.6863,
-      0.6847,
-      0.6828,
-      0.6821,
-      0.6828,
-      0.6809,
-      0.6806,
-      0.6775,
-      0.6726,
-      0.6695,
-      0.6651,
-      0.6583,
-      0.6519,
-      0.6469,
-      0.6445,
-      0.6441,
-      0.6426,
-      0.6362,
-      0.632,
-      0.6289,
-      0.6232,
-      0.6125,
-      0.6035,
-      0.5969,
+      0.9786,
+      0.959,
+      0.9433,
+      0.9298,
+      0.9185,
+      0.9095,
+      0.9019,
+      0.8971,
+      0.8941,
+      0.89,
+      0.8857,
+      0.8806,
+      0.8775,
+      0.8735,
+      0.8688,
+      0.8637,
+      0.8578,
+      0.8528,
+      0.8488,
+      0.8432,
+      0.8368,
+      0.8317,
+      0.8273,
+      0.8227,
+      0.818,
+      0.814,
+      0.8099,
+      0.807,
+      0.8031,
+      0.7967,
+      0.7909,
+      0.7851,
+      0.7795,
+      0.7744,
+      0.7702,
+      0.7648,
+      0.7601,
+      0.7567,
+      0.7532,
+      0.7494,
+      0.7456,
+      0.7432,
+      0.7398,
+      0.7355,
+      0.7314,
+      0.7284,
+      0.7253,
+      0.7226,
+      0.7209,
+      0.7193,
+      0.7184,
+      0.7158,
+      0.7126,
+      0.7091,
+      0.7067,
+      0.7031,
+      0.6995,
+      0.6964,
+      0.6931,
+      0.6895,
+      0.6868,
+      0.6835,
+      0.6798,
+      0.6764,
+      0.6717,
+      0.6676,
+      0.6644,
+      0.661,
+      0.6574,
+      0.654,
+      0.6501,
+      0.6468,
+      0.6433,
+      0.6403,
+      0.6376,
+      0.6341,
+      0.6312,
+      0.6281,
+      0.6244,
+      0.6214,
+      0.6173,
+      0.6128,
+      0.6084,
+      0.6051,
+      0.6028,
+      0.6013,
+      0.5996,
+      0.5961,
+      0.5927,
       0.5891,
-      0.5812,
-      0.5761,
-      0.5727,
-      0.5695,
-      0.5686,
-      0.5679,
-      0.5674,
-      0.5649,
-      0.5592,
-      0.5532,
-      0.5474,
-      0.5457,
-      0.5422,
-      0.5408,
-      0.5358,
-      0.5286,
-      0.5221,
-      0.5194,
-      0.5164,
-      0.5165,
-      0.519,
-      0.5183,
-      0.5197,
-      0.5208,
-      0.5217
+      0.5851,
+      0.5795,
+      0.5753,
+      0.5717,
+      0.5678,
+      0.5636,
+      0.5598,
+      0.557,
+      0.5536,
+      0.5507,
+      0.5489,
+      0.5471,
+      0.5443,
+      0.5401,
+      0.5362,
+      0.5326,
+      0.53,
+      0.5268,
+      0.5243,
+      0.5203,
+      0.5161,
+      0.5122,
+      0.5095,
+      0.5066,
+      0.5048,
+      0.504,
+      0.502,
+      0.5001,
+      0.4976,
+      0.495
     ],
     "acf_lag_s": 60,
-    "intervalo_confianza_95": 0.0529,
-    "n_buckets": 1372,
+    "intervalo_confianza_95": 0.0304,
+    "n_buckets": 4164,
     "nota": "ACF estimador sesgado cov(k)/var(0) sobre serie densa de buckets de 60 s; los huecos de nodo offline entran como 0 => correlacion negativa de larga escala atribuible a los huecos (ver outliers HUECO_SERIE), no a ritmo humano intrinseco; el GT F4S1B es una unica manana, no hay ciclo diario muestreado completo (limitacion S13)",
-    "pps_medio": 2.0045,
+    "pps_medio": 1.995,
     "primer_lag_no_significativo_s": null
   },
   "rango": {
-    "fin_ms": 1794773044349,
+    "fin_ms": 1794940587287,
     "inicio_ms": 1794690812723,
-    "n_eval": 165018,
-    "n_motion": 2927,
-    "utc_fin": "2026-11-15T20:04:04+00:00",
+    "n_eval": 498460,
+    "n_motion": 4428,
+    "utc_fin": "2026-11-17T18:36:27+00:00",
     "utc_inicio": "2026-11-14T21:13:32+00:00"
   },
   "rssi_efecto": {
-    "corr_bucket_score_vs_rssi": -0.0707,
-    "n_buckets_cruce": 222,
-    "n_telemetria": 2963,
+    "corr_bucket_score_vs_rssi": -0.047,
+    "n_buckets_cruce": 497,
+    "n_telemetria": 8706,
     "nota": "nodo junto al AP: RSSI en rango estrecho (-31 a -14 dBm) => NO se observa efecto de distancia; la correlacion por bucket refleja variabilidad del canal/ruido, no un experimento de RSSI. Limitacion declarada SPEC §13 (sensible al entorno RF, una placa junto al AP)",
     "rssi_max": -14,
-    "rssi_mediana": -29,
+    "rssi_mediana": -20,
     "rssi_min": -31,
     "score_por_rssi_dbm": {
       "-30": {
@@ -604,12 +1059,12 @@
         "score_medio": 0.0131
       },
       "-29": {
-        "n_eval": 149009,
-        "score_medio": 0.0161
+        "n_eval": 185899,
+        "score_medio": 0.0138
       },
       "-28": {
-        "n_eval": 4653,
-        "score_medio": 0.0884
+        "n_eval": 55751,
+        "score_medio": 0.0097
       },
       "-24": {
         "n_eval": 5172,
@@ -619,6 +1074,14 @@
         "n_eval": 1812,
         "score_medio": 0.0907
       },
+      "-20": {
+        "n_eval": 19046,
+        "score_medio": 0.0039
+      },
+      "-19": {
+        "n_eval": 176650,
+        "score_medio": 0.0107
+      },
       "-18": {
         "n_eval": 103,
         "score_medio": 0.004
@@ -626,6 +1089,14 @@
       "-17": {
         "n_eval": 768,
         "score_medio": 0.0132
+      },
+      "-16": {
+        "n_eval": 1166,
+        "score_medio": 0.0037
+      },
+      "-15": {
+        "n_eval": 29189,
+        "score_medio": 0.0083
       }
     }
   },
@@ -634,17 +1105,35 @@
     "nota": "histograma de score a resolucion 0.05 (mediana/p10/p90 aproximadas a ±0.025); hora local = UTC-5 segun cabecera de las sesiones F4",
     "por_hora_local": {
       "0": {
-        "frac_over_05": 0.1133,
-        "n_eval": 803,
-        "n_motion": 63,
-        "pct_motion": 7.8456,
+        "frac_over_05": 0.0382,
+        "n_eval": 16688,
+        "n_motion": 351,
+        "pct_motion": 2.1033,
         "score_mediana": 0.025,
         "score_p10": 0.025,
-        "score_p90": 0.925
+        "score_p90": 0.025
+      },
+      "1": {
+        "frac_over_05": 0.0,
+        "n_eval": 13918,
+        "n_motion": 0,
+        "pct_motion": 0.0,
+        "score_mediana": 0.025,
+        "score_p10": 0.025,
+        "score_p90": 0.025
+      },
+      "2": {
+        "frac_over_05": 0.0002,
+        "n_eval": 13978,
+        "n_motion": 0,
+        "pct_motion": 0.0,
+        "score_mediana": 0.025,
+        "score_p10": 0.025,
+        "score_p90": 0.025
       },
       "3": {
         "frac_over_05": 0.0,
-        "n_eval": 28,
+        "n_eval": 13682,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -653,7 +1142,7 @@
       },
       "4": {
         "frac_over_05": 0.0,
-        "n_eval": 56,
+        "n_eval": 13875,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -661,17 +1150,17 @@
         "score_p90": 0.025
       },
       "5": {
-        "frac_over_05": 0.0,
-        "n_eval": 57,
-        "n_motion": 0,
-        "pct_motion": 0.0,
+        "frac_over_05": 0.0419,
+        "n_eval": 13910,
+        "n_motion": 455,
+        "pct_motion": 3.271,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "6": {
         "frac_over_05": 0.0,
-        "n_eval": 49,
+        "n_eval": 13595,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -680,7 +1169,7 @@
       },
       "7": {
         "frac_over_05": 0.0,
-        "n_eval": 51,
+        "n_eval": 13814,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -689,7 +1178,7 @@
       },
       "8": {
         "frac_over_05": 0.0,
-        "n_eval": 75,
+        "n_eval": 8648,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -697,46 +1186,46 @@
         "score_p90": 0.025
       },
       "9": {
-        "frac_over_05": 0.0,
-        "n_eval": 83,
-        "n_motion": 0,
-        "pct_motion": 0.0,
+        "frac_over_05": 0.0053,
+        "n_eval": 12316,
+        "n_motion": 43,
+        "pct_motion": 0.3491,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "10": {
-        "frac_over_05": 0.2063,
-        "n_eval": 1561,
-        "n_motion": 275,
-        "pct_motion": 17.6169,
+        "frac_over_05": 0.0235,
+        "n_eval": 15519,
+        "n_motion": 292,
+        "pct_motion": 1.8816,
         "score_mediana": 0.025,
         "score_p10": 0.025,
-        "score_p90": 0.975
+        "score_p90": 0.025
       },
       "11": {
-        "frac_over_05": 0.064,
-        "n_eval": 11442,
+        "frac_over_05": 0.0288,
+        "n_eval": 25407,
         "n_motion": 559,
-        "pct_motion": 4.8855,
+        "pct_motion": 2.2002,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "12": {
-        "frac_over_05": 0.0157,
-        "n_eval": 12853,
+        "frac_over_05": 0.0076,
+        "n_eval": 26521,
         "n_motion": 184,
-        "pct_motion": 1.4316,
+        "pct_motion": 0.6938,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "13": {
-        "frac_over_05": 0.002,
-        "n_eval": 16487,
+        "frac_over_05": 0.0013,
+        "n_eval": 24682,
         "n_motion": 22,
-        "pct_motion": 0.1334,
+        "pct_motion": 0.0891,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
@@ -752,7 +1241,7 @@
       },
       "15": {
         "frac_over_05": 0.0,
-        "n_eval": 936,
+        "n_eval": 18324,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -760,19 +1249,19 @@
         "score_p90": 0.025
       },
       "16": {
-        "frac_over_05": 0.0762,
-        "n_eval": 11354,
+        "frac_over_05": 0.0221,
+        "n_eval": 39286,
         "n_motion": 559,
-        "pct_motion": 4.9234,
+        "pct_motion": 1.4229,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "17": {
-        "frac_over_05": 0.0392,
-        "n_eval": 13660,
-        "n_motion": 298,
-        "pct_motion": 2.1816,
+        "frac_over_05": 0.0233,
+        "n_eval": 39084,
+        "n_motion": 622,
+        "pct_motion": 1.5914,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
@@ -788,7 +1277,7 @@
       },
       "19": {
         "frac_over_05": 0.0,
-        "n_eval": 13739,
+        "n_eval": 22883,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -797,7 +1286,7 @@
       },
       "20": {
         "frac_over_05": 0.0,
-        "n_eval": 13990,
+        "n_eval": 27974,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -806,7 +1295,7 @@
       },
       "21": {
         "frac_over_05": 0.0,
-        "n_eval": 13992,
+        "n_eval": 27981,
         "n_motion": 0,
         "pct_motion": 0.0,
         "score_mediana": 0.025,
@@ -814,19 +1303,19 @@
         "score_p90": 0.025
       },
       "22": {
-        "frac_over_05": 0.0,
-        "n_eval": 13987,
-        "n_motion": 0,
-        "pct_motion": 0.0,
+        "frac_over_05": 0.0033,
+        "n_eval": 28579,
+        "n_motion": 61,
+        "pct_motion": 0.2134,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
       },
       "23": {
-        "frac_over_05": 0.0846,
-        "n_eval": 13636,
-        "n_motion": 946,
-        "pct_motion": 6.9375,
+        "frac_over_05": 0.0425,
+        "n_eval": 41605,
+        "n_motion": 1259,
+        "pct_motion": 3.0261,
         "score_mediana": 0.025,
         "score_p10": 0.025,
         "score_p90": 0.025
@@ -864,6 +1353,36 @@
           "die_temp_c": 62.1083,
           "rssi_dbm": -28.9959,
           "runtime_load_pct": 7.8013
+        }
+      },
+      {
+        "duracion_s": 1333.864,
+        "frac_score_ge_umbral": 0.034,
+        "n_eval": 5178,
+        "pct_motion": 2.1051,
+        "pps_eval": 3.882,
+        "score_motion_mediana": 0.875,
+        "sesion": "S2B",
+        "telemetria": {
+          "csi_accepted_pps": 99.3053,
+          "die_temp_c": 61.4,
+          "rssi_dbm": -19.7159,
+          "runtime_load_pct": 7.7386
+        }
+      },
+      {
+        "duracion_s": 1336.813,
+        "frac_score_ge_umbral": 0.0453,
+        "n_eval": 5191,
+        "pct_motion": 2.3695,
+        "pps_eval": 3.8831,
+        "score_motion_mediana": 0.925,
+        "sesion": "S3B",
+        "telemetria": {
+          "csi_accepted_pps": 98.993,
+          "die_temp_c": 60.9682,
+          "rssi_dbm": -19.6932,
+          "runtime_load_pct": 7.7642
         }
       }
     ]

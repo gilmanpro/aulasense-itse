@@ -1,12 +1,29 @@
 /*
- * app_provision.c — AulaSense (parche F24-d): AP de emergencia + portal privado /cfg/<token>.
+ * app_provision.c — AulaSense (parche F24-d; F26: provisioning FIJO sin token, SPEC §16.2):
+ * AP de emergencia con SSID/pass fijos + portal en rutas explícitas /cfg, /cfg/estado, /cfg/wifi.
  *
  * Calco ENDURECIDO del patrón DriveGuard (archive/dashcam-ia/firmware/main/app_portal.c,
- * F17/F18-A) adaptado al Native según SPEC §3.3 y las ENMIENDAS E2/E3/E4/E5/E7. Contrato
- * completo en app_provision.h y README §13 de este directorio.
+ * F17/F18-A) adaptado al Native según SPEC §16.2 y las ENMIENDAS E2/E3/E4/E7. Contrato
+ * completo en app_provision.h y README §14 (F26) / §13 (F24-d) de este directorio.
+ *
+ * Cambios F26 (D-F26-4):
+ *  - SSID fijo CONFIG_AULASENSE_PROVISION_AP_SSID (default "AULASENSE-CFG") SIN sufijo MAC
+ *    (una sola unidad en el proyecto; colisión multi-placa = procedimiento 1-placa-a-la-vez).
+ *  - Portal SIN token: eliminado el mecanismo completo (generacion por codigo, variable,
+ *    validacion de ruta y comparacion anti-timing). La clave NVS antigua del token NO se borra
+ *    en campo (inofensiva, ya no se usa; D-F26-4).
+ *  - Rutas EXPLÍCITAS GET /cfg (form), GET /cfg/estado (JSON), POST /cfg/wifi con
+ *    max_uri_handlers=4 (el matcher comodin prefijo-asterisco no casa "/cfg" sin barra
+ *    — informe A §1.2.4).
+ *  - AP_ERROR publicado en TODAS las ramas de fallo de ap_levantar() (set_mode/set_config/
+ *    wifi_start/httpd): el recovery jamás queda mudo (CRÍTICO informe A §1.1).
+ *  - Guarda de compilación: pass no vacía ⇒ longitud 8..63 (rechaza build si 1..7; "itse" de
+ *    4 chars producía set_config failing + AP mudo — informe A §1.1).
+ *  - Guardas HEREDADAS INTACTAS: Origin/Referer (403), cooldown NVS 5 s (429), body ≤255 B,
+ *    escritura solo si cambia, cabeceras duras, NUNCA loguear SSID/pass (solo longitudes).
  *
  * NO toca: el detector CSI, el canal MQTT existente (solo re-usa el publisher inyectado),
- * la mecánica de imágenes (Fix F/F24-c/F25-c) ni el recovery nativo (BOOT 3 s → Improv).
+ * la mecánica de imágenes (Fix F/F24-c/F25-c/F26) ni el recovery nativo (BOOT 3 s → Improv).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,11 +34,9 @@
 #include "freertos/queue.h"
 #include "esp_err.h"
 #include "esp_event.h"
-#include "esp_heap_caps.h"  /* heap/psram libre para /estado */
+#include "esp_heap_caps.h"  /* heap/psram libre para /cfg/estado */
 #include "esp_log.h"
-#include "esp_mac.h"        /* esp_read_mac (ENMIENDA E5: la comparacion anti-timing es local, ver token_consttime_igual) */
 #include "esp_netif.h"
-#include "esp_random.h"     /* esp_fill_random: token generado por codigo, NUNCA hardcodeado */
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "nvs.h"
@@ -44,8 +59,18 @@ static const char *TAG = "aulasense.provision";
 #if CONFIG_AULASENSE_PROVISION_AP_OFF_S < 5 || CONFIG_AULASENSE_PROVISION_AP_OFF_S > 600
 #error "AulaSense: AULASENSE_PROVISION_AP_OFF_S debe estar en 5..600."
 #endif
-_Static_assert(sizeof(CONFIG_AULASENSE_PROVISION_AP_PASS) <= 64,
-               "AulaSense: AULASENSE_PROVISION_AP_PASS admite como maximo 63 bytes (limite WPA2).");
+/* F26 (informe A §1.1): pass no vacía ⇒ WPA2 exige 8..63 chars. sizeof incluye el NUL:
+ * 9..64 bytes. Con pass vacía el AP queda ABIERTO con aviso (rama de degradación conservada).
+ * Un valor de 1..7 chars es ERROR DE BUILD, no un brick silencioso del recovery. */
+_Static_assert(sizeof(CONFIG_AULASENSE_PROVISION_AP_PASS) <= 1 ||
+                   (sizeof(CONFIG_AULASENSE_PROVISION_AP_PASS) >= 9 &&
+                    sizeof(CONFIG_AULASENSE_PROVISION_AP_PASS) <= 64),
+               "AulaSense: AULASENSE_PROVISION_AP_PASS vacia (=AP abierto con aviso) o de 8..63 "
+               "caracteres (minimo WPA2-PSK). 1..7 chars haria fallar esp_wifi_set_config y el "
+               "AP de emergencia no levantaria: recovery mudo (informe A §1.1).");
+/* El SSID del AP de emergencia cabe en wifi_config_t.ap.ssid (32 chars + NUL). */
+_Static_assert(sizeof(CONFIG_AULASENSE_PROVISION_AP_SSID) <= 33,
+               "AulaSense: AULASENSE_PROVISION_AP_SSID admite como maximo 32 bytes.");
 /* El AP del portal NUNCA toca el bus DVP ni los pines prohibidos: no usa GPIO propios. */
 
 #if !CONFIG_AULASENSE_PROVISION
@@ -66,10 +91,9 @@ bool app_provision_ap_activa(void) { return false; }
 #define NVS_NS_WIFI   "aulasense_wifi" /* ssid/pass puestos por el portal (distincto del vendor) */
 #define NVS_KEY_SSID  "ssid"
 #define NVS_KEY_PASS  "pass"
-#define NVS_NS_PROV   "aulasense_prov"
-#define NVS_KEY_TOKEN "cfg_token"
+/* F26: la key NVS vieja del token de portal (namespace "aulasense_prov") queda OBSOLETA:
+ * no se lee ni se escribe y NO se borra en campo (inofensiva, D-F26-4). El código ya no la usa. */
 
-#define TOKEN_HEX_LEN 8U             /* 4 bytes aleatorios = 8 caracteres hex minusculos */
 #define NVS_COOLDOWN_MS 5000U        /* anti-desgaste flash: 429 si se excede (calco app_portal.c) */
 #define WATCH_STA_MS  25000U         /* tiempo para que la red nueva responda tras el guardado */
 #define BOOT_GRACIA_MS 20000U        /* esperar antes del chequeo "sin credenciales" */
@@ -113,7 +137,6 @@ static bool s_hubo_ip = false;                      /* alguna vez asociado/GOT_I
 static int64_t s_watch_fin_ms = 0;
 static int64_t s_ultimo_guardado_ms = 0;
 static char s_ap_ssid[33] = {0};
-static char s_token[TOKEN_HEX_LEN + 1] = {0};       /* capacidad local; NUNCA va a MQTT/logs fuera del aviso */
 static bool s_observando = false;
 static app_provision_publish_fn s_publish_fn = NULL;
 static app_provision_connected_fn s_connected_fn = NULL;
@@ -169,37 +192,6 @@ static esp_err_t nvs_wifi_guardar(const char *ssid, const char *pass) {
     return err;
 }
 
-/* Token de ruta privada: generado por CODIGO con esp_fill_random (regla de secretos del
- * repo: ningun valor fijo hardcodeado). Persiste en NVS para que el portal sea usable tras
- * re-abrir el AP sin regenerar; se reimprime en cada activacion del AP (decision F24-d,
- * README §13) porque el aviso original puede haberse perdido del scroll del monitor. */
-static void token_asegurar(void) {
-    if (s_token[0] != '\0') {
-        return;
-    }
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS_PROV, NVS_READONLY, &h) == ESP_OK) {
-        size_t l = sizeof(s_token);
-        const bool hay = nvs_get_str(h, NVS_KEY_TOKEN, s_token, &l) == ESP_OK &&
-                         strlen(s_token) == TOKEN_HEX_LEN;
-        nvs_close(h);
-        if (hay) {
-            return;
-        }
-        s_token[0] = '\0';
-    }
-    uint8_t rnd[4] = {0};
-    esp_fill_random(rnd, sizeof(rnd));
-    snprintf(s_token, sizeof(s_token), "%02x%02x%02x%02x", rnd[0], rnd[1], rnd[2], rnd[3]);
-    if (nvs_open(NVS_NS_PROV, NVS_READWRITE, &h) == ESP_OK) {
-        (void)nvs_set_str(h, NVS_KEY_TOKEN, s_token);
-        (void)nvs_commit(h);
-        nvs_close(h);
-    }
-    ESP_LOGI(TAG, "token de portal generado (aleatorio, guardado en NVS %s/%s)", NVS_NS_PROV,
-             NVS_KEY_TOKEN);
-}
-
 /* -------------------- eventos aulasense_config (SPEC §6.1) -------------------- */
 
 static void publicar_evento(const char *evento, const char *detalle) {
@@ -239,14 +231,15 @@ void app_provision_publish_pending(void) {
     }
 }
 
-/* --------------------- AP de emergencia (ENMIENDA E3/E4) --------------------- */
+/* --------------------- AP de emergencia (ENMIENDA E3/E4; F26: SSID fijo) --------------------- */
 
-/* SSID: prefijo fijo + 4 hex (2 ultimos bytes del MAC) — adaptacion INTENCIONAL del
- * calco (ENMIENDA E4: el archive usaba 3 bytes/<6 hex>; el contrato AulaSense son 4 hex). */
+/* SSID FIJO desde Kconfig (F26, D-F26-4): sin sufijo MAC. Vacio/absurdo -> default del contrato. */
 static void ap_nombre(void) {
-    uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "AULASENSE-CFG-%02x%02x", mac[4], mac[5]);
+    const char *ssid = CONFIG_AULASENSE_PROVISION_AP_SSID;
+    if (ssid[0] == '\0') {
+        ssid = "AULASENSE-CFG";
+    }
+    strlcpy(s_ap_ssid, ssid, sizeof(s_ap_ssid));
 }
 
 static bool credenciales_propias_disponibles(void) {
@@ -260,22 +253,46 @@ static bool credenciales_propias_disponibles(void) {
  * esp_wifi_connect() del vendor contra el driver en modo AP fallan sin ruido (la rama de
  * error del vendor solo re-programa su deadline: sin log). */
 /* Adelanto: la definicion vive mas abajo (seccion portal httpd). */
-static void httpd_arrancar(void);
+static esp_err_t httpd_arrancar(void);
 
 static void ap_levantar(const char *motivo) {
     if (s_estado == PROV_ESTADO_AP) {
         return;
     }
-    token_asegurar();
     ap_nombre();
 
-    esp_wifi_stop();
-    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) {
+    char detalle[EVENT_JSON_CAP / 2];
+    esp_err_t err = esp_wifi_stop();
+    if (err != ESP_OK) {
+        /* F26: ninguna rama de fallo queda muda (informe A §1.1: recovery mudo). */
+        snprintf(detalle, sizeof(detalle), "etapa=wifi_stop esp_err=%s motivo=%s",
+                 esp_err_to_name(err), motivo);
+        publicar_evento("AP_ERROR", detalle);
+        ESP_LOGE(TAG, "esp_wifi_stop fallo: portal no disponible (%s)", motivo);
+        return;
+    }
+    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) {
+        snprintf(detalle, sizeof(detalle), "etapa=set_mode esp_err=%s motivo=%s",
+                 esp_err_to_name(err), motivo);
+        publicar_evento("AP_ERROR", detalle);
         ESP_LOGE(TAG, "set_mode(AP) fallo: portal no disponible (%s)", motivo);
         return;
     }
     if (s_ap_netif == NULL) {
         s_ap_netif = esp_netif_create_default_wifi_ap();
+        if (s_ap_netif == NULL) {
+            /* F26-g4 (hallazgo auditor externo; SPEC §16.2: AP_ERROR en TODAS las ramas):
+             * antes esta rama era muda y el codigo SEGUIA hacia set_config/start, arribando
+             * un AP SIN netif: portal 192.168.4.1 inalcanzable mientras se publicaba
+             * AP_FALLBACK. Cortar aqui: evento + log + return ANTES de tocar wifi/httpd. */
+            snprintf(detalle, sizeof(detalle), "etapa=netif_ap esp_err=NULL motivo=%s",
+                     motivo);
+            publicar_evento("AP_ERROR", detalle);
+            ESP_LOGE(TAG, "esp_netif_create_default_wifi_ap devolvio NULL: portal no "
+                          "disponible (%s)", motivo);
+            return;
+        }
     }
     wifi_config_t ap = {0};
     strlcpy((char *)ap.ap.ssid, s_ap_ssid, sizeof(ap.ap.ssid));
@@ -283,25 +300,42 @@ static void ap_levantar(const char *motivo) {
     ap.ap.channel = 1; /* 2.4 GHz obligatorio (el S3 no ve 5 GHz) */
     ap.ap.max_connection = 4;
     if (sizeof(CONFIG_AULASENSE_PROVISION_AP_PASS) > 1) {
-        ap.ap.authmode = WIFI_AUTH_WPA2_PSK; /* pass por menuconfig: NUNCA se loguea */
+        ap.ap.authmode = WIFI_AUTH_WPA2_PSK; /* pass por Kconfig/.local: NUNCA se loguea */
         strlcpy((char *)ap.ap.password, CONFIG_AULASENSE_PROVISION_AP_PASS, sizeof(ap.ap.password));
     } else {
-        ap.ap.authmode = WIFI_AUTH_OPEN; /* default D-F24-4: abierto CON aviso (pagina+log) */
+        ap.ap.authmode = WIFI_AUTH_OPEN; /* pass vacia: abierto CON aviso (pagina+log), D-F24-4 */
     }
-    if (esp_wifi_set_config(WIFI_IF_AP, &ap) != ESP_OK) {
+    err = esp_wifi_set_config(WIFI_IF_AP, &ap);
+    if (err != ESP_OK) {
+        /* Con la guarda de compilacion (pass 8..63 salvo vacia) esto solo puede pasar por una
+         * causa exotica; aun asi el evento llega al dashboard antes de cualquier return. */
+        snprintf(detalle, sizeof(detalle), "etapa=set_config esp_err=%s motivo=%s ssid_len=%u",
+                 esp_err_to_name(err), motivo, (unsigned)strlen(s_ap_ssid));
+        publicar_evento("AP_ERROR", detalle);
         ESP_LOGE(TAG, "set_config(AP) fallo: portal no disponible (%s)", motivo);
         return;
     }
-    if (esp_wifi_start() != ESP_OK) {
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        snprintf(detalle, sizeof(detalle), "etapa=wifi_start esp_err=%s motivo=%s",
+                 esp_err_to_name(err), motivo);
+        publicar_evento("AP_ERROR", detalle);
         ESP_LOGE(TAG, "esp_wifi_start (AP) fallo: portal no disponible (%s)", motivo);
         return;
     }
-    httpd_arrancar(); /* el portal SOLO vive bajo la ruta privada con token (ver §13 README) */
+    /* El portal vive en las rutas explicitas /cfg, /cfg/estado y /cfg/wifi (F26, sin token). */
+    err = httpd_arrancar();
+    if (err != ESP_OK) {
+        snprintf(detalle, sizeof(detalle), "etapa=httpd esp_err=%s motivo=%s",
+                 esp_err_to_name(err), motivo);
+        publicar_evento("AP_ERROR", detalle);
+        ESP_LOGE(TAG, "httpd NO arranco: portal caido, AP si (%s)", motivo);
+        /* NO se return: el AP de red sigue arribado; el fallo del portal ya es visible. */
+    }
     s_ap_activa = true;
     s_estado = PROV_ESTADO_AP;
     s_fallos_sta = 0; /* el umbral es por ciclo de fallback, no acumulado entre APs */
 
-    char detalle[EVENT_JSON_CAP / 2];
     snprintf(detalle, sizeof(detalle), "motivo=%s ap=%s auth=%s", motivo, s_ap_ssid,
              ap.ap.authmode == WIFI_AUTH_OPEN ? "abierta" : "wpa2");
     publicar_evento("AP_FALLBACK", detalle);
@@ -309,8 +343,8 @@ static void ap_levantar(const char *motivo) {
     ESP_LOGW(TAG, "SoftAP '%s' ARRIBADO en 192.168.4.1 — %s", s_ap_ssid,
              ap.ap.authmode == WIFI_AUTH_OPEN
                  ? "AP ABIERTO (aviso en la pagina; fija AULASENSE_PROVISION_AP_PASS si quieres WPA2)"
-                 : "AP con WPA2 (pass por menuconfig, nunca se loguea)");
-    ESP_LOGI(TAG, "AulaSense CFG URL: http://192.168.4.1/cfg/%s", s_token);
+                 : "AP con WPA2 (pass por .env/sdkconfig.defaults.local, nunca se loguea)");
+    ESP_LOGI(TAG, "AulaSense CFG URL: http://192.168.4.1/cfg");
 }
 
 /* Apagar AP + httpd. NO toca el modo WiFi: quien decide STA-puro-lo-hace (E3). */
@@ -402,44 +436,15 @@ static void cabeceras_seguridad(httpd_req_t *req) {
                        "frame-ancestors 'none'");
 }
 
-/* ENMIENDA E5: esp_http_server casa prefijos exactos de registro; se registra el patron
- * wildcard de "/cfg" + segmento libre con el matcher wildcard del servidor y se parsea el
- * segmento del token aqui. DEVIACION documentada (F24-d): `consttime_memequal` NO existe en
- * IDF 5.5.6 (la SPEC citaba esp_mac.h; verificado en C:\Espressif\v5.5.6 — cero coincidencias
- * "memequal" en los headers de components), asi que el modulo trae su propia comparacion en
- * tiempo constante con el mismo proposito anti-timing.
- * Devuelve false para CUALQUIER ruta no coincidente -> el handler responde 404 NEUTRO
- * (sin distinguir "ruta existe pero token malo": no adivinable). */
-static bool token_consttime_igual(const char *a, const char *b, size_t n) {
-    volatile unsigned diff = 0U;
-    for (size_t i = 0; i < n; i++) {
-        diff |= (unsigned)((unsigned char)a[i] ^ (unsigned char)b[i]);
-    }
-    return diff == 0U;
-}
-
-static bool ruta_token_ok(const char *uri, const char **resto) {
-    static const char RAIZ[] = "/cfg/";
-    if (strncmp(uri, RAIZ, sizeof(RAIZ) - 1) != 0) {
-        return false;
-    }
-    const char *seg = uri + sizeof(RAIZ) - 1;
-    const char *slash = strchr(seg, '/');
-    const size_t seglen = slash ? (size_t)(slash - seg) : strlen(seg);
-    if (seglen != TOKEN_HEX_LEN) {
-        return false;
-    }
-    for (size_t i = 0; i < seglen; i++) {
-        const char c = seg[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-            return false; /* mayusculas/u otros: mismo 404 neutral, sin pista */
-        }
-    }
-    if (s_token[0] == '\0' || !token_consttime_igual(seg, s_token, TOKEN_HEX_LEN)) {
-        return false;
-    }
-    *resto = slash ? slash + 1 : "";
-    return true;
+/* F26 (SPEC §16.2): portal SIN token con RUTAS EXPLÍCITAS. Se registra cada ruta exacta con el
+ * matcher default del httpd (sin comodines). Decisión verificada por diseño (informe A §1.2.4):
+ * el patron comodin (prefijo "/cfg/" + asterisco) exige barra tras /cfg, así que "/cfg" a
+ * secas NECESITA handler propio; con rutas exactas desaparece también la necesidad de parsear
+ * el segmento. La
+ * comparacion anti-timing del token se elimina porque ya no hay secreto que comparar (D-F26-4).
+ * Cualquier otra URI -> 404 por defecto del propio httpd (sin pista de rutas validas). */
+static bool uri_es(const char *uri, const char *ruta) {
+    return strcmp(uri, ruta) == 0;
 }
 
 static const char *wifi_estado_texto(void) {
@@ -496,32 +501,31 @@ static bool form_extraer(const char *body, const char *key, char *out, size_t n_
     return false;
 }
 
-static esp_err_t h_cfg_get(httpd_req_t *req) {
-    const char *resto = NULL;
+/* GET /cfg/estado → JSON de estado SIN secretos (wifi_sta, ap_activa, heap interno/psram). */
+static esp_err_t h_cfg_estado(httpd_req_t *req) {
     cabeceras_seguridad(req);
-    if (!ruta_token_ok(req->uri, &resto)) {
-        return httpd_resp_send_404(req); /* ruta o token incorrectos: sin pista */
-    }
-    if (strcmp(resto, "estado") == 0) {
-        char json[256];
-        snprintf(json, sizeof(json),
-                 "{\"wifi_sta\":\"%s\",\"ap_activa\":%s,\"fallos_sta\":%u,"
-                 "\"heap_libre_kb\":%u,\"psram_libre_kb\":%u}",
-                 wifi_estado_texto(), s_ap_activa ? "true" : "false",
-                 (unsigned)s_fallos_sta,
-                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U),
-                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U));
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, json);
-    }
-    if (resto[0] != '\0') {
-        return httpd_resp_send_404(req);
-    }
-    /* Formulario 100 % texto/numeros: CERO <img>/binarios; NUNCA renderiza SSID/pass
-     * guardados (decision D-F24-4: el aviso de AP abierto es el factor UX pendiente). */
+    char json[320];
+    snprintf(json, sizeof(json),
+             "{\"wifi_sta\":\"%s\",\"ap_activa\":%s,\"fallos_sta\":%u,"
+             "\"heap_interno_kb\":%u,\"bloque_mayor_kb\":%u,\"psram_libre_kb\":%u}",
+             wifi_estado_texto(), s_ap_activa ? "true" : "false",
+             (unsigned)s_fallos_sta,
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024U),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) /
+                        1024U),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+/* GET /cfg → formulario 100 % texto/numeros: CERO <img>/binarios; NUNCA renderiza SSID/pass
+ * guardados (decision D-F24-4 conservada en F26). Rutas del formulario/estado ABSOLUTAS FIJAS:
+ * el portal ya no lleva token en la URL (SPEC §16.2). */
+static esp_err_t h_cfg_form(httpd_req_t *req) {
+    cabeceras_seguridad(req);
     static const char AVISO_ABIERTO[] =
         "<p class=aviso>AP ABIERTO (sin clave): alguien cerca podria ver lo que escribas aqui."
-        " Recomendado: fija AULASENSE_PROVISION_AP_PASS en menuconfig.</p>";
+        " Recomendado: fija AULASENSE_PROVISION_AP_PASS (minimo 8 caracteres) via .env.</p>";
     static const char CAB[] =
         "<!doctype html><html lang=es><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -538,23 +542,20 @@ static esp_err_t h_cfg_get(httpd_req_t *req) {
     char estado[256];
     snprintf(estado, sizeof(estado),
              "<div class=estado>WiFi STA: %s\nModo AP: %s\nFallos STA acumulados: %u\n"
-             "heap interno libre: %u KB | psram libre: %u KB</div>",
+             "heap interno libre: %u KB | mayor bloque: %u KB | psram libre: %u KB</div>",
              wifi_estado_texto(), s_ap_activa ? "ACTIVA" : "apagada", (unsigned)s_fallos_sta,
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024U),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024U),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) /
+                        1024U),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024U));
-    char form[320];
-    snprintf(form, sizeof(form),
-             "<form method=post action='/cfg/%s/wifi'><label>SSID</label>"
-             "<input name=ssid maxlength=32 autocomplete=off>"
-             "<label>Clave (vacia = red abierta)</label>"
-             "<input name=pass type=password maxlength=64 autocomplete=off>"
-             "<button>Guardar y conectar</button></form>",
-             s_token);
-    /* El enlace a /estado lleva el token absoluto: un href relativo perderia el segmento
-     * de ruta privada (resolviera /cfg/estado -> 404). */
-    char pie[96];
-    snprintf(pie, sizeof(pie),
-             "<p><a href='/cfg/%s/estado'>estado (JSON)</a></p></body></html>", s_token);
+    static const char FORM[] =
+        "<form method=post action='/cfg/wifi'><label>SSID</label>"
+        "<input name=ssid maxlength=32 autocomplete=off>"
+        "<label>Clave (vacia = red abierta)</label>"
+        "<input name=pass type=password maxlength=64 autocomplete=off>"
+        "<button>Guardar y conectar</button></form>";
+    static const char PIE[] =
+        "<p><a href='/cfg/estado'>estado (JSON)</a></p></body></html>";
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     if (httpd_resp_sendstr_chunk(req, CAB) != ESP_OK) {
         return ESP_FAIL;
@@ -566,27 +567,25 @@ static esp_err_t h_cfg_get(httpd_req_t *req) {
     if (httpd_resp_sendstr_chunk(req, estado) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (httpd_resp_sendstr_chunk(req, form) != ESP_OK) {
+    if (httpd_resp_sendstr_chunk(req, FORM) != ESP_OK) {
         return ESP_FAIL;
     }
     if (httpd_resp_sendstr_chunk(req, MEDIO) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (httpd_resp_sendstr_chunk(req, pie) != ESP_OK) {
+    if (httpd_resp_sendstr_chunk(req, PIE) != ESP_OK) {
         return ESP_FAIL;
     }
     return httpd_resp_sendstr_chunk(req, NULL); /* cierra chunked */
 }
 
+/* POST /cfg/wifi → guardado NVS + AP OFF → STA puro → connect (ENMIENDA E3 intacta).
+ * Guardas heredadas SIN cambios: Origin/Referer 403, body ≤255 B, ssid obligatorio,
+ * cooldown NVS 5 s (429), sin escritura si no cambia, NUNCA loguea valores (solo longitudes). */
 static esp_err_t h_cfg_post(httpd_req_t *req) {
-    const char *resto = NULL;
     cabeceras_seguridad(req);
-    /* 404 ANTES de cualquier otra cosa (ni siquiera 403 delata rutas validas). */
-    if (!ruta_token_ok(req->uri, &resto)) {
-        return httpd_resp_send_404(req);
-    }
-    if (strcmp(resto, "wifi") != 0) {
-        return httpd_resp_send_404(req);
+    if (!uri_es(req->uri, "/cfg/wifi")) {
+        return httpd_resp_send_404(req); /* ruta no registrada: 404 neutro del propio handler */
     }
     if (!origin_permitido(req)) {
         httpd_resp_set_status(req, "403 Forbidden");
@@ -650,39 +649,44 @@ static esp_err_t h_cfg_post(httpd_req_t *req) {
     const esp_err_t ret = httpd_resp_sendstr(req,
         "<!doctype html><html lang=es><body><h2>Guardado</h2>"
         "<p>El AP se apaga y el nodo intenta conectar como STA. Si la red no responde, este "
-        "portal (AULASENSE-CFG-...) vuelve a estar disponible en la misma URL.</p>"
+        "portal (SSID de AULASENSE_PROVISION_AP_SSID, por defecto AULASENSE-CFG) vuelve a estar "
+        "disponible en http://192.168.4.1/cfg.</p>"
         "</body></html>");
     post_evt(PROV_EV_APPLY, 0);
     return ret;
 }
 
-static void httpd_arrancar(void) {
+static esp_err_t httpd_arrancar(void) {
     if (s_httpd != NULL) {
-        return;
+        return ESP_OK;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.task_priority = 4;  /* ENMIENDA E7: NUNCA en el loop=5 del detector */
     cfg.stack_size = 8192;  /* snprintf de pagina con margen (leccion F13 del archive) */
-    cfg.max_uri_handlers = 2;
+    /* F26: 2 -> 4 handlers (GET /cfg, GET /cfg/estado, POST /cfg/wifi + margen).
+     * Matcher DEFAULT (rutas exactas): el patron comodin con barra final no casa "/cfg" sin barra
+     * (informe A §1.2.4), por eso cada ruta lleva handler propio. */
+    cfg.max_uri_handlers = 4;
     cfg.server_port = 80;   /* puerto propio del AP; el Direct HTTP del vendor vive en 62587 */
-    /* ENMIENDA E5 (adaptada a IDF 5.5.6): uri_match_fn es config del SERVIDOR (no de
-     * httpd_uri_t): con el matcher wildcard el patron "/cfg/<segmento>" casa cualquier
-     * ruta bajo /cfg/ y la validacion del token la hace ruta_token_ok() en tiempo constante. */
-    cfg.uri_match_fn = httpd_uri_match_wildcard;
-    if (httpd_start(&s_httpd, &cfg) != ESP_OK) {
+    const esp_err_t err = httpd_start(&s_httpd, &cfg);
+    if (err != ESP_OK) {
         s_httpd = NULL;
-        ESP_LOGE(TAG, "httpd NO arranco: portal caido (el AP sigue sirviendo red)");
-        return;
+        return err;
     }
     static const httpd_uri_t uris[] = {
-        { .uri = "/cfg/*", .method = HTTP_GET, .handler = h_cfg_get },
-        { .uri = "/cfg/*", .method = HTTP_POST, .handler = h_cfg_post },
+        { .uri = "/cfg", .method = HTTP_GET, .handler = h_cfg_form },
+        { .uri = "/cfg/estado", .method = HTTP_GET, .handler = h_cfg_estado },
+        { .uri = "/cfg/wifi", .method = HTTP_POST, .handler = h_cfg_post },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
-        httpd_register_uri_handler(s_httpd, &uris[i]);
+        const esp_err_t reg = httpd_register_uri_handler(s_httpd, &uris[i]);
+        if (reg != ESP_OK) {
+            ESP_LOGE(TAG, "no pude registrar %s (%s)", uris[i].uri, esp_err_to_name(reg));
+        }
     }
-    ESP_LOGI(TAG, "httpd del portal escuchando en http://192.168.4.1/cfg/<token> "
-                  "(GET formulario, GET /estado, POST /wifi)");
+    ESP_LOGI(TAG, "httpd del portal escuchando en http://192.168.4.1/cfg "
+                  "(GET formulario, GET /cfg/estado, POST /cfg/wifi)");
+    return ESP_OK;
 }
 
 /* --------------------------- handlers de eventos --------------------------- */
@@ -862,9 +866,9 @@ bool app_provision_init(void) {
     }
 
     s_observando = true;
-    ESP_LOGI(TAG, "provision listo: AP de emergencia tras %d fallos STA, umbral propio (E2); "
-                  "portal SOLO bajo ruta privada",
-             CONFIG_AULASENSE_PROVISION_RETRIES);
+    ESP_LOGI(TAG, "provision listo: AP de emergencia '%s' tras %d fallos STA, umbral propio (E2); "
+                  "portal en http://192.168.4.1/cfg (F26: rutas fijas, sin token)",
+             CONFIG_AULASENSE_PROVISION_AP_SSID, CONFIG_AULASENSE_PROVISION_RETRIES);
     return true;
 }
 

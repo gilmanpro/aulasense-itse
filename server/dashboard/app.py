@@ -38,9 +38,12 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
+import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import sys
 import time
@@ -67,13 +70,23 @@ if str(SERVER_DIR) not in sys.path:
 
 from ingesta.esquema import (  # noqa: E402
     COLUMNAS_F25_IMAGENES,
+    COLUMNAS_F26_IMAGENES,
+    COLUMNAS_F26_TELEMETRIA,
     ESQUEMA_SQL,
     EVENTOS_CONFIG,
     validar,
 )
 
+# F26-a2: el respaldo de tablas nuevas reutiliza el DDL CANONICO de la ingesta
+# (a1 ya cerró su frente; importar en vez de copiar hace el drift imposible).
+from ingesta import esquema as _esquema_canon  # noqa: E402
+
 # F25-e (SPEC §9.2): login, sesiones, lockout y bootstrap del admin único.
 from dashboard import auth  # noqa: E402
+
+# Logger del proceso: la migración de respaldo NO puede tragarse errores en
+# silencio (gate F26-bd MEDIO-3); basta el NOMBRE del error, sin datos.
+LOG = logging.getLogger("aulasense.dashboard")
 
 # --- Constantes del contrato ---------------------------------------------------
 # D-F25-3 reinterpreta el bind: el default de Windows sigue siendo loopback (comportamiento
@@ -178,6 +191,76 @@ ESTADOS_VISION = ("pendiente", "procesando", "hecho", "error", "omitido")
 # patrones gigantes y mantiene el coste acotado en la escala actual (SPEC §9.3).
 TOPE_BUSQUEDA = 200
 
+# ------------------------------------------------------------------------------
+# F26 (SPEC §16.5-16.7): monitoreo "salud del sistema" + columnas de decisión.
+#
+# MIGRACIÓN DE RESPALDO (mismo patrón deliberado que IMAGENES_SQL/F25): la DUEÑA
+# real del esquema es ``server/ingesta/esquema.py`` (writer único, fase F26-a1);
+# esta copia idempotente (IF NOT EXISTS + PRAGMA table_info) permite que el
+# dashboard arranque y sirva /api/salud sobre una DB anterior a F26 sin esperar
+# a la ingesta (tests, Windows fallback). Si a1 ya migró, todo es no-op.
+# ------------------------------------------------------------------------------
+# Columnas nuevas de ``imagenes`` (SPEC §16.5, DDL canónico de
+# ``ingesta.esquema.COLUMNAS_F26_IMAGENES`` — importado arriba, no copiado).
+COLUMNAS_DECISION_PANEL: tuple[str, ...] = (
+    "decision_estado",
+    "decision_etiqueta",
+    "decision_confianza",
+    "decision_modelo",
+    "decision_ts_ms",
+    "decision_actividad",
+    "decision_cubre",
+    "decision_calidad",
+)
+# Tablas F26 (SPEC §16.5): auditoría Clef (gemela de vision_uso) + heartbeat.
+DDL_CLEF_USO = _esquema_canon._DDL_CLEF_USO
+DDL_ESTADO_SISTEMA = _esquema_canon._DDL_ESTADO_SISTEMA
+
+# --- F26 (SPEC §16.7): umbrales de los checks de salud -------------------------
+SALUD_INGESTA_VERDE_MS = 90_000          # heartbeat estado_sistema fresco
+SALUD_INGESTA_CRITICO_MS = 5 * 60_000
+SALUD_TELEM_VERDE_MS = 5 * 60_000        # frescura telemetría (placa)
+SALUD_TELEM_WARN_MS = 10 * 60_000
+# Verde del check heap: alineado al UMBRAL VIVO del gate de captura F26
+# (95/24 KB: sdkconfig:622-623 CONFIG_AULASENSE_IMAGEN_HEAP_MIN_KB/_BLOCK_MIN_KB,
+# README del parche §14 "umbrales vivos del gate 95/24 conservados"). La barra
+# hardcodeada 120 de la regla 2 (Kconfig default) producia 'warn' espurio con la
+# placa sana (103-106/56 KB, hallazgo F26-c3). Override por .env único:
+# AULASENSE_HEAP_INT_VERDE_KB / AULASENSE_HEAP_BLOQUE_VERDE_KB (SPEC §16.7).
+SALUD_HEAP_VERDE_KB_DEFECTO = 95
+SALUD_HEAP_BLOQUE_VERDE_KB_DEFECTO = 24
+SALUD_HEAP_CRITICO_KB = 64
+SALUD_RSSI_WARN_DBM = -80
+SALUD_ERROR_CRITICO_FRAC = 0.20          # error > 20 % del lote procesado
+SALUD_CONSUMO_WARN_FRAC = 0.80           # ≥ 80 % del tope -> warn
+SALUD_DISCO_WARN_PCT = 85.0
+SALUD_DISCO_CRITICO_PCT = 95.0
+SALUD_TUNEL_STALE_MS = 10 * 60_000       # tuneles_estado.json viejo -> warn
+SALUD_CUBRE_REVISION = 0.7               # decision_cubre < 0.7 -> badge REVISIÓN_HUMANA
+ARCHIVO_TUNELES = "tuneles_estado.json"  # hook F26-b: lo escribe el verbo salud
+# Tipos de evento config (SPEC §16.4) que alimentan la cámara/gate y el OTA.
+CFG_TIPOS_CAMARA = (
+    "IMAGEN_INIT",
+    "IMAGEN_GATE_OFF",
+    "IMAGEN_DESCARTE",
+    "CAMARA_ERROR",
+    "IMAGEN_ON",
+)
+CFG_TIPOS_OTA = ("OTA_CHECK", "OTA_INICIO", "OTA_OK", "OTA_ERROR")
+# Bordes OTA -> estado aproximado cuando aún no hay retain cacheado (a1).
+OTA_BORDE_ESTADO = {
+    "OTA_INICIO": "downloading",
+    "OTA_OK": "idle",
+    "OTA_ERROR": "error",
+    "OTA_CHECK": "checking",
+}
+
+_NOTA_HONESTA_SALUD = (
+    "Check de solo lectura (SPEC §16.7): sin secretos en la respuesta. "
+    "'sin-dato' = la pieza F26-a1 aún no desplegada o la fuente está vacía. "
+    "La telemetría de la placa se pausa durante OTA: 'OTA en curso' no es caída."
+)
+
 # Columnas nuevas de ``imagenes`` (F25, SPEC §8.2): se IMPORTAN del canonico
 # ``server/ingesta/esquema.py`` (antes había una copia literal aquí; dedupe R1
 # de la auditoría de arquitectura 2026-11-15). Se usan SOLO como migracion de
@@ -259,13 +342,31 @@ def _datos_dir() -> Path:
     return _db_path().expanduser().resolve().parent
 
 
-def _migrar_imagenes_f25(con: sqlite3.Connection) -> None:
+# --- Migraciones de respaldo: una vez por BD, no por request -----------------
+#
+# Marca gate (rendimiento 2026-11-15 sugerencias §1, extendido en F26 porque la
+# migracion de respaldo F26 duplico el trabajo pagado por request): viaja EN la
+# propia BD via ``PRAGMA user_version`` (estado compartido, test-safe: cada test
+# usa su tmp_path y arranca sin marca). Con la marca puesta, ``_conectar()``
+# OMITE los DDL idempotentes de respaldo (PRAGMA table_info + CREATE INDEX
+# IF NOT EXISTS + executescript + COMMIT: transacciones de ESCRITURA por cada
+# lectura, en competencia con el writer unico de la ingesta sobre WAL).
+# La DUEÑA del esquema sigue siendo la ingesta: una BD nueva o sin marca que
+# pase por aqui se alinea igual (las migraciones son idempotentes) y sella la
+# marca SOLO si la migracion F26 de respaldo reporta exito — si la BD estaba
+# bloqueada no se sella y el siguiente request reintenta.
+USER_VERSION_RESPALDO = 26  # F25(25) + F26(26): migraciones de respaldo selladas
+
+
+def _migrar_imagenes_f25(con: sqlite3.Connection) -> bool:
     """Añade a ``imagenes`` las columnas F25 si faltan (idempotente, tolerante).
 
     SQLite no tiene ``ADD COLUMN IF NOT EXISTS``: se consulta ``pragma table_info``
     antes de cada ``ALTER TABLE`` (mismo patrón que el canónico de
     ``server/ingesta/esquema.py``). Un fallo de ALTER (p. ej. DB bloqueada por otro
     proceso) NO tumba el arranque: la ingesta aplicará la migración canónica.
+    Devuelve ``False`` solo cuando hubo error (el gate de ``user_version`` no
+    sella la marca en ese caso).
     """
     try:
         existentes = {fila[1] for fila in con.execute("PRAGMA table_info(imagenes)")}
@@ -278,12 +379,19 @@ def _migrar_imagenes_f25(con: sqlite3.Connection) -> None:
         )
         con.execute("CREATE INDEX IF NOT EXISTS idx_img_canal ON imagenes(canal)")
         con.commit()
+        return True
     except sqlite3.Error:  # tabla ausente/bloqueada: la ingesta migrará después
         con.rollback()
+        return False
 
 
 def _conectar() -> sqlite3.Connection:
-    """Abre la DB en WAL y garantiza el esquema (CREATE IF NOT EXISTS es idempotente)."""
+    """Abre la DB en WAL y garantiza el esquema (CREATE IF NOT EXISTS es idempotente).
+
+    Las migraciones de respaldo (F25 visión + F26 decision/estado_sistema/clef_uso)
+    corren UNA vez por BD: se saltan cuando ``PRAGMA user_version`` ya trae la
+    marca ``USER_VERSION_RESPALDO`` (gate rendimiento F26 — ver comentario arriba).
+    """
     ruta = _db_path()
     ruta.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(ruta, timeout=5.0, check_same_thread=False)
@@ -301,17 +409,80 @@ def _conectar() -> sqlite3.Connection:
     ).fetchone()
     if not existe_img:
         con.executescript(IMAGENES_SQL)
-    else:
-        # DB anterior a F25: se alinean las columnas de visión (CANAL/descripcion/…)
-        # antes de cualquier lectura de la galería.
-        _migrar_imagenes_f25(con)
     # Extensión F3 (session logger): misma migración de respaldo.
     existe_ses = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sesiones'"
     ).fetchone()
     if not existe_ses:
         con.executescript(SESIONES_SQL)
+    # F26 (SPEC §16.5): respaldo idempotente de columnas decision_*, clef_uso y
+    # estado_sistema. La dueña real es la ingesta (F26-a1); si ya migró, no-op.
+    # GATE rendimiento: solo hasta la primera pasada por BD (user_version), y la
+    # marca NO se sella si el respaldo fallo (el proximo request reintenta).
+    if con.execute("PRAGMA user_version").fetchone()[0] < USER_VERSION_RESPALDO:
+        if existe_img:
+            # DB anterior a F25: se alinean las columnas de visión (CANAL/descripcion/…)
+            # antes de cualquier lectura de la galería.
+            _migrar_imagenes_f25(con)
+        if _migrar_f26_respaldo(con):
+            try:
+                con.execute(f"PRAGMA user_version={USER_VERSION_RESPALDO}")
+                con.commit()
+            except sqlite3.Error:  # bloqueada: sin marca, el próximo request reintenta
+                try:
+                    con.rollback()
+                except sqlite3.Error:
+                    pass
     return con
+
+
+def _migrar_f26_respaldo(con: sqlite3.Connection) -> bool:
+    """Añade columnas ``decision_*`` + tablas F26 si faltan (idempotente).
+
+    Mismo patrón tolerante que ``_migrar_imagenes_f25``: un fallo (DB bloqueada
+    o tabla ausente) NO tumba el arranque: la ingesta aplicará la migración
+    canónica y /api/salud degrada cada check a 'sin-dato'. Devuelve ``False``
+    solo cuando hubo error: el gate de ``user_version`` no sella la marca y el
+    siguiente request reintenta.
+    """
+    try:
+        existe_img = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='imagenes'"
+        ).fetchone()
+        if existe_img:
+            existentes = {fila[1] for fila in con.execute("PRAGMA table_info(imagenes)")}
+            for nombre, ddl in COLUMNAS_F26_IMAGENES:
+                if nombre in existentes:
+                    continue
+                con.execute(f"ALTER TABLE imagenes ADD COLUMN {ddl}")
+        existe_tel = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='telemetria'"
+        ).fetchone()
+        if existe_tel:
+            # heap INTERNO (SPEC §16.5): nulas en filas históricas (backwards-
+            # compat exigida por a1: NULL jamás se pinta como 0).
+            existentes_tel = {fila[1] for fila in con.execute("PRAGMA table_info(telemetria)")}
+            for nombre, ddl in COLUMNAS_F26_TELEMETRIA:
+                if nombre in existentes_tel:
+                    continue
+                con.execute(f"ALTER TABLE telemetria ADD COLUMN {ddl}")
+        con.executescript(DDL_ESTADO_SISTEMA)
+        if existe_img:
+            con.executescript(DDL_CLEF_USO)  # FK a imagenes(id)
+        con.commit()
+        return True
+    except sqlite3.Error as exc:  # tabla ausente/bloqueada: la ingesta migrará después
+        # Gate F26-bd MEDIO-3: no se traga el fallo en silencio. Solo el NOMBRE
+        # de la excepción (sin datos de la fila ni de la conexión).
+        LOG.warning(
+            "migración F26 de respaldo omitida (%s): la ingesta aplicará el esquema",
+            type(exc).__name__,
+        )
+        try:
+            con.rollback()
+        except sqlite3.Error:
+            pass
+        return False
 
 
 def _filas(con: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
@@ -497,8 +668,8 @@ def _es_ruta_auth(ruta: str) -> bool:
 
 
 def _respuesta_sin_sesion(ruta: str) -> Response:
-    """Sin sesión: 302 al login para la página, 401 para API/estáticos."""
-    if ruta in ("/", "/index.html"):
+    """Sin sesión: 302 al login para las páginas, 401 para API/estáticos."""
+    if ruta in ("/", "/index.html", "/salud"):
         return RedirectResponse(url="/login", status_code=302, headers=auth.CABECERAS_AUTH)
     return JSONResponse(
         status_code=401,
@@ -1044,6 +1215,718 @@ def api_telemetria(device_id: str | None = None, limite: int | None = None) -> d
     return {"limite": lim, "filas": filas}
 
 
+# ------------------------------------------------------------------------------
+# F26 (SPEC §16.7) — Salud del sistema: GET /api/salud (tras login, SOLO lectura)
+# ------------------------------------------------------------------------------
+# Ninguna respuesta de este bloque incluye secretos: los valores que salen son
+# numéricos, enums, timestamps y textos de ``config_eventos`` (contrato §6.1:
+# detalle ≤120 chars SIN secretos). De ``tuneles_estado.json`` SOLO se re-
+# serializan los campos ``id``/``state``/``remote`` truncados — NUNCA el objeto
+# completo (lección pass VPS, bitácora 2026-11-15 / PLAN D-F26-8).
+
+# Prioridad agregación de semáforos (peor gana; 'info'/'sin-dato' no suben).
+_SEVERIDAD_ESTADO = {"verde": 0, "info": 0, "sin-dato": 1, "warn": 2, "critico": 3}
+ESTADOS_DECISION = ESTADOS_VISION  # mismo CHECK de 'pendiente..omitido' (§16.5)
+
+
+def _tabla_existe(con: sqlite3.Connection, nombre: str) -> bool:
+    fila = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (nombre,)
+    ).fetchone()
+    return fila is not None
+
+
+def _columnas_de(con: sqlite3.Connection, tabla: str) -> set[str]:
+    if not _tabla_existe(con, tabla):
+        return set()
+    return {str(f[1]) for f in con.execute(f"PRAGMA table_info({tabla})")}
+
+
+def _check(
+    identificador: str,
+    etiqueta: str,
+    estado: str,
+    valor: Any = None,
+    detalle: str | None = None,
+) -> dict[str, Any]:
+    """Un check del semáforo (estado: verde|warn|critico|info|sin-dato)."""
+    return {
+        "id": identificador,
+        "etiqueta": etiqueta,
+        "estado": estado,
+        "valor": valor,
+        "detalle": (detalle or "")[:200] or None,
+    }
+
+
+def _mas_severo(actual: str, nuevo: str) -> str:
+    return nuevo if _SEVERIDAD_ESTADO.get(
+        nuevo, 0
+    ) > _SEVERIDAD_ESTADO.get(actual, 0) else actual
+
+
+def _env_int(nombre: str, defecto: int) -> int:
+    """Entero de entorno tolerante (topes de presupuesto; jamás un secreto)."""
+    crudo = (auth.valor_env(nombre, "") or "").strip()
+    try:
+        return max(0, int(crudo)) if crudo else defecto
+    except ValueError:
+        return defecto
+
+
+def _leer_retains(con: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """``estado_sistema.detalle`` JSON ``{sufijo: {device: payload}}`` (a1).
+
+    Contrato real F26-a1: los retains ``ota``/``imagen_estado``/``heap_interno``
+    cachean su último valor POR DEVICE en la columna ``detalle`` de la fila
+    única ``estado_sistema`` (id=1). Tabla/JSON ausente o inválido -> {} (el
+    check degrada a 'sin-dato', nunca inventa estado).
+    """
+    if not _tabla_existe(con, "estado_sistema"):
+        return {}
+    try:
+        fila = con.execute(
+            "SELECT detalle FROM estado_sistema WHERE id = 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return {}
+    if fila is None or not fila[0]:
+        return {}
+    try:
+        datos = json.loads(str(fila[0]))
+    except ValueError:
+        return {}
+    if not isinstance(datos, dict):
+        return {}
+    return {
+        str(clave): valor
+        for clave, valor in datos.items()
+        if isinstance(valor, dict)
+    }
+
+
+def _payload_retain_reciente(
+    retains: dict[str, dict[str, Any]], sufijo: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Último payload (por ``ts_ms`` interno del retain) y su device."""
+    mejor: dict[str, Any] | None = None
+    device: str | None = None
+    mejor_ts = -(2**63)
+    for ident, payload in (retains.get(sufijo) or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            ts = int(payload.get("ts_ms") or 0)
+        except (TypeError, ValueError):
+            ts = 0
+        if ts >= mejor_ts:
+            mejor, device, mejor_ts = payload, str(ident), ts
+    return mejor, device
+
+
+def _estado_ota(con: sqlite3.Connection) -> dict[str, Any]:
+    """Estado OTA canónico: retain en ``detalle``; fallback bordes config_eventos.
+
+    Devuelve {estado, en_curso, fuente, device_id, ts_ms}. ``en_curso`` usa el
+    valor EXACTO 'downloading' (mismo criterio que ingesta ``_ota_en_descarga``
+    y SPEC §16.7): durante la descarga la telemetría se pausa a propósito y la
+    frescura NO debe alarma (D-F26-8).
+    """
+    payload, device = _payload_retain_reciente(_leer_retains(con), "ota")
+    if payload is not None:
+        estado = str(payload.get("estado") or "desconocido")
+        return {
+            "estado": estado,
+            "en_curso": estado == "downloading",
+            "fuente": "estado_sistema.detalle.ota",
+            "device_id": device,
+            "ts_ms": payload.get("ts_ms"),
+            "detalle": (str(payload.get("detalle") or ""))[:120] or None,
+        }
+    # Fallback por bordes (SPEC §16.1/§16.4: los eventos OTA_* viven en
+    # config_eventos, NO en eventos): OTA_INICIO sin OTA_OK/OTA_ERROR después.
+    if _tabla_existe(con, "config_eventos"):
+        try:
+            marcados = ",".join("?" for _ in CFG_TIPOS_OTA)
+            fila = con.execute(
+                f"SELECT tipo, ts_ms, device_id FROM config_eventos "
+                f"WHERE tipo IN ({marcados}) ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                tuple(CFG_TIPOS_OTA),
+            ).fetchone()
+        except sqlite3.Error:
+            fila = None
+        if fila is not None:
+            estado = OTA_BORDE_ESTADO.get(str(fila["tipo"]), "desconocido")
+            return {
+                "estado": estado,
+                "en_curso": estado == "downloading",
+                "fuente": "config_eventos",
+                "device_id": str(fila["device_id"]),
+                "ts_ms": int(fila["ts_ms"]),
+                "detalle": f"derivado de {fila['tipo']}",
+            }
+    return {
+        "estado": None,
+        "en_curso": False,
+        "fuente": "sin-dato",
+        "device_id": None,
+        "ts_ms": None,
+        "detalle": None,
+    }
+
+
+def _conteos_cola(
+    con: sqlite3.Connection, columna: str
+) -> dict[str, int] | None:
+    """Conteos por estado de una columna de ``imagenes`` (None si no existe)."""
+    permitidas = {"vision_estado", "decision_estado"}
+    if columna not in permitidas:  # defensa: jamás se concatena nombre arbitrario
+        raise ValueError(columna)
+    if columna not in _columnas_de(con, "imagenes"):
+        return None
+    conteos = {estado: 0 for estado in ESTADOS_VISION}
+    for fila in con.execute(
+        f"SELECT {columna} AS estado, COUNT(*) AS n FROM imagenes GROUP BY {columna}"
+    ):
+        clave = str(fila["estado"])
+        conteos[clave] = int(fila["n"])
+    return conteos
+
+
+def _check_cola(con: sqlite3.Connection, conteos: dict[str, int] | None) -> tuple[str, str | None]:
+    """(estado, detalle) de una cola: pendiente>0 warn; error>20% lote critico."""
+    if conteos is None:
+        return "sin-dato", "columna F26 aún no migrada (F26-a1)"
+    pendientes = conteos.get("pendiente", 0) + conteos.get("procesando", 0)
+    errores = conteos.get("error", 0)
+    lote = (
+        conteos.get("hecho", 0)
+        + errores
+        + conteos.get("omitido", 0)
+    )
+    if lote > 0 and errores / lote > SALUD_ERROR_CRITICO_FRAC:
+        return "critico", f"error {errores}/{lote} > 20 % del lote"
+    if errores > 0:
+        return "warn", f"{errores} en error (reintatables)"
+    if pendientes > 0:
+        return "warn", f"{pendientes} pendientes"
+    return "verde", None
+
+
+def _lectura_tuneles(ahora: int) -> dict[str, Any]:
+    """Lee ``datos/tuneles_estado.json`` (hook F26-b; el dashboard NO ejecuta
+    wsl-port). Formas aceptadas: {"ts_ms", "tuneles": [...]} o lista directa.
+    SOLO se re-serializan id/state/remote (blanqueo de campos, lección VPS)."""
+    ruta = _datos_dir() / ARCHIVO_TUNELES
+    base: dict[str, Any] = {
+        "fuente": f"datos/{ARCHIVO_TUNELES}",
+        "estado": "sin-dato",
+        "edad_ms": None,
+        "tuneles": [],
+        "motivo": None,
+    }
+    if not ruta.is_file():
+        base["motivo"] = (
+            "el verbo 'salud' de tools/wsl_aulasense.ps1 (F26-b) aún no publicó "
+            "el estado de los túneles"
+        )
+        return base
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        base["motivo"] = "archivo de túneles ilegible o JSON inválido"
+        return base
+    if isinstance(datos, dict):
+        lista = datos.get("tuneles")
+        if not isinstance(lista, list):
+            lista = [dict(datos, ts_ms=datos.get("ts_ms"))]
+        ts_global = datos.get("ts_ms")
+    elif isinstance(datos, list):
+        lista = datos
+        ts_global = None
+    else:
+        base["motivo"] = "formato inesperado"
+        return base
+    tuneles: list[dict[str, Any]] = []
+    ts_ms: list[int] = []
+    for item in lista:
+        if not isinstance(item, dict):
+            continue
+        # BLANQUEO: solo id/state/remote truncados; nada más sale del archivo.
+        tuneles.append(
+            {
+                "id": str(item.get("id") or "")[:64] or None,
+                "state": str(item.get("state") or "")[:32] or None,
+                "remote": str(item.get("remote") or "")[:64] or None,
+            }
+        )
+        for fuente in (item.get("ts_ms"), ts_global):
+            try:
+                if fuente is not None:
+                    ts_ms.append(int(fuente))
+            except (TypeError, ValueError):
+                pass
+    base["tuneles"] = tuneles
+    if not tuneles:
+        base["motivo"] = "archivo sin túneles"
+        return base
+    if ts_ms:
+        base["edad_ms"] = max(0, ahora - max(ts_ms))
+    caidos = [t["id"] for t in tuneles if t["state"] != "running"]
+    if caidos:
+        base["estado"] = "critico"
+        base["motivo"] = "state != running: " + ", ".join(str(c) for c in caidos)[:120]
+    elif base["edad_ms"] is not None and base["edad_ms"] > SALUD_TUNEL_STALE_MS:
+        base["estado"] = "warn"
+        base["motivo"] = "estado de túneles stale (>10 min)"
+    else:
+        base["estado"] = "verde"
+    return base
+
+
+def _lectura_disco() -> dict[str, Any]:
+    """``shutil.disk_usage`` de la base de datos (SPEC §16.7: warn ≥85 %)."""
+    ruta = _datos_dir()
+    try:
+        uso = shutil.disk_usage(str(ruta))
+    except OSError:
+        return {"ruta": str(ruta), "error": "no se pudo medir el disco"}
+    pct = round(100.0 * (uso.used / uso.total), 2) if uso.total else None
+    return {
+        "ruta": str(ruta),
+        "total_bytes": int(uso.total),
+        "libre_bytes": int(uso.free),
+        "usado_pct": pct,
+    }
+
+
+def _uso_ventana(con: sqlite3.Connection, ahora: int) -> dict[str, int] | None:
+    """(dia, hora) de llamadas que pudieron consumir Credits en ``vision_uso``.
+
+    Mismo criterio conservador que el worker de visión (contar_uso): filas
+    ``hecho``/``error`` cuentan; ``tope`` no (no hubo llamada).
+    """
+    if not _tabla_existe(con, "vision_uso"):
+        return None
+    fila_dia = con.execute(
+        "SELECT COUNT(*) FROM vision_uso WHERE ts_ms >= ? AND resultado IN ('hecho','error')",
+        (ahora - VENTANA_DIA_MS_SALUD,),
+    ).fetchone()
+    fila_hora = con.execute(
+        "SELECT COUNT(*) FROM vision_uso WHERE ts_ms >= ? AND resultado IN ('hecho','error')",
+        (ahora - VENTANA_HORA_MS_SALUD,),
+    ).fetchone()
+    return {"dia": int(fila_dia[0]), "hora": int(fila_hora[0])}
+
+
+def _uso_clef(con: sqlite3.Connection, ahora: int) -> dict[str, int] | None:
+    """(dia, hora) de ``clef_uso`` excluyendo local (0 llamadas) y 'tope'."""
+    if not _tabla_existe(con, "clef_uso"):
+        return None
+    base = (
+        "SELECT COUNT(*) FROM clef_uso WHERE ts_ms >= ? "
+        "AND COALESCE(modelo, '') <> 'local' AND COALESCE(detalle, '') <> 'tope'"
+    )
+    dia = con.execute(base, (ahora - VENTANA_DIA_MS_SALUD,)).fetchone()[0]
+    hora = con.execute(base, (ahora - VENTANA_HORA_MS_SALUD,)).fetchone()[0]
+    return {"dia": int(dia), "hora": int(hora)}
+
+
+VENTANA_DIA_MS_SALUD = 24 * 60 * 60 * 1000
+VENTANA_HORA_MS_SALUD = 60 * 60 * 1000
+
+
+def _check_consumo(
+    usado: dict[str, int] | None, tope_dia: int, tope_hora: int
+) -> tuple[str, str | None]:
+    if usado is None:
+        return "sin-dato", "tabla de auditoría ausente (aún no migrada)"
+    dia, hora = usado["dia"], usado["hora"]
+    if tope_dia <= 0 or dia >= tope_dia:
+        return "critico", f"tope diario alcanzado ({dia}/{tope_dia})"
+    if tope_hora > 0 and hora >= tope_hora:
+        return "critico", f"tope horario alcanzado ({hora}/{tope_hora})"
+    if dia >= SALUD_CONSUMO_WARN_FRAC * tope_dia:
+        return "warn", f"{dia}/{tope_dia} del día (≥80 %)"
+    return "verde", f"{dia}/{tope_dia} del día"
+
+
+@app.get("/api/salud")
+def api_salud() -> dict[str, Any]:
+    """Semáforo de salud del sistema (SPEC §16.7) — SOLO lectura, sin secretos.
+
+    Detrás del login D-F25-8 (el middleware ``guardia_sesion`` lo exige; ruta no
+    exenta en ``_ruta_libre``). Cada check degrada a 'sin-dato' si su fuente
+    F26-a1/F26-b aún no existe, de modo que el endpoint funciona desde hoy sin
+    despliegue. Anti-falsa-alarma OTA (D-F26-8): con el retain ``ota`` en
+    'downloading' la frescura de telemetría pasa a 'info' ("OTA en curso").
+    """
+    ahora = _ahora_ms()
+    checks: list[dict[str, Any]] = []
+    con = _conectar()
+    try:
+        # --- heartbeat de la ingesta (estado_sistema, fila única id=1) ------
+        fila_estado = None
+        if _tabla_existe(con, "estado_sistema"):
+            try:
+                fila_estado = con.execute(
+                    "SELECT ts_ms, mqtt_conectado, ingesta_activa, detalle "
+                    "FROM estado_sistema WHERE id = 1"
+                ).fetchone()
+            except sqlite3.Error:
+                fila_estado = None
+        if fila_estado is None:
+            checks.append(_check(
+                "ingesta", "Ingesta activa", "sin-dato", None,
+                "sin heartbeat estado_sistema (F26-a1) o la ingesta no ha escrito",
+            ))
+            checks.append(_check("mqtt", "MQTT conectado", "sin-dato", None,
+                                 "fuente: estado_sistema.mqtt_conectado"))
+        else:
+            edad = max(0, ahora - int(fila_estado["ts_ms"]))
+            if edad <= SALUD_INGESTA_VERDE_MS and int(fila_estado["ingesta_activa"] or 0) == 1:
+                estado_ing, det = "verde", f"heartbeat hace {edad // 1000} s"
+            elif edad <= SALUD_INGESTA_CRITICO_MS:
+                estado_ing, det = "warn", f"heartbeat viejo: {edad // 1000} s (>90 s)"
+            else:
+                estado_ing, det = "critico", f"heartbeat viejo: {edad // 1000} s (>5 min)"
+            checks.append(_check("ingesta", "Ingesta activa", estado_ing, edad, det))
+            mqtt = fila_estado["mqtt_conectado"]
+            if mqtt is None:
+                checks.append(_check("mqtt", "MQTT conectado", "sin-dato", None))
+            elif int(mqtt) == 1:
+                checks.append(_check("mqtt", "MQTT conectado", "verde", 1))
+            else:
+                checks.append(_check(
+                    "mqtt", "MQTT conectado", "critico", 0,
+                    "is_connected()=0 en el último heartbeat (la ingesta deriva "
+                    "SISTEMA_MQTT_CAIDO en config_eventos)",
+                ))
+
+        # --- OTA en curso (informativo; manda sobre la frescura) ------------
+        ota = _estado_ota(con)
+
+        # --- frescura de telemetría (≤5 min verde; 5-10 warn; >10 crítico) --
+        ultima_ts = None
+        if _tabla_existe(con, "telemetria"):
+            fila = con.execute("SELECT MAX(ts_ms) FROM telemetria").fetchone()
+            ultima_ts = int(fila[0]) if fila and fila[0] is not None else None
+        if ultima_ts is None:
+            checks.append(_check("telemetria", "Frescura telemetría", "sin-dato", None,
+                                 "tabla telemetria vacía"))
+        elif ota["en_curso"]:
+            checks.append(_check(
+                "telemetria", "Frescura telemetría", "info",
+                max(0, ahora - ultima_ts),
+                "OTA en curso: la pausa de telemetría es esperada (SPEC §16.7), "
+                "no es caída",
+            ))
+        else:
+            edad_t = max(0, ahora - ultima_ts)
+            if edad_t <= SALUD_TELEM_VERDE_MS:
+                est, det = "verde", None
+            elif edad_t <= SALUD_TELEM_WARN_MS:
+                est, det = "warn", "5-10 min sin telemetría"
+            else:
+                est, det = "critico", ">10 min sin telemetría (posible NODO_OFFLINE)"
+            checks.append(_check("telemetria", "Frescura telemetría", est, edad_t, det))
+
+        # --- placa: heap INTERNO (nunca el de PSRAM) y RSSI ------------------
+        telem_cols = _columnas_de(con, "telemetria")
+        internal = None
+        bloque = None
+        placa_ts = None
+        placa_device = None
+        fuente_heap = "telemetria"
+        if "internal_free_kb" in telem_cols and ultima_ts is not None:
+            fila = con.execute(
+                "SELECT ts_ms, device_id, internal_free_kb, internal_largest_block_kb "
+                "FROM telemetria WHERE internal_free_kb IS NOT NULL "
+                "ORDER BY ts_ms DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if fila is not None:
+                internal = fila["internal_free_kb"]
+                bloque = fila["internal_largest_block_kb"]
+                placa_ts = int(fila["ts_ms"])
+                placa_device = str(fila["device_id"])
+        if internal is None:
+            # Fallback: retains cacheados (heap_interno -> imagen_estado), o si
+            # tampoco hay datos -> 'sin-dato'. NULL NUNCA se muestra como 0.
+            retains = _leer_retains(con)
+            payload, device = _payload_retain_reciente(retains, "heap_interno")
+            fuente = "heap_interno"
+            if payload is None:
+                payload, device = _payload_retain_reciente(retains, "imagen_estado")
+                fuente = "imagen_estado"
+            if isinstance(payload, dict) and payload.get("internal_free_kb") is not None:
+                internal = payload.get("internal_free_kb")
+                bloque = payload.get("internal_largest_block_kb")
+                placa_ts = payload.get("ts_ms")
+                placa_device = device
+                fuente_heap = f"retain:{fuente}"
+        if internal is None:
+            checks.append(_check(
+                "heap_interno", "Heap interno placa", "sin-dato", None,
+                "sin telemetria.internal_free_kb ni retain heap_interno (F26-c1/a1)",
+            ))
+        else:
+            try:
+                libre = float(internal)
+            except (TypeError, ValueError):
+                libre = None
+            # UMBRAL VIVO del gate F26 (95/24), configurable por .env único —
+            # no la barra histórica de 120 (Kconfig default de la regla 2), que
+            # marcaba 'warn' espurio con la placa sana (hallazgo F26-c3).
+            verde_kb = _env_int("AULASENSE_HEAP_INT_VERDE_KB", SALUD_HEAP_VERDE_KB_DEFECTO)
+            bloque_verde_kb = _env_int(
+                "AULASENSE_HEAP_BLOQUE_VERDE_KB", SALUD_HEAP_BLOQUE_VERDE_KB_DEFECTO
+            )
+            try:
+                bloque_v = float(bloque) if bloque is not None else None
+            except (TypeError, ValueError):
+                bloque_v = None
+            if libre is None:
+                checks.append(_check("heap_interno", "Heap interno placa", "sin-dato"))
+            elif libre < SALUD_HEAP_CRITICO_KB:
+                checks.append(_check(
+                    "heap_interno", "Heap interno placa", "critico", libre,
+                    f"<{SALUD_HEAP_CRITICO_KB} KB: gate de captura F26 con margen mínimo",
+                ))
+            elif libre >= verde_kb and (bloque_v is None or bloque_v >= bloque_verde_kb):
+                checks.append(_check(
+                    "heap_interno", "Heap interno placa", "verde", libre,
+                    f"umbral vivo gate F26: ≥{verde_kb}/{bloque_verde_kb} KB "
+                    "(README parche §14; SPEC §16.7)",
+                ))
+            elif bloque_v is not None and bloque_v < bloque_verde_kb:
+                checks.append(_check(
+                    "heap_interno", "Heap interno placa", "warn", libre,
+                    f"mayor bloque {bloque_v:.0f} < {bloque_verde_kb} KB (gate F26)",
+                ))
+            else:
+                checks.append(_check(
+                    "heap_interno", "Heap interno placa", "warn", libre,
+                    f"<{verde_kb} KB: el gate de captura puede desactivarse",
+                ))
+        # RSSI (última telemetría con valor).
+        rssi = None
+        if ultima_ts is not None:
+            fila = con.execute(
+                "SELECT wifi_rssi_dbm FROM telemetria WHERE wifi_rssi_dbm IS NOT NULL "
+                "ORDER BY ts_ms DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if fila is not None:
+                rssi = fila["wifi_rssi_dbm"]
+        if rssi is None:
+            checks.append(_check("rssi", "Wi-Fi RSSI", "sin-dato", None))
+        elif int(rssi) >= SALUD_RSSI_WARN_DBM:
+            checks.append(_check("rssi", "Wi-Fi RSSI", "verde", int(rssi)))
+        else:
+            checks.append(_check("rssi", "Wi-Fi RSSI", "warn", int(rssi),
+                                 f"< {SALUD_RSSI_WARN_DBM} dBm"))
+
+        # --- colas visión + decisión -----------------------------------------
+        conteos_vision = _conteos_cola(con, "vision_estado")
+        est, det = _check_cola(con, conteos_vision)
+        checks.append(_check("cola_vision", "Cola visión", est, conteos_vision, det))
+        conteos_decision = _conteos_cola(con, "decision_estado")
+        est_d, det_d = _check_cola(con, conteos_decision)
+        checks.append(_check("cola_decision", "Cola decisión (Clef)", est_d,
+                             conteos_decision, det_d))
+
+        # --- consumo del día (ventanas móviles) ------------------------------
+        tope_vision_dia = _env_int("AULASENSE_VISION_MAX_DIA", 120)
+        tope_vision_hora = _env_int("AULASENSE_VISION_MAX_HORA", 20)
+        usado_vision = _uso_ventana(con, ahora)
+        est_c, det_c = _check_consumo(usado_vision, tope_vision_dia, tope_vision_hora)
+        checks.append(_check("consumo_vision", "Consumo visión (día)", est_c,
+                             usado_vision, det_c))
+        tope_clef_dia = _env_int("AULASENSE_CLEF_MAX_DIA", 120)
+        tope_clef_hora = _env_int("AULASENSE_CLEF_MAX_HORA", 20)
+        usado_clef = _uso_clef(con, ahora)
+        est_k, det_k = _check_consumo(usado_clef, tope_clef_dia, tope_clef_hora)
+        checks.append(_check("consumo_clef", "Consumo Clef (día)", est_k, usado_clef,
+                             det_k))
+
+        # --- disco -------------------------------------------------------------
+        disco = _lectura_disco()
+        pct = disco.get("usado_pct")
+        if pct is None:
+            checks.append(_check("disco", "Disco", "sin-dato", disco,
+                                 str(disco.get("error") or "sin medición")))
+        elif pct >= SALUD_DISCO_CRITICO_PCT:
+            checks.append(_check("disco", "Disco", "critico", pct,
+                                 f"≥{SALUD_DISCO_CRITICO_PCT:.0f} % usado"))
+        elif pct >= SALUD_DISCO_WARN_PCT:
+            checks.append(_check("disco", "Disco", "warn", pct,
+                                 f"≥{SALUD_DISCO_WARN_PCT:.0f} % usado "
+                                 "(la ingesta deriva SISTEMA_DISCO_WARN)"))
+        else:
+            checks.append(_check("disco", "Disco", "verde", pct))
+
+        # --- túneles (archivo publicado por el verbo salud de F26-b) ----------
+        tuneles = _lectura_tuneles(ahora)
+        checks.append(_check("tuneles", "Túneles WSL→VPS", tuneles["estado"],
+                             tuneles.get("tuneles") or None, tuneles.get("motivo")))
+
+        # --- OTA (informativo; SUPRIME la alarma de frescura si downloading) --
+        checks.append(_check(
+            "ota", "OTA", "info" if ota["estado"] else "sin-dato", ota["estado"],
+            (
+                "OTA en curso: agujero de telemetría esperado (§16.7)"
+                if ota["en_curso"]
+                else f"fuente: {ota['fuente']}"
+            ),
+        ))
+
+        # --- tarjetas del panel ------------------------------------------------
+        retains = _leer_retains(con)
+        payload_ie, device_ie = _payload_retain_reciente(retains, "imagen_estado")
+        eventos_camara: list[dict[str, Any]] = []
+        if _tabla_existe(con, "config_eventos"):
+            try:
+                marcas = ",".join("?" for _ in CFG_TIPOS_CAMARA)
+                eventos_camara = _filas(
+                    con,
+                    "SELECT ts_ms, device_id, tipo, detalle FROM config_eventos "
+                    f"WHERE tipo IN ({marcas}) "
+                    "ORDER BY ts_ms DESC, id DESC LIMIT 10",
+                    tuple(CFG_TIPOS_CAMARA),
+                )
+            except sqlite3.Error:
+                eventos_camara = []
+        camara = {
+            # EXPLÍCITAMENTE config_eventos, NUNCA la tabla eventos (errata R-F26-14).
+            "fuente": (
+                "imagen_estado" if payload_ie is not None
+                else ("config_eventos" if eventos_camara else "sin-dato")
+            ),
+            "device_id": device_ie,
+            "estado": payload_ie,
+            "eventos_recentes": eventos_camara,
+        }
+
+        decision_aula: dict[str, Any] = {"disponible": False}
+        if conteos_decision is not None:
+            por_etiqueta = {
+                str(f["decision_etiqueta"]): int(f["n"])
+                for f in con.execute(
+                    "SELECT decision_etiqueta, COUNT(*) AS n FROM imagenes "
+                    "WHERE decision_estado = 'hecho' AND decision_etiqueta IS NOT NULL "
+                    "GROUP BY decision_etiqueta"
+                )
+            }
+            revision = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM imagenes WHERE decision_estado = 'hecho' "
+                    "AND decision_cubre IS NOT NULL AND decision_cubre < ?",
+                    (SALUD_CUBRE_REVISION,),
+                ).fetchone()[0]
+                or 0
+            )
+            recientes = [
+                {
+                    "imagen_id": int(f["id"]),
+                    "decision_etiqueta": f["decision_etiqueta"],
+                    "decision_confianza": f["decision_confianza"],
+                    "decision_actividad": f["decision_actividad"],
+                    "decision_cubre": f["decision_cubre"],
+                    "decision_modelo": f["decision_modelo"],
+                    "ts_ms": f["decision_ts_ms"],
+                    # badge derivado (SPEC §16.5): cubre < 0.7, NO un estado nuevo
+                    "revision": (
+                        f["decision_cubre"] is not None
+                        and float(f["decision_cubre"]) < SALUD_CUBRE_REVISION
+                    ),
+                }
+                for f in con.execute(
+                    "SELECT id, decision_etiqueta, decision_confianza, "
+                    "decision_actividad, decision_cubre, decision_modelo, "
+                    "decision_ts_ms FROM imagenes WHERE decision_estado = 'hecho' "
+                    "ORDER BY decision_ts_ms DESC, id DESC LIMIT 8"
+                )
+            ]
+            decision_aula = {
+                "disponible": True,
+                "total_imagenes": sum(conteos_decision.values()),
+                "por_estado": conteos_decision,
+                "por_etiqueta": por_etiqueta,
+                "revision_humana": revision,
+                "recientes": recientes,
+            }
+
+        fila_psram = None
+        if ultima_ts is not None:
+            fila_psram = con.execute(
+                "SELECT device_id, ts_ms, free_memory_kb, minimum_free_memory_kb, "
+                "wifi_rssi_dbm FROM telemetria ORDER BY ts_ms DESC, id DESC LIMIT 1"
+            ).fetchone()
+        placa = {
+            "fuente": fuente_heap if internal is not None else "sin-dato",
+            "device_id": placa_device or (
+                str(fila_psram["device_id"]) if fila_psram is not None else None
+            ),
+            "ts_ms": placa_ts if placa_ts is not None else (
+                int(fila_psram["ts_ms"]) if fila_psram is not None else None
+            ),
+            "internal_free_kb": internal,
+            "internal_largest_block_kb": bloque,
+            "free_memory_kb": (
+                fila_psram["free_memory_kb"] if fila_psram is not None else None
+            ),
+            "wifi_rssi_dbm": rssi,
+            "free_memory_nota": (
+                "free_memory_kb es PSRAM-inclusive (diagnósticos): NO confundir "
+                "con internal_free_kb (SPEC §16.3)"
+            ),
+        }
+
+        ultima_actividad = con.execute(
+            "SELECT MAX(ts_ms) FROM ("
+            " SELECT MAX(ts_ms) AS ts_ms FROM evaluaciones"
+            " UNION ALL SELECT MAX(ts_ms) FROM eventos"
+            " UNION ALL SELECT MAX(ts_ms) FROM telemetria)"
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+    estado_global = "verde"
+    for chk in checks:
+        estado_global = _mas_severo(estado_global, chk["estado"])
+    return {
+        "ahora_ms": ahora,
+        "estado_global": estado_global,
+        "checks": checks,
+        "ultima_actividad_ms": (
+            int(ultima_actividad) if ultima_actividad is not None else None
+        ),
+        "ota_en_curso": bool(ota["en_curso"]),
+        "camara": camara,
+        "decision_aula": decision_aula,
+        "placa": placa,
+        "colas": {"vision": conteos_vision, "decision": conteos_decision},
+        "consumo": {
+            "vision": usado_vision,
+            "clef": usado_clef,
+            "topes": {
+                "vision_dia": tope_vision_dia,
+                "vision_hora": tope_vision_hora,
+                "clef_dia": tope_clef_dia,
+                "clef_hora": tope_clef_hora,
+            },
+        },
+        "disco": disco,
+        "tuneles": tuneles,
+        "nota": _NOTA_HONESTA_SALUD,
+    }
+
+
+@app.get("/salud", include_in_schema=False)
+def salud_pagina() -> FileResponse:
+    """Panel /salud (estático bajo sesión; SPEC §16.7). Lee /api/salud."""
+    return FileResponse(STATIC_DIR / "salud.html", media_type="text/html")
+
+
 # --- Panel de validación F3: sesiones + ventanas de ground truth manual -----
 
 
@@ -1490,6 +2373,8 @@ def api_imagenes(
     texto: str | None = None,
     canal: str | None = None,
     vision_estado: str | None = None,
+    decision_estado: str | None = None,
+    decision: int | None = None,
     con_ia: int | None = None,
 ) -> dict[str, Any]:
     """Metadata paginada de imágenes de evidencia con búsqueda por descripción.
@@ -1537,6 +2422,17 @@ def api_imagenes(
                 status_code=422, detail="vision_estado no está en el CHECK del esquema"
             )
     con_ia_activo = con_ia is not None and int(con_ia) != 0
+    # F26 (SPEC §16.6): la decisión de aula acompaña a la metadata de galería
+    # de forma OPT-IN (``decision=1``) para no romper el contrato F25/F24 que
+    # fijan los tests previos; el filtro ``decision_estado`` también las trae.
+    decision_activo = decision is not None and int(decision) != 0
+    decision_filtro: str | None = None
+    if decision_estado is not None and decision_estado.strip() != "":
+        decision_filtro = decision_estado.strip().lower()
+        if decision_filtro not in ESTADOS_DECISION:
+            raise HTTPException(
+                status_code=422, detail="decision_estado no está en el CHECK del esquema"
+            )
 
     condiciones: list[str] = []
     params: list[Any] = []
@@ -1569,9 +2465,27 @@ def api_imagenes(
     where = f" WHERE {' AND '.join(condiciones)}" if condiciones else ""
     con = _conectar()
     try:
+        # Columnas decision_* SOLO si la migración F26 existe ya en esta BD
+        # (debido respaldo en _conectar y canónica de la ingesta F26-a1).
+        columnas = _columnas_de(con, "imagenes")
+        extra = (
+            [c for c in COLUMNAS_DECISION_PANEL if c in columnas]
+            if (decision_activo or decision_filtro)
+            else []
+        )
+        seleccion = COLS_IMAGEN_METADATA + (", " + ", ".join(extra) if extra else "")
+        if decision_filtro and "decision_estado" not in columnas:
+            raise HTTPException(
+                status_code=422,
+                detail="decision_estado indisponible (esquema F26 no migrado)",
+            )
+        if decision_filtro:
+            condiciones.append("decision_estado = ?")
+            params.append(decision_filtro)
+            where = f" WHERE {' AND '.join(condiciones)}"
         filas = _filas(
             con,
-            f"SELECT {COLS_IMAGEN_METADATA} FROM imagenes{where} "
+            f"SELECT {seleccion} FROM imagenes{where} "
             "ORDER BY ts_ms DESC, id DESC LIMIT ?",
             (*params, lim),
         )
@@ -1582,6 +2496,8 @@ def api_imagenes(
         "q": busqueda or None,
         "canal": canal_filtro,
         "vision_estado": estado_filtro,
+        "decision_estado": decision_filtro,
+        "decision": decision_activo,
         "con_ia": con_ia_activo,
         "filas": filas,
     }

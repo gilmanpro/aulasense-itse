@@ -37,6 +37,18 @@ fila con ``canal='mqtt'`` y ``vision_estado='pendiente'``. Todo fallo es descart
 + WARNING sin descartar el mensaje. El nodo nunca lo envia (solo los fire-tests
 etiquetados) y MQTT 3.1.1 no permite saber por mensaje que usuario publico.
 
+F26 (SPEC §16.4/§16.5/§16.7, D-F26-2/5/8): se suscriben los retains nuevos
+``ota``/``imagen_estado``/``heap_interno`` (la migracion ``migrar_esquema_f26``
+corre al abrir el writer, antes que cualquier suscripcion). El retain ``ota`` y
+``imagen_estado`` se cachean por device y se publican como JSON en
+``estado_sistema.detalle`` (leo barato para /api/salud); ``heap_interno`` rellena
+las columnas ``telemetria.internal_*`` del proximo resultado de diagnosticos.
+El ciclo del ``PollerDiagnosticos`` UPSERT-ea la fila unica ``estado_sistema``
+con su propio ``is_connected()`` (heartbeat, cero proceso nuevo) y deriva los
+eventos SISTEMA_* en el borde de cambio. ``publicar_comando_ota`` emite el
+comando OTA por el topic propio ``{prefijo}/{device_id}/aulasense_ota``
+(D-F26-2) con el mismo patron de publicacion del poller.
+
 Secretos: MQTT_PASS solo se pasa a paho; jamas se registra en logs. El token del
 receptor no se imprime (solo su longitud si hiciera falta diagnosticar).
 """
@@ -53,6 +65,8 @@ import json
 import logging
 import os
 import queue
+import re
+import shutil
 import sqlite3
 import sys
 import threading
@@ -101,6 +115,12 @@ SUFIJOS_SUSCRITOS: tuple[str, ...] = (
     "aulasense_temp",
     "aulasense_config",
     "image",
+    # F26 (SPEC §16.4): retains nuevos del parche. ``aulasense_ota`` NO se
+    # suscribe: es el topic de comando servidor->placa que la ingesta PUBLICA
+    # (D-F26-2, ``publicar_comando_ota``).
+    "ota",
+    "imagen_estado",
+    "heap_interno",
 )
 
 # Campos del comando read_diagnostics (metricas edge C12, SPEC §6).
@@ -145,7 +165,27 @@ CAMPOS_TELEMETRIA: dict[str, str] = {
     "threshold": "real",
     "traffic_generator_mode": "str",
     "die_temp_c": "real",
+    # F26 (D-F26-5): heap INTERNO. Vienen del retain ``heap_interno`` (via la
+    # cache del writer) o, si el firmware los incluyera directo, del payload.
+    # Nulos cuando no hay dato: backwards-compat con filas historicas.
+    "internal_free_kb": "int",
+    "internal_largest_block_kb": "int",
 }
+
+# --- F26: constantes de monitoreo (SPEC §16.7 / D-F26-8) --------------------
+# Umbral de "telemetria stale" del heartbeat: critico >10 min (3 sondeos x 30 s
+# de margen amplio). La antorchas del dashboard usan <=5/10 min; aqui solo se
+# DERIVA el borde de cambio (patron NODO_ONLINE/OFFLINE).
+STALE_TELEMETRIA_UMBRAL_MS = 600_000
+# Fraccion de uso del disco de datos que dispara SISTEMA_DISCO_WARN (>=85 %).
+DISCO_WARN_FRACCION = 0.85
+# Topic (sufijo) propio del comando OTA servidor->placa (D-F26-2).
+SUFIJO_COMANDO_OTA = "aulasense_ota"
+ACCIONES_OTA: tuple[str, ...] = ("check", "apply")
+# Claves del JSON de estado_sistema.detalle (retains cacheados por device).
+RETENIDOS_ESTADO_CLAVES: tuple[str, ...] = ("ota", "imagen_estado", "heap_interno")
+# device_id contractual (mismo patron que ``esquema._ID_HEX16``: 16 hex minus).
+_RE_DEVICE_HEX16 = re.compile(r"^[0-9a-f]{16}$")
 
 CSV_CABECERA: tuple[str, ...] = (
     "device_id",
@@ -267,8 +307,18 @@ class MqttConfig:
 
     @classmethod
     def from_env(cls, dotenv_path: str | Path | None = None) -> "MqttConfig":
-        ruta = Path(dotenv_path) if dotenv_path is not None else _DOTENV_DEFECTO
-        # Sin ``override``: las variables reales del entorno mandan sobre el .env.
+        # F26 (D-F26-6): el .env UNICO es la RAIZ del repo (``aulasense/.env``).
+        # La ingesta jamas leyó ni lee la carpeta ``claves/`` — asi se mantiene:
+        # la raiz es la unica fuente para estos loaders. El seam
+        # ``AULASENSE_ENV_RAIZ`` existe solo para que los tests aíslen la ruta
+        # (mismo nombre de variable que auth.py y cliente.py; conftest lo apunta
+        # a un tmp). Sin ``override``: las variables reales del entorno
+        # (p. ej. systemd EnvironmentFile) mandan.
+        if dotenv_path is not None:
+            ruta = Path(dotenv_path)
+        else:
+            seam = os.getenv("AULASENSE_ENV_RAIZ", "").strip()
+            ruta = Path(seam) if seam else _DOTENV_DEFECTO
         load_dotenv(ruta)
         raw_port = os.getenv("MQTT_PORT", "1883").strip() or "1883"
         try:
@@ -382,9 +432,30 @@ class IngestaWriter:
         self._conn.executescript(esquema.ESQUEMA_SQL)
         # SPEC §8.2: la migracion F25 la aplica SOLO la ingesta (writer unico).
         self._migracion_f25 = esquema.migrar_esquema_f25(self._conn)
+        # SPEC §16.5: la migracion F26 idem (decision_*, clef_uso,
+        # estado_sistema, telemetria.internal_*, enum config_eventos).
+        self._migracion_f26 = esquema.migrar_esquema_f26(self._conn)
         self._conn.commit()
         # Rate-limit de imagenes MQTT por device (epoca ms de la ultima aceptada).
         self._ultima_imagen_ms: dict[str, int] = {}
+        # --- F26: caches de retains y bordes de monitoreo (SPEC §16.4/§16.7) --
+        # Ultimo retain por device: {"ota": {...}, "imagen_estado": {...},
+        # "heap_interno": {...}}; se serializa a estado_sistema.detalle.
+        self._retenidos: dict[str, dict[str, Any]] = {
+            clave: {} for clave in RETENIDOS_ESTADO_CLAVES
+        }
+        # (internal_free_kb, internal_largest_block_kb) por device: rellena las
+        # columnas nuevas de telemetria en el proximo commands_result (D-F26-5).
+        self._heap_cache: dict[str, tuple[Any, Any]] = {}
+        # Bordes de cambio de los eventos SISTEMA_* (None = sin observar ainda:
+        # NUNCA dispara en el primer ciclo, para no spam de arranque).
+        self._prev_mqtt: bool | None = None
+        self._prev_stale: bool | None = None
+        self._prev_disco: bool | None = None
+        # Si la DB (ya migrada) tiene las columnas internal_*: en tests de BD
+        # parciales podrian faltar; se comprueba una vez.
+        cols_telem = esquema.columnas_tabla(self._conn, "telemetria") or set()
+        self._telem_internal_ok = "internal_free_kb" in cols_telem
         # Directorio base de datos (perezoso: AULASENSE_DATOS_DIR o padre de la DB).
         self._datos_dir_cache: Path | None = None
 
@@ -952,6 +1023,17 @@ class IngestaWriter:
             return self._procesar_config(device_id, datos, estado, ahora)
         if kind == "commands_result":
             return self._procesar_commands_result(device_id, datos, estado, ahora)
+        if kind == "ota":
+            return self._procesar_retener(device_id, kind, datos, estado, ahora)
+        if kind == "imagen_estado":
+            # Ademas del cache, sus internal_* alimentan el cache de telemetria
+            # (SPEC §16.3: el heap llega por ``heap_interno`` Y por ``imagen_estado``).
+            accion = self._procesar_retener(device_id, kind, datos, estado, ahora)
+            self._actualizar_cache_heap(device_id, datos)
+            return accion
+        if kind == "heap_interno":
+            self._actualizar_cache_heap(device_id, datos)
+            return self._procesar_retener(device_id, kind, datos, estado, ahora)
         # sensing/wifi: se validan y se aceptan, pero no tienen tabla destino.
         return f"{kind}_aceptado"
 
@@ -1122,6 +1204,162 @@ class IngestaWriter:
         self._upsert_last_seen(device_id, ahora)
         return "config_evento"
 
+    # -- F26: retains de estado (SPEC §16.4) --------------------------------
+
+    def _procesar_retener(
+        self,
+        device_id: str,
+        kind: str,
+        datos: dict[str, Any],
+        estado: EstadoDispositivo,
+        ahora: int,
+    ) -> str:
+        """Retain ``ota``/``imagen_estado``/``heap_interno`` -> cache + JSON.
+
+        No hay tabla dedicada (SPEC §16.5): el ultimo valor por device vive en
+        ``estado_sistema.detalle`` (JSON) y lo refresca tanto el retain recibido
+        como el heartbeat. Solo se toca ``detalle``: la FRESCURA del heartbeat
+        (``ts_ms``) sigue siendo propiedad del ciclo del poller, para que un
+        retain tardio no simule una ingesta viva. Bajo ``self._lock``.
+        """
+        self._retenidos.setdefault(kind, {})[device_id] = datos
+        self._conn.execute(
+            "INSERT INTO estado_sistema (id, ts_ms, mqtt_conectado, ingesta_activa, detalle) "
+            "VALUES (1, ?, 0, 1, ?) "
+            "ON CONFLICT(id) DO UPDATE SET detalle = excluded.detalle",
+            (int(ahora), self._detalle_estado_json()),
+        )
+        estado.last_seen_ms = ahora
+        return f"{kind}_retenido"
+
+    def _detalle_estado_json(self) -> str:
+        return json.dumps(self._retenidos, ensure_ascii=False, default=str)
+
+    def _actualizar_cache_heap(self, device_id: str, datos: dict[str, Any]) -> None:
+        """Cachea el ultimo heap INTERNO del device (D-F26-5).
+
+        Fuente: retain ``heap_interno`` y los campos ``internal_*`` de
+        ``imagen_estado``. NUNCA ``free_memory_kb`` de diagnosticos (PSRAM).
+        """
+        libre = datos.get("internal_free_kb")
+        bloque = datos.get("internal_largest_block_kb")
+        if libre is None and bloque is None:
+            return
+        previo = self._heap_cache.get(device_id, (None, None))
+        self._heap_cache[device_id] = (
+            libre if libre is not None else previo[0],
+            bloque if bloque is not None else previo[1],
+        )
+
+    def _ota_en_descarga(self) -> bool:
+        """Anti-falsa-alarma (SPEC §16.7): algun retain ``ota`` descargando."""
+        return any(
+            isinstance(payload, dict) and payload.get("estado") == "downloading"
+            for payload in self._retenidos.get("ota", {}).values()
+        )
+
+    def _device_sistema(self) -> str:
+        """Device para los eventos SISTEMA_* derivados: el mas reciente o 'sistema'."""
+        fila = self._conn.execute(
+            "SELECT device_id FROM dispositivos ORDER BY last_seen_ms DESC LIMIT 1"
+        ).fetchone()
+        return str(fila[0]) if fila is not None else "sistema"
+
+    def _insertar_config_evento(
+        self, device_id: str, ts_ms: int, tipo: str, detalle: str | None = None
+    ) -> None:
+        """Fila ``config_eventos`` de un evento DERIVADO por la ingesta.
+
+        Mismo contrato que los de placa (origen real, detalle <=120 chars, sin
+        secretos): la tabla es la fuente que lee el panel /salud de F26-a2.
+        """
+        corta = None if detalle is None else str(detalle)[:120]
+        self._conn.execute(
+            "INSERT INTO config_eventos (device_id, ts_ms, tipo, detalle, origen) "
+            "VALUES (?, ?, ?, ?, 'real')",
+            (device_id, int(ts_ms), tipo, corta),
+        )
+
+    # -- F26: heartbeat estado_sistema (D-F26-8, writer unico) --------------
+
+    def escribir_heartbeat(
+        self, mqtt_conectado: bool, ahora: int | None = None
+    ) -> dict[str, Any]:
+        """UPSERT de la fila unica ``estado_sistema`` (ts_ms, mqtt_conectado,
+        ingesta_activa, detalle JSON) + derivacion de eventos SISTEMA_*.
+
+        Lo invoca el ciclo del ``PollerDiagnosticos`` (~30 s) con su propio
+        ``is_connected()``: cero proceso/tarea nueva (SPEC §16.5/§16.7). Nunca
+        lanza: los fallos de SQLite se registran y el poller sigue sondeando.
+        Devuelve el resumen (para logs/tests).
+        """
+        ahora_ms_val = int(ahora) if ahora is not None else ahora_ms()
+        conectado = bool(mqtt_conectado)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO estado_sistema "
+                    "(id, ts_ms, mqtt_conectado, ingesta_activa, detalle) "
+                    "VALUES (1, ?, ?, 1, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET "
+                    " ts_ms=excluded.ts_ms, mqtt_conectado=excluded.mqtt_conectado, "
+                    " ingesta_activa=1, detalle=excluded.detalle",
+                    (ahora_ms_val, 1 if conectado else 0, self._detalle_estado_json()),
+                )
+                derivados = self._derivar_eventos_sistema(conectado, ahora_ms_val)
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                self._conn.rollback()
+                LOG.exception("no se pudo escribir heartbeat estado_sistema: %s", exc)
+                return {"ok": False, "error": str(exc), "derivados": []}
+        return {"ok": True, "ts_ms": ahora_ms_val, "derivados": derivados}
+
+    def _derivar_eventos_sistema(self, conectado: bool, ahora: int) -> list[str]:
+        """Bordes de cambio SISTEMA_* (patron NODO_ONLINE/OFFLINE :1024-1031).
+
+        El PRIMER ciclo solo toma linea base (``prev is None``): sin el broker
+        aun en conexion, un CAIDO de arranque seria ruido. Bajo ``self._lock``.
+        """
+        derivados: list[str] = []
+        dispositivo = self._device_sistema()
+
+        if self._prev_mqtt is not None and self._prev_mqtt != conectado:
+            tipo = "SISTEMA_MQTT_RECUPERADO" if conectado else "SISTEMA_MQTT_CAIDO"
+            self._insertar_config_evento(
+                dispositivo, ahora, tipo, f"mqtt_conectado={1 if conectado else 0}"
+            )
+            derivados.append(tipo)
+        self._prev_mqtt = conectado
+
+        fila = self._conn.execute("SELECT MAX(ts_ms) FROM telemetria").fetchone()
+        ultimo_ts = int(fila[0]) if fila is not None and fila[0] is not None else None
+        stale = ultimo_ts is not None and (ahora - ultimo_ts) > STALE_TELEMETRIA_UMBRAL_MS
+        if stale and self._ota_en_descarga():
+            # SPEC §16.7: el "agujero" de telemetria durante una OTA es ESPERADO.
+            stale = False
+        if stale and self._prev_stale is not True:
+            self._insertar_config_evento(
+                dispositivo, ahora, "SISTEMA_TELEMETRIA_STALE",
+                f"telemetria_sin_datos_ms={ahora - int(ultimo_ts)}",
+            )
+            derivados.append("SISTEMA_TELEMETRIA_STALE")
+        self._prev_stale = stale
+
+        try:
+            uso = shutil.disk_usage(self.datos_dir)
+            fraccion = (uso.used / uso.total) if uso.total else None
+        except OSError:  # disco no consultable: sin warn, nunca romper heartbeat
+            fraccion = None
+        warn = fraccion is not None and fraccion >= DISCO_WARN_FRACCION
+        if warn and self._prev_disco is not True:
+            self._insertar_config_evento(
+                dispositivo, ahora, "SISTEMA_DISCO_WARN",
+                f"disco_uso_pct={int(fraccion * 100)}",
+            )
+            derivados.append("SISTEMA_DISCO_WARN")
+        self._prev_disco = warn
+        return derivados
+
     def _procesar_commands_result(
         self,
         device_id: str,
@@ -1138,6 +1376,18 @@ class IngestaWriter:
                 valor = _coaccionar(data[campo], tipo)
                 if valor is not None:
                     valores[campo] = valor
+
+        # F26 (D-F26-5): si el read_diagnostics no traia internal_*, se rellenan
+        # con el ultimo retain ``heap_interno``/``imagen_estado`` cacheado por
+        # device. Sin cache, la fila queda con NULL (backwards-compat).
+        if self._telem_internal_ok and valores:
+            cache = self._heap_cache.get(device_id)
+            if cache is not None:
+                for columna, valor in zip(
+                    ("internal_free_kb", "internal_largest_block_kb"), cache
+                ):
+                    if columna not in valores and valor is not None:
+                        valores[columna] = valor
 
         if not valores:
             # ``mqtt`` (objeto anidado) no tiene columna: sin metricas no se inserta.
@@ -1412,10 +1662,22 @@ class PollerDiagnosticos(threading.Thread):
             self.ciclo()
 
     def ciclo(self) -> None:
-        """Un ciclo de sondeo; nunca lanza (tolera cero devices / broker caido)."""
+        """Un ciclo: heartbeat ``estado_sistema`` + sondeo read_diagnostics.
+
+        F26 (D-F26-8): el heartbeat es el PRIMER paso y se escribe incluso con
+        el broker caido — es justamente el caso que /api/salud necesita ver.
+        La ingesta es el writer unico: el UPSERT usa su propia conexion SQLite,
+        cero proceso/tarea nueva (SPEC §16.5). Nunca lanza.
+        """
         try:
-            if not self._cliente.is_connected():
-                return
+            conectado = bool(self._cliente.is_connected())
+        except Exception:  # pragma: no cover - cliente roto no tumba el ciclo
+            LOG.exception("is_connected() fallo; el ciclo asume desconectado")
+            conectado = False
+        self._writer.escribir_heartbeat(conectado)
+        if not conectado:
+            return
+        try:
             devices = self._writer.dispositivos_conocidos()
         except Exception:  # pragma: no cover - red de seguridad del hilo
             LOG.exception("fallo preparando read_diagnostics")
@@ -1441,6 +1703,58 @@ class PollerDiagnosticos(threading.Thread):
 
     def parar(self) -> None:
         self._parar.set()
+
+
+# --- F26: comando OTA servidor->placa (D-F26-2, SPEC §16.1/§16.4) -----------
+
+
+def publicar_comando_ota(
+    cliente: "mqtt.Client",
+    device_id: str,
+    action: str,
+    topic_prefix: str | None = None,
+    ahora: int | None = None,
+) -> dict[str, Any]:
+    """Publica el comando OTA por el topic propio ``{prefijo}/{device}/{aulasense_ota}``.
+
+    Mismo patron de publicacion que ``PollerDiagnosticos.ciclo`` (JSON, QoS 0,
+    por la conexion ya establecida): el envelope es
+    ``{"command_id": "ota-<ts>", "command": "aulasense_ota",
+    "action": "check"|"apply"}``. D-F26-2: el topic NO es ``commands/request``
+    porque el parser del vendor rechaza comandos desconocidos y parchear el
+    vendor esta prohibido; ``app_ota.c`` (F26-c1) suscribe este sufijo con la
+    API publica del transporte. Sin respuesta sincrona: el estado llega por el
+    retain ``ota`` + eventos OTA_*. No imprime secretos (el payload no los
+    lleva). Devuelve el registro auditable {command_id, topic, payload, qos}.
+    """
+    if action not in ACCIONES_OTA:
+        raise ValueError(
+            "action debe ser una de " + "|".join(ACCIONES_OTA) + f" (viene {action!r})"
+        )
+    if _RE_DEVICE_HEX16.fullmatch(device_id or "") is None:
+        raise ValueError("device_id debe ser 16 hex lowercase")
+    prefijo = (topic_prefix or esquema.TOPIC_PREFIX_DEFECTO).rstrip("/")
+    marca = int(ahora) if ahora is not None else ahora_ms()
+    command_id = f"ota-{marca}"
+    payload = {
+        "command_id": command_id,
+        "command": SUFIJO_COMANDO_OTA,
+        "action": action,
+    }
+    topic = f"{prefijo}/{device_id}/{SUFIJO_COMANDO_OTA}"
+    # F26-g1 interop: COMPACTO (json.dumps con separators=(",",":") sin espacios) — el parser embebido de
+    # app_ota.c busca el patron exacto "command":"aulasense_ota" (contrato SPEC §16.1 muestra
+    # el envelope compacto). Con los separadores default de json.dumps (": " con espacio) la
+    # placa ignoraba el comando. Sin secretos en el payload.
+    cuerpo = json.dumps(payload, separators=(",", ":"))
+    cliente.publish(topic, cuerpo, qos=0)
+    LOG.info(
+        "comando OTA publicado topic=%s command_id=%s action=%s",
+        topic,
+        command_id,
+        action,
+    )
+    return {"command_id": command_id, "topic": topic, "payload": payload, "qos": 0}
 
 
 # --- CLI -------------------------------------------------------------------

@@ -40,6 +40,9 @@ server/datos/*.db
 server/datos/*.db-wal
 server/datos/*.db-shm
 server/datos/export_*.csv
+# F26: estado volatile de tuneles (lo escribe `tools/wsl_aulasense.ps1 salud` en cada
+# ejecucion; regenerable, igual que los .db de arriba — NUNCA commitear el snapshot)
+server/datos/tuneles_estado.json
 # F24: imágenes de evidencia = datos personales, NUNCA commitear (privacidad acotada local-only)
 server/datos/imagenes/
 # F25: intermedios de video (escenas/audio regenerables, pesan); el mp4 final vive en docs/
@@ -48,3 +51,5 @@ assets/video/
 # Sistema
 .DS_Store
 Thumbs.db
+# Bloqueos/temorales de Office (lección limpieza: ~$PRESENTACION_VISUAL.pptx no debe trackearse)
+~$*

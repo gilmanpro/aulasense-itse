@@ -29,8 +29,9 @@ Type=simple
 User=aulasense
 Group=aulasense
 WorkingDirectory=/home/aulasense/aulasense
-# DASHSCOPE_API_KEY SOLO por EnvironmentFile (claves/.env tiene prioridad para auth/IA,
-# regla 15); jamas por argv. El log del cliente nunca imprime la key (solo su tipo/prefijo).
+# DASHSCOPE_API_KEY SOLO por el EnvironmentFile = .env UNICO de la raiz (F26,
+# SPEC 16.8; auth/IA migradas ahi, regla 15); jamas por argv. El log del cliente
+# nunca imprime la key (solo su tipo/prefijo).
 EnvironmentFile=/home/aulasense/aulasense/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=AULASENSE_DB=/home/aulasense/aulasense-datos/aulasense.db

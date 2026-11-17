@@ -23,6 +23,11 @@
  * NO-reemplazable del transporte vendor) y HTTP :8001 queda como FALLBACK (N2). Norma N1: NUNCA
  * se abre otra conexión MQTT por imagen; se reutiliza el publisher del cliente nativo.
  *
+ * F26 (D-F26-5, SPEC §16.3): observabilidad real de la cámara — eventos `IMAGEN_INIT`
+ * y `CAMARA_ERROR` en todas las rutas que antes eran mudas, estado RETAIN `imagen_estado`
+ * re-publicado en cada conexión MQTT, gate de heap INTERNO sin latch (re-evaluado por onset,
+ * histéresis +20 KB), cola de onsets DROP-OLDEST de 4 slots y pausa de captura para OTA.
+ *
  * Comentarios en español, identificadores en inglés (regla del repo AulaSense).
  */
 #pragma once
@@ -73,6 +78,23 @@ void app_imagen_set_mqtt_publisher(app_imagen_publish_fn publish,
  */
 void app_imagen_set_mqtt_image(app_imagen_publish_topic_fn publish,
                                app_imagen_connected_fn connected, const char *topic_prefix);
+
+/**
+ * F26 (SPEC §16.3): registra el publicador del estado RETAIN `imagen_estado`. La funcion
+ * inyectada publica el JSON en `{topic_prefix}/{device_id}/imagen_estado` con retain=true
+ * (lambda del app sobre `publish_suffix("imagen_estado", payload, true)` en el MISMO
+ * transporte MQTT de Native). El modulo marca el snapshot como pendiente al cambiar el
+ * estado y en cada reconexion MQTT: el fallo de arranque ya no se pierde porque MQTT ainda
+ * no estuviera conectado (informe A §3.2). Sin publisher inyectado el modulo degrada a log.
+ */
+void app_imagen_set_state_publisher(app_imagen_publish_fn state_publish);
+
+/**
+ * F26 (SPEC §16.1): pausa/reanuda la captura para la descarga OTA. Pausar drena la cola de
+ * onsets y corta nuevos encolados; la foto es ACCESORIA — el evento motion sigue por MQTT.
+ * app_ota.c llama pausar(true) antes de la descarga y pausar(false) si aborta.
+ */
+void app_imagen_pausar(bool pausa);
 
 /**
  * Inicializa el módulo: cola de onsets en PSRAM, buffers JPEG en PSRAM, cámara OV3660

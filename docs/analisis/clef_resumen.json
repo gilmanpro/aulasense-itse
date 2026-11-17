@@ -1,0 +1,168 @@
+{
+  "actividad": {
+    "baja": 16,
+    "media": 1,
+    "ninguna": 43
+  },
+  "alcance": "imagenes.decision_* con origen='real' y decision_estado='hecho' (las 2 sinteticas ids 1-2 EXCLUIDAS por regla 10 — decisionadas en su dia por el CLI, que no filtra origen; sin edicion de BD)",
+  "confianza_media_global": 0.6481,
+  "costes_medidos": {
+    "clef_coste_usd": 0.0053,
+    "clef_fillas_exito0": 2,
+    "clef_tokens": 52517,
+    "clef_uso_filas_api": 62,
+    "clef_uso_filas_tope": 2,
+    "nota": "clef_uso audita solo el paso final de cada fila: la pata flash de las escaladas (~24+4 filas x ~700 tok) NO se suma => subestimacion ~5-10 % (coste real ~= 1.05-1.10x el registrado). Vision factura en Credits del Token Plan (sin USD por llamada). Cero promesas de coste sin medir (regla 16/E10).",
+    "vision_uso_dia": {
+      "llamadas": 26,
+      "tokens_in": 5616,
+      "tokens_out": 6564,
+      "tokens_total": 12180
+    },
+    "vision_uso_total": {
+      "llamadas": 76,
+      "tokens_in": 14040,
+      "tokens_out": 17035
+    }
+  },
+  "distribucion_taxonomia": {
+    "AGLOMERACION_OTRA": {
+      "calidad_media": null,
+      "conf_media": null,
+      "cubre_media": null,
+      "n": 0,
+      "pct": 0.0
+    },
+    "CIRCULACION": {
+      "calidad_media": 0.9057,
+      "conf_media": 0.0853,
+      "cubre_media": 0.6402,
+      "n": 1,
+      "pct": 1.6667
+    },
+    "IMAGEN_DEGRADADA": {
+      "calidad_media": 0.0666,
+      "conf_media": 0.6419,
+      "cubre_media": 0.5065,
+      "n": 45,
+      "pct": 75.0
+    },
+    "PERSONAS_SENTADAS": {
+      "calidad_media": null,
+      "conf_media": null,
+      "cubre_media": null,
+      "n": 0,
+      "pct": 0.0
+    },
+    "PRESENTACION_AL_FRENTE": {
+      "calidad_media": null,
+      "conf_media": null,
+      "cubre_media": null,
+      "n": 0,
+      "pct": 0.0
+    },
+    "SIN_PERSONAS_VISIBLES": {
+      "calidad_media": 0.5416,
+      "conf_media": 0.7082,
+      "cubre_media": 0.5248,
+      "n": 14,
+      "pct": 23.3333
+    }
+  },
+  "estado_fotos_reales": {
+    "decision_estado": {
+      "hecho": 60,
+      "pendiente": 21
+    },
+    "nota": "las 20 vision='error' (JPEG irrecoverable anteriores al FixF) NO entran a la cola Clef por diseno del CLI: decision='pendiente' = no-expuesta, documentada como degradadas QC (no editables, regla 10); id 56 = FIRE-TEST 'omitido'",
+    "total": 81,
+    "vision_estado": {
+      "error": 20,
+      "hecho": 60,
+      "omitido": 1
+    }
+  },
+  "figuras": [
+    "docs/analisis/graficos/clef_distribucion_decisiones.png",
+    "docs/analisis/graficos/clef_revision_calidad.png"
+  ],
+  "generado_utc": "2026-11-17T18:40:19+00:00",
+  "hallazgo_degradacion": {
+    "calidad_media_degradada": 0.0666,
+    "calidad_media_sin_personas": 0.5416,
+    "lectura_honesta": "decodificable != legible: la mayoria de las reales las ve IMAGEN_DEGRADADA el propio Clef (tambien en las nuevas QC-PIL-OK); la calidad perceptual media (~0.07) separa claramente de las legibles (~0.54). Cuello: encuadre QVGA q12 del firmware. Recomendacion post-entrega: subir calidad/resolucion JPEG por OTA (no cambia el sensing CSI).",
+    "tasa_degradada_pct": 75.0
+  },
+  "hash_inputs": {
+    "CLEF_RESUMEN": "bdd3db925d3a265e897e68f159d7b48e749cdd6c324963ac137491bbd11e85f8",
+    "PIPELINE": "73163f68dcf20de354956726e60581c82d2c76a5e35c88975cc3f2e8fd3547cd"
+  },
+  "limitaciones": "no existe GT de etiquetas de escena: se reporta distribucion y confianza, NO precision de la decision. Clef decide sobre la FOTO (evidencia de evento), no sobre CSI: no reemplaza al detector.",
+  "modelos": {
+    "cloudflare/clef": 28,
+    "cloudflare/clef-flash": 32
+  },
+  "n_decisiones_reales": 60,
+  "revision_humana": {
+    "ids": [
+      3,
+      5,
+      6,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      17,
+      18,
+      19,
+      21,
+      23,
+      25,
+      26,
+      27,
+      29,
+      30,
+      31,
+      33,
+      34,
+      41,
+      42,
+      43,
+      51,
+      52,
+      53,
+      54,
+      55,
+      57,
+      59,
+      60,
+      62,
+      63,
+      65,
+      66,
+      67,
+      70,
+      74,
+      77,
+      78,
+      81,
+      83
+    ],
+    "n": 44,
+    "pct": 73.3333,
+    "umbral_cubre": 0.7
+  },
+  "sinteticas_excluidas": [
+    {
+      "decision": "SIN_PERSONAS_VISIBLES",
+      "id": 1
+    },
+    {
+      "decision": "SIN_PERSONAS_VISIBLES",
+      "id": 2
+    }
+  ],
+  "version": "f26-h3-1.0"
+}

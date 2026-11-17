@@ -3,6 +3,10 @@
 > **Estado (2026-11-14):** `app_feedback` (F3) y `app_imagen` (F24-c) están IMPLEMENTADOS, compilados
 > y flasheados en la placa (COM6). Este documento empezó como spec del planificador (2026-11-12) y se
 > mantiene como contrato + bitácora de lo verificado en disco.
+> **Actualización (2026-11-17):** `app_provision` (portal FIJO sin token F26) y `app_ota` (OTA por
+> MQTT + SHA-256 + rollback) también están implementados y **en la build viva f26.6** — OTA y rollback
+> demostrados por aire (g1/g2); gate OTA enmendado 96/48 y gate de captura vivo 95/24 sin latch (§14).
+> Espejo parche↔`main/` diff cero 10/10 (regla 17 AGENTS). Operación: `../../docs/NOTES_operacion.md`.
 >
 > **F24 (2026-11-12):** este directorio se AMPLÍA con módulos nuevos — `app_imagen.c/.h` (F24-c,
 > implementado; ver §9), `app_provision.c/.h` (F24-d), `app_ia_imagen.c/.h` (F24-e, opcional
@@ -172,6 +176,8 @@ evento MQTT `motion` sigue siendo la fuente de verdad y **nunca** se espera por 
 | Reintentos upload | 1 intento + **3 reintentos** con backoff **2/4/8 s**; un **4xx** es definitivo (no se reintenta) |
 | Gate de memoria | heap **interno** libre < **120 KB** o mayor bloque < **64 KB** → captura OFF + `ESP_LOGW` + evento `IMAGEN_GATE_OFF`; re-habilitación con **histéresis +20 KB** |
 | Si la cola se llena | se DESCARTA la imagen, `ESP_LOGW` + evento `IMAGEN_DESCARTE`; **el evento motion sigue** |
+
+> **Nota F26 (2026-11-17, contrato vigente §14 + SPEC §16.3):** los umbrales 120/64 de esta tabla eran los de F24-c; el gate de captura **VIVO** en la build actual es **95/24 KB internos, SIN latch** (re-evalúa en cada onset; cola de onsets drop-oldest) y el gate OTA es **96/48 post-quiesce** (enmendados con evidencia desde 120/64 — §14.2/§14.8). Métrica útil: `internal_free_kb`/`internal_largest_block_kb`, nunca `free_memory_kb` (≈8,2 MB = PSRAM).
 
 **Pines (bus DVP 4–18, exclusivo de la cámara bajo `AULASENSE_IMAGEN=y`)**
 
@@ -553,4 +559,243 @@ no tendrá conflicto cross-canal. **Cómo leer el token (humanos):** tras
 `AulaSense CFG URL: http://192.168.4.1/cfg/<token>` — abrirla desde un dispositivo anclado al
 AP. El token no se expone por ninguna otra vía (ni MQTT ni diagnostics): es capacidad local,
 igual que la pass del portal.
+
+
+## 14. F26 - OTA real + provisioning FIJO + gate/heap interno + observabilidad (SPEC §16.1-16.4, D-F26-1..5)
+
+### 14.0b Fix F26-c3 (aplicado en el árbol, SIN flasheo; viaja en el bin candidato de g1)
+
+- **Anillos de eventos con reintento espaciado** (`app_imagen.c` + `app_ota.c`): el pump
+  re-encola el evento que falla el publish con marca temporal `sig_intento_ms = now+1000` y
+  tope `*_EVT_REINTENTOS_MAX=120` (peek FIFO: no quema reintentos en el pump de 10 ms).
+  Cubre la ventana de ~16 s hasta el primer `connected()` del arranque, donde se perdían
+  `FIRMWARE`/`IMAGEN_INIT` (arriesgo documentado en c2; evidencia c3: 21 fotos + 14 IMAGEN_ON
+  llegaban pero los eventos de boot no).
+- **Versión `f26.2`**: `AULASENSE_FW_VERSION` default 1→ bump porque el bin candidato difiere
+  del flasheado (`f26.1`); g1 necesita `version != local` para que `apply` no rechace con
+  `sin_cambio`. El bin en placa (sellado c2, sha `8C2662B4…`) sigue siendo `f26.1` hasta que
+  g1 le monte el `f26.2` por OTA (canal diseñado — sin segunda UART).
+- **Prevalencia del retain `ota` verificada (c3)**: 300 s de suscripción al broker mostraron
+  replay retain=true CON NUESTRO formato (`estado:"idle"`, `version_actual:"f26.1"`) y cero
+  mensajes nativos `state` — la build F26 no invoca el OTA service del vendor, así que el
+  retain nativo huérfano (hallazgo a3) ya no se renueva y el nuestro gana el slot. SIN fix
+  adicional necesario; si g1/g2 vieran alternancia, la palanca prevista es refrescar
+  `ota_estado()` en el tick de 30 s (2 líneas, no aplicido por no hacer falta).
+- `heap_interno` retain=true confirmado en el broker (replay del watch); los 3 sufijos F26
+  cacheados en `estado_sistema` (a1).
+- **Bin candidato registrado (sha256)**: `965145A6BFCB7B5F9CD9AE77E441F2C405FF675041FB7B25617F69890D7CA40C`
+  (1 418 656 B = 0x15A5A0; verificado con literal `f26.2` presente y `f26.1` ausente en rodata;
+  build de chequeo verde SIN flasheo, log `iot2\.tmp\f26c3_build.log`). g1 publica ESTE bin.
+
+Fase **F26-c1** (build única; NO flasheo — eso es c2). Cambios de código en este directorio +
+espejo byte-a-byte en `firmware/espectre/src/cpp/frontend/native/app/main/` (regla 17, ahora
+incluye también `app_ota.c/.h`) + enganches en `app_main.cpp` (sin espejo por convención; se
+documentan en §14.6) + edición documentada de `sdkconfig.defaults`/`sdkconfig` (§14.5).
+
+### 14.1 Módulos F26
+
+| Fichero | Qué aporta F26 |
+|---|---|
+| `app_ota.c/.h` (NUEVO) | OTA propia: comando MQTT → manifiesto → descarga streaming → SHA-256 → set_boot → restart; self-check de rollback; retains `ota` + evento `FIRMWARE` |
+| `app_provision.c` | Portal FIJO sin token (rutas `/cfg`, `/cfg/estado`, `/cfg/wifi`), SSID/pass de Kconfig, `_Static_assert` pass 8..63 salvo vacía, `AP_ERROR` en todas las ramas de fallo del AP |
+| `app_imagen.c` | Gate de heap INTERNO sin latch (re-eval por onset, histéresis +20 KB), cola drop-oldest, `IMAGEN_INIT`/`CAMARA_ERROR`, retain `imagen_estado` en cada conexión, `app_imagen_pausar()` |
+| `app_feedback.c` | Retain `heap_interno` cada 30 s (patrón aulasense_temp) + `app_feedback_pausar()` para la OTA |
+| `Kconfig.projbuild` | Menú "AulaSense OTA (F26)" + SSID fijo + `AULASENSE_FW_VERSION`; QUEUE default 4 |
+| `CMakeLists.txt` | `app_ota.c` al src (cero deps nuevas: `app_update`/`esp_http_client`/`mbedtls`/`nvs_flash` ya estaban, ENMIENDA E8) |
+
+### 14.2 Semántica OTA (D-F26-1/2/3)
+
+- **Manifiesto** (servido por el estático WSL, SPEC §16.9):
+  `{"version":"f26.x","url":"http://<vps>:<puerto>/firmware-f26.x.bin","sha256":"<64 hex minúsculas>","size":<bytes>}`.
+  Parser manual estricto (formato controlado por nosotros): cualquier desviación = `OTA_ERROR
+  etapa=manifiesto/esquema_invalido` (fail-closed; nunca se flashea "por si acaso"). URL
+  absoluta `http(s)://`; `size` ≥ 4096; `sha256` 64 hex minúsculas exactas.
+- **Comando** (D-F26-2, topic sufijo propio — NO `commands/request`, el parser vendor rechaza
+  comandos desconocidos y parchearlo está prohibido): la ingesta publica en
+  `{topic_prefix}/{device_id}/aulasense_ota` (QoS 1, retain=false)
+  `{"command_id":"<1-64 ASCII>","command":"aulasense_ota","action":"check"|"apply"}`.
+  Suscripción vía API pública `transport.subscribe()` sobre la MISMA conexión persistente
+  (N1). `command_id` se sanitiza a `[A-Za-z0-9._-]` antes de viajar en detalles JSON.
+- **check** → GET manifiesto → evento `OTA_CHECK` detalle `origen=… id=… local=… fw_remota=…
+  hay_actualizacion=true|false`. **apply** → gates → `OTA_INICIO` → pausa captura+telemetría →
+  descarga en bloques de 4 KB (buffer PSRAM) al slot inactivo con `esp_ota_begin/write/end` →
+  **SHA-256 acumulado EN STREAMING** (decisión: el digest cubre exactamente los bytes escritos;
+  evita releer 1.4 MB de flash; la cabecera la valida `esp_ota_end` ANTES de comparar) → verify
+  sha+size → `esp_ota_set_boot_partition` → `OTA_OK` + NVS (`aulasense_ota/fw_ver|fw_sha` para
+  el `build_sha256_prefix` del próximo `FIRMWARE`) → retain `rebooting` → 2 s de drenaje →
+  `esp_restart()`.
+- **Cualquier fallo ANTES de `set_boot`** → `OTA_ERROR {etapa, esp_err}` + reanudar pausa +
+  el slot actual queda INTACTO (`esp_ota_abort`). Nunca `CONFIG_OTA_ALLOW_HTTP`: no usamos
+  `esp_https_ota`, así que HTTP plano es legal por construcción en `esp_http_client`.
+- **Gates de inicio** (heap INTERNO, nunca el `free_memory_kb` de diagnósticos que es PSRAM):
+  `internal_free ≥ AULASENSE_OTA_HEAP_MIN_KB` AND `largest_block ≥
+  AULASENSE_OTA_BLOCK_MIN_KB`. Defaults originales 120/64 (SPEC §16.1) justificados con el
+  heap de ARRANQUE (141–166 KB free, README §10/§10.1). **Ajuste F26-g1 con datos medidos en
+  steady-state** (`f26g1_diag_heap.py`, 200 muestras de `telemetria.internal_*`): free
+  101–106 KB / largest estable 56 KB → 120/64 era inalcanzable en régimen (0/200) y hacía la
+  primera OTA imposible (huevo–gallina). **Fix DOBLE (decisión del orquestador 2026-11-17)**:
+  (a) `accion_apply` reordenado — QUIESCE (pausa captura+telemetría) ANTES del gate y el
+  detalle de `OTA_INICIO` lleva `post_quiesce free=…KB largest=…KB` (evidencia automática en
+  BD; el delta liberado por el quiesce se cita desde el propio evento, sin instrumentation
+  extra); (b) umbrales **96/48** alineados al mínimo medido PRE-quiesce (101/56) con colchón
+  ≥5/8 KB — como el gate ahora corre post-quiesce (solo puede haber más heap, no menos),
+  96/48 es la cota conservativa en ambos mundos. Nunca a ciegas. Chequeo periódico
+  `AULASENSE_OTA_CHECK_MIN`
+  default **0 = desactivado** (reproducibilidad del curso; >0 solo publica OTA_CHECK, jamás
+  auto-apply). Tarea OTA prio 4, stack 8192 (NUNCA loop=5, ENMIENDA E7).
+- **Rollback (obligatorio antes de la 1ª OTA)**: ver §14.5. Con imagen nueva en
+  `ESP_OTA_IMG_PENDING_VERIFY`, el self-check exige **Wi-Fi GOT_IP + MQTT conectado + runtime
+  armed CONTINUOS** `AULASENSE_OTA_SELFCHECK_S` s (90; range 60..120; referencia real: MQTT
+  conectaba ~37 s tras arranque con WiFi ok) → `esp_ota_mark_app_valid_cancel_rollback()` +
+  retain `idle`+`sha256_ok:true` "self-check superado: imagen validada" + evento `OTA_OK`. **Nota de contrato F26-g1**: la ventana de self-check usa el estado `verifying` (no `pending_verify`) y tras validar es `idle` con `sha256_ok:true` (no `valid`): el whitelist de ingesta (`esquema.py:416-423`, SPEC §16.4) solo admite `idle|checking|downloading|verifying|rebooting|error` y descarta fail-closed lo demas; la validacion la evidencia el evento `OTA_OK` + `sha256_ok:true`. Si en ventana+120 s de gracia no se cumple →
+  `esp_ota_mark_app_invalid_rollback_and_reboot()` (marca la imagen INVALID y reinicia; el
+  bootloader arranca el slot bueno).
+  **Decisión documentada**: un `esp_restart()` simple NO revertiría (el estado seguiría
+  PENDING_VERIFY y la imagen mala volvería a arrancar en bucle); la API canónica de self-check
+  fallido es la de marcado invalid — el texto SPEC/PLAN "no marcar + esp_restart()" se refiere
+  al efecto observable (volver al slot bueno), que solo esta API produce sin UART.
+- **Particiones INTACTAS** (dual-app 0x1E0000 por slot; `check_sizes` en build = error de
+  compilación si el bin no cabe; ampliar slots exigiría UART in situ → NO se hace).
+
+### 14.3 Retains y eventos nuevos (SPEC §16.4)
+
+- Retain `…/ota` (publish() absoluto, retain=true; el del vendor nunca se usa → sin colisión):
+  `{"estado":"idle|checking|downloading|verifying|rebooting|error", /* F26-g1: whitelist exacto de esquema.py:416-423; sin pending_verify/valid */
+  "version_actual":"<AULASENSE_FW_VERSION>","version_objetivo":"…","sha256_ok":false|true,
+  "detalle":"…","ts_ms":<monotono>}` — re-publicado en CADA edge de conexión MQTT.
+- Evento `FIRMWARE` (primera conexión tras arranque): detalle `version=… compile_time=<__DATE__
+  __TIME__> idf=<esp_get_idf_version()> build_sha256_prefix=<12 hex del NVS|"uart-flash" si la
+  imagen llegó por UART>`.
+- Retain `…/imagen_estado` (formato EXACTO SPEC §16.3 + campos extra `pausada`/`cooldown_s`):
+  `{"camara_ok","camara_pid","camara_err","pipeline_ok","captura_habilitada","gate_off",
+  "descartes","imagenes_ok","internal_free_kb","internal_largest_block_kb","build",
+  "imagen_habilitado","pausada","cooldown_s","ts_ms"}` — re-posteado en cada conexión y al
+  cambiar contadores/gate (ventana única + dirty flag; pump del loop).
+- Retain `…/heap_interno` (30 s, publisher periódico de `app_feedback`):
+  `{"internal_free_kb","internal_largest_block_kb","ts_ms"}` medidos con
+  `heap_caps_* (MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)`. La ingesta cachea el último por device y
+  rellena `telemetria.internal_*` (columnas de a1).
+- Eventos nuevos por `aulasense_config`: `OTA_CHECK/OTA_INICIO/OTA_OK/OTA_ERROR`, `FIRMWARE`,
+  `IMAGEN_INIT`, `CAMARA_ERROR`, `AP_ERROR {etapa, esp_err}` (todas las ramas de ap_levantar:
+  set_mode/set_config/wifi_start/httpd — el recovery jamás queda mudo, CRÍTICO informe A §1.1).
+  Con `etapa=httpd` el AP SÍ queda arribado (la red sirve; solo el portal falló).
+
+### 14.4 Provisioning FIJO (D-F26-4; reemplaza §13.2)
+
+- SSID `CONFIG_AULASENSE_PROVISION_AP_SSID` (default "AULASENSE-CFG", SIN sufijo MAC; una sola
+  unidad — colisión multi-placa = procedimiento "1 placa a la vez"). Pass
+  `CONFIG_AULASENSE_PROVISION_AP_PASS` default `""` en Kconfig; el valor canónico viaja
+  `.env`→`sdkconfig.defaults.local` en c2 (NUNCA commiteado, regla 7). Con pass no vacía el
+  build FALLA si la longitud es 1..7 (`_Static_assert` 8..63 salvo vacío): la pass "itse" de
+  2026-11-16 hacía fallar `esp_wifi_set_config` ANTES de publicar nada y el recovery quedaba
+  mudo (informe A §1.1). Con `""` se conserva la rama AP ABIERTO con aviso.
+- Portal sin token: `GET /cfg` (form, action `/cfg/wifi`, pie `/cfg/estado`), `GET /cfg/estado`
+  (JSON sin secretos, ahora también `bloque_mayor_kb`), `POST /cfg/wifi` (E3 intacto).
+  `max_uri_handlers` 2→4 y **handler propio por ruta exacta** (el matcher wildcard `"/cfg/*"`
+  no casa `"/cfg"` sin barra — informe A §1.2.4); resto = 404 neutro del httpd.
+- ELIMINADO del código: todo el mecanismo de token (generación, variable, ruta privada,
+  comparación anti-timing). La key NVS antigua (`aulasense_prov`) NO se borra en campo:
+  inofensiva, ya no se lee ni se escribe (grep de usos = 0, criterio c1).
+- HEREDADAS INTACTAS: Origin/Referer (`host_es_propio` anti-sufijo, 403), cooldown NVS 5 s (429),
+  body ≤255 B, escritura solo si cambia, cabeceras nosniff/DENY/no-referrer/no-store/CSP,
+  NUNCA loguear SSID/pass (solo longitudes), BOOT 3 s → Improv nativo preservado.
+- **Fix F26-g4 (f26.7, hallazgo del auditor externo 2026-11-17)**: la rama
+  `esp_netif_create_default_wifi_ap() == NULL` de `ap_levantar()` (app_provision.c:282-296) era
+  MUDA y el flujo SEGUÍA hacia `set_config`/`start`/httpd — podía arribarse un AP sin netif
+  (portal 192.168.4.1 inalcanzable) publicándose `AP_FALLBACK`, contradiciendo SPEC §16.2
+  ("AP_ERROR en TODAS las ramas"). Ahora: chequeo NULL explícito → `AP_ERROR
+  {etapa=netif_ap esp_err=NULL motivo=…}` + `ESP_LOGE` + `return` ANTES de tocar
+  wifi/httpd; la rama NULL no emite `AP_FALLBACK`. **f26.7 = f26.6 + este fix + bump: pendiente
+  de aplicar por OTA post-entrega (viaja en el manifest publicado); la placa demostrativa del
+  banco se queda en f26.6 válida — tomará f26.7 en la primera OTA tras la entrega.**
+
+### 14.5 sdkconfig F26 (diff documentado — aplica tras clon limpio/factory reconfigure)
+
+En `firmware/espectre/src/cpp/frontend/native/app/`:
+
+1. `sdkconfig.defaults` (añadido tras la tabla de particiones; ver el bloque con comentario
+   "AulaSense F26" en el fichero real):
+   ```
+   CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+   CONFIG_APP_ROLLBACK_ENABLE=y
+   ```
+2. `sdkconfig` vivo (kconfiglib no re-aplica defaults a símbolos ya presentes):
+   - `# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set` → `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`
+   - `# CONFIG_APP_ROLLBACK_ENABLE is not set` → `CONFIG_APP_ROLLBACK_ENABLE=y`
+   - `CONFIG_AULASENSE_IMAGEN_QUEUE=2` → `CONFIG_AULASENSE_IMAGEN_QUEUE=4`
+   Script one-shot aplicado en c1: `iot2\.tmp\f26c1_apply_sdkconfig.ps1` (reemplazos exactos,
+   fail si no hay coincidencia única; sin duplicidades — trampa §10.1/10.2 ya controlada).
+   Los símbolos nuevos del Kconfig F26 entran solos con su default en el primer build.
+3. Pre-check ANTES de flashear (c2): `rollback=y` presente y único, cero `CONFIG_TINYUSB`/
+   USB-device, cámara `AULASENSE_IMAGEN=y`, PSRAM octal intacta, bin ≤ 0x1E0000.
+4. El bootloader con rollback se flashea en c2 junto con otadata_initial (`idf.py -p COM6 flash`
+   escribe bootloader+partitions+otadata+app); la placa ya reinstalada lo lleva desde ahí.
+
+### 14.6 Enganches de `app_main.cpp` (fichero SIN espejo — diffs exactos aquí)
+
+1. `#include "app_ota.h"` junto a los otros tres headers del parche.
+2. En `espectre_loop_task`, tras `app_provision_publish_pending();`:
+   `app_ota_publish_pending();` (eventos OTA + retains + FIRMWARE — misma dueña única del
+   transporte; los retains se re-postean en el edge de `connected()` sondeado en el pump:
+   el callback del transporte lo posee el vendor (`frontend_mqtt_helpers.cpp:33`) y NO se pisa).
+3. Tras `app_imagen_set_mqtt_image(...)` y antes de `app_imagen_init(...)`:
+   ```cpp
+   app_imagen_set_state_publisher(
+       [](const char *payload) { return mqtt_transport.publish_suffix("imagen_estado", payload, true); });
+   ```
+4. Tras `app_feedback_set_mqtt_publisher(...)` (bloque F3):
+   ```cpp
+   app_feedback_set_heap_publisher(
+       [](const char *payload) { return mqtt_transport.publish_suffix("heap_interno", payload, true); },
+       []() { return mqtt_transport.connected(); });
+   ```
+5. Tras `app_provision_init()` (bloque completo comentado en el fichero):
+   ```cpp
+   app_ota_set_transport(subscribe_fn, publish_topic_fn, publish_config_fn, connected_fn);
+   app_ota_set_runtime_ready([]() { return g_frontend != nullptr &&
+       g_frontend->is_setup_complete() && g_frontend->snapshot().ready_to_publish; });
+   app_ota_set_identity(device_id.c_str(), device_config.topic_prefix.c_str());
+   app_ota_init();
+   ```
+   (el subscribe_fn envuelve `transport.subscribe()` con un trampolín C→std::function; corre
+   en la tarea de loop prio 5 → solo valida y postea, nunca HTTP/flash).
+
+### 14.7 Pruebas F26-c1 (build de check, sin placa)
+
+| Prueba | Resultado |
+|---|---|
+| `eim run "idf.py set-target esp32s3 && idf.py build" v5.5.6` con pass VACÍA placeholder | VER §14.8 |
+| `check_sizes`: bin vs 0x1E0000 | VER §14.8 |
+| Espejo parche↔main byte-a-byte + SHA256 por par | VER §14.8 |
+| grep token NVS en código (`cfg_token`/`token_asegurar`/`s_token`/`ruta_token_ok`) = 0 | VER §14.8 |
+| Pre-check sdkconfig (rollback=y, cero USB-device, IMAGEN=y, PSRAM octal, QUEUE=4) | VER §14.8 |
+
+### 14.8 Resultados verificados (F26-c1, 2026-11-17)
+
+| Prueba | Resultado |
+|---|---|
+| Build IDF 5.5.6 con pass VACÍA placeholder (`AP_PASS=""`) | **PASS** — `eim run "idf.py build" v5.5.6` verde (`iot2\.tmp\f26c1_build.log`; nota: NO se re-ejecutó `set-target` porque regenera el sdkconfig desde defaults y destruye el bloque vivo — ver §14.9) |
+| `check_sizes` vs 0x1E0000 | **PASS** — imagen **0x1597E0 (1 414 624 B)** de 1 966 080 → **0x86820 libres (550 944 B, 28 %)** (archivo .bin 1 415 136 B con relleno de alineado; crece ~7 KB sobre F25-c: app_ota.c + retain/eventos); sha256 `D50DA37505B3525E7AA22E57D6E53B89411AC2EBD9B0D6EB527C39673847521E` |
+| Espejo parche↔main byte-a-byte | **PASS** — 10/10 pares con SHA256 idéntico (evidencia `iot2\.tmp\f26c1_espejo_final.csv`; incluye los NUEVOS `app_ota.c/.h` y ahora también `CMakeLists.txt` en espejo estricto) |
+| grep token NVS en código | **PASS = 0** — ni `cfg_token` ni los identificadores del mecanismo (generación/variable/validación/comparación) sobreviven en *.c/*.h de parche ni main |
+| Pre-check sdkconfig | **PASS** — `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` y `CONFIG_APP_ROLLBACK_ENABLE=y` únicos (sin duplicados), cero activaciones USB-device (`TINYUSB`/`USB_DEVICE`/`USBD` ausentes; consola = USB-Serial-JTAG con `ESP_CONSOLE_UART_NUM=-1`), `AULASENSE_IMAGEN=y`, PSRAM octal 80 MHz intacta, `IMAGEN_QUEUE=4`, umbrales vivos del gate 95/24 conservados, `AP_PASS=""` (c2 inyecta la canónica) |
+| Escala de rollback | bootloader.bin reconstruido con soporte (`build/bootloader/bootloader.bin`, 0x52D0 B) y `ota_data_initial.bin` en `flash_args` (c2 flashea 4 regiones) |
+
+### 14.9 Notas de operación para c2 (desde c1)
+
+1. **NO `idf.py set-target`**: destruye el `sdkconfig` vivo (lo renombra a `.old` y regenera
+   desde defaults). El target ya es esp32s3; basta `eim run "idf.py build" v5.5.6`.
+   Si hay que reproducir el estado vivo desde cero: `f24c_apply_sdkconfig.py` →
+   `iot2\.tmp\f26c1_fix_sdkconfig.py` (SPIRAM/cámara/upload + QUEUE=4 + gates 95/24 + rollback).
+2. `tools/gen_firmware_config.py` (extendido en b) debe emitir además
+   `CONFIG_AULASENSE_PROVISION_AP_SSID/_AP_PASS` (sección PROVISION_AP del .env) y
+   `CONFIG_AULASENSE_OTA_MANIFEST_URL` — en c1 NO se tocó tools/.
+3. Con `MANIFEST_URL=""` el módulo OTA compila y arranca pero es INERTE para descargas
+   (respuesta `OTA_ERROR origen=manifiesto err=ESP_ERR_INVALID_ARG url_cfg=vacia`): esperado
+   hasta que c2 escriba el sdkconfig.defaults.local real.
+4. El self-check de rollback NO actúa en la flasheada inicial de c2 (estado Undefined, no
+   PENDING_VERIFY) — solo tras la 1ª OTA (g1/g2).
+5. Riesgo c2/c3 conocido: si el sitio deja el mayor bloque interno bajo 44 KB (24+20 de
+   histéresis), la captura seguirá off HASTA que un onset la re-habilite — ahora los datos
+   internos viajan por `heap_interno`/`imagen_estado` y el ajuste puede ir por OTA (g1).
 

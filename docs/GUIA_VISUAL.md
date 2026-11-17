@@ -16,6 +16,15 @@ lang: es
 > esta guía está inventado.** Donde una métrica es parcial o tiene una nota de honestidad, se
 > reproduce esa nota tal cual.
 
+> **Aviso de vigencia (2026-11-17):** las cifras de esta guía corresponden al **corte F25**
+> (2026-11-15: 462 filas del consolidado, 54 fotos en BD, suite/estado previos a F26) citadas de los
+> informes de entonces. **Estado vigente post-F26:** consolidado **1.198 filas** reales en 4 días,
+> **81 fotos** (60 con decisión Clef; 75 % `IMAGEN_DEGRADADA` — hallazgo honesto), build viva **f26.6**
+> con OTA/rollback demostrados y portal fijo sin token. Las fuentes canónicas de números son
+> `ENTREGA_PROFESOR.md`, `README.md` y `docs/analisis/` (regenerados F26-h3); el diagrama técnico que
+> esta guía enlaza ya está regenerado para F26 en `../assets/` (SPEC §16.10). Refresh completo de esta
+> guía: opcional post-entrega (`docs/README.md`).
+
 **Índice**
 
 1. [Qué es y por qué](#1-qué-es-y-por-qué)

@@ -17,12 +17,29 @@ limitaciones conceptuales; todo lo medible se interpola.
 
 Los temporales (snapshot de BD, crops de privacidad, frames del video, imágenes reescaladas)
 viven en `aulasense/.tmp/f6a_*` (regla 8) y no se commitean.
+
+F26-f2 (2026-11-17): el generador se EXTIENDE a la realidad F26 — la presentación recorre el
+proyecto paso a paso (12 bloques, desde qué es el CSI hasta la operación OTA) con CÓDIGO REAL
+del repo leído en vivo desde disco (registro SNIPPETS: ruta + rango de líneas, citados en cada
+lámina como archivo:linea y verificables por grep). El informe gana los capítulos de decisión
+con Clef (clef_resumen.json) y operación F26 (OTA/rollback/portal/salud), y refresca su
+narrativa a SPEC §16. Ningún secreto entra en los entregables (QA lo comprueba).
+
+F26-f2 FIX PRIVACIDAD (GATE-seguridad, 2026-11-17): los entregables públicos NO embeben
+píxeles de fotos reales del aula (regla 2: galería solo local tras login; repo público +
+orden del dueño «cero exposición de información privada»). La lámina 8 muestra un MOCKUP
+SINTÉTICO del encuadre QVGA dibujado por código (mockup_qvga_privacidad) y cita solo la
+DESCRIPCIÓN TEXTUAL de la IA (filtrada no sensible y anonimizada en defensa en profundidad).
+auditoria_medios() lo garantiza: cada blob embebido debe estar en el whitelist de
+figuras/diagramas/mockups y NINGUNO puede coincidir (sha256) con archivos bajo
+server/datos/imagenes/ ni con la carpeta de imágenes de la BD WSL.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import re
 import shutil
 import sqlite3
@@ -31,7 +48,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -99,14 +116,92 @@ PIES_FIGURAS = {
     "ocupacion_pr_umbral": "Curva precision/recall por umbral del modelo de ocupación",
     "ocupacion_modelo_vs_gt": "Modelo de ocupación frente a la verdad terreno, ventana a ventana",
     "ocupacion_feature_importance": "Importancia de variables del modelo de ocupación (árbol)",
+    "clef_distribucion_decisiones": "Distribución de decisiones Clef sobre las fotos reales (F26)",
+    "clef_revision_calidad": "Calidad perceptual media por etiqueta: decodificable ≠ legible (F26)",
+    "diagrama_flujo_f26": "Flujos F26: OTA por aire (comando→gate→SHA→rollback) y evidencia (onset→foto→visión→Clef)",
+    "diagrama_tecnico_contexto": "Vista de contexto C4 F26: placa, broker del dueño, WSL y VPS (solo túneles)",
+    "diagrama_tecnico_componentes_nodo": "Componentes del nodo ESP32-S3: detector CSI + parche F26 (imagen, portal, OTA)",
+    "diagrama_tecnico_componentes_dashboard": "Componentes del dashboard WSL: ingesta, BD, workers y panel /salud",
 }
 
 ORDEN_FIGURAS = (
     "serie_motion", "histograma_scores", "matriz_confusion", "eda_cobertura_gt",
     "eda_score_por_hora", "eda_autocorrelacion_pps", "eda_histograma_rssi",
     "eda_sesiones_comparativa", "ocupacion_pr_umbral", "ocupacion_modelo_vs_gt",
-    "ocupacion_feature_importance",
+    "ocupacion_feature_importance", "clef_distribucion_decisiones", "clef_revision_calidad",
 )
+
+# --------------------------------------------------------------------------- snippets del repo
+
+# F26-f2: cada snippet es código REAL copiado del repo en tiempo de generación. La clave es
+# el id usado por las láminas; el valor, (ruta_relativa, linea_inicio, linea_fin, titulo).
+# La etiqueta «ruta:Lx-Ly» va impresa en la lámina: cualquier lector verifica el bloque con
+# grep/sed sobre ese archivo. Si el archivo o el rango faltan, el texto queda marcado FALTA
+# y verificar_salidas() FALLA (prohibido inventar código).
+SNIPPETS = {
+    "gpio": ("firmware/parche_aulasense/Kconfig.projbuild", 26, 44,
+             "GPIO del nodo: pines y guardas de compilación"),
+    "imagen_task": ("firmware/parche_aulasense/app_imagen.c", 939, 955,
+                    "Tarea de evidencia: consume la cola de onsets sin tocar el detector CSI"),
+    "event_json": ("firmware/parche_aulasense/app_imagen.c", 301, 318,
+                   "Evento JSON publicado por MQTT"),
+    "topics": ("server/ingesta/esquema.py", 30, 54,
+               "Contrato de topics: prefijo + sufijos (F26 añade ota/imagen_estado/heap_interno)"),
+    "motion_schema": ("server/ingesta/esquema.py", 196, 209,
+                      "Payload motion validado al entrar: state idle|motion y score 0..1"),
+    "writer_doc": ("server/ingesta/ingesta_mqtt.py", 1, 9,
+                   "Flujo de la ingesta: paho → cola → writer único → SQLite (WAL)"),
+    "on_message": ("server/ingesta/ingesta_mqtt.py", 1610, 1623,
+                   "El callback de paho SOLO encola; la imagen viaja cruda al writer"),
+    "tuneles": ("SPEC.md", 1174, 1179,
+                "Túnel de publicación OTA creado con wsl-port (comandos reales)"),
+    "salud_cmd": ("docs/guion_demo.md", 29, 32,
+                  "Verificación de servidor y túneles desde el host"),
+    "vision_payload": ("server/vision/cliente.py", 873, 888,
+                       "Petición del worker de visión: imagen inline + prompt acotado"),
+    "clef_url": ("server/vision/clef.py", 87, 87,
+                 "API de decisión usada (OpenRouter Decisions)"),
+    "clef_payload": ("server/vision/clef.py", 648, 651,
+                     "Envelope de la decisión: modelo flash hasta que toca escalar con imagen"),
+    "ota_inicio": ("firmware/parche_aulasense/app_ota.c", 618, 625,
+                   "OTA_INICIO deja los números del gate post-quiesce visibles en la BD"),
+    "ota_aplicar": ("firmware/parche_aulasense/app_ota.c", 641, 656,
+                    "Cambio de slot SOLO tras verificar SHA-256; luego reboot"),
+    "ota_cadena": ("docs/NOTES_operacion.md", 140, 144,
+                   "Cadena de eventos reales tras un apply bueno (manual del dueño)"),
+    "jpeg_q": ("firmware/parche_aulasense/app_imagen.c", 647, 656,
+               "Calidad QVGA medida como cuello real de la evidencia (jpeg_quality = 12)"),
+}
+
+
+def cargar_snippets():
+    """Lee cada snippet del repo (rango exacto). Etiqueta archivo:linea siempre presente."""
+    salida = {}
+    for ident, (ruta, inicio, fin, titulo) in SNIPPETS.items():
+        etiqueta = f"{ruta}:{inicio}-{fin} — {titulo}"
+        archivo = RAIZ / ruta
+        try:
+            lineas = archivo.read_text(encoding="utf-8", errors="replace").splitlines()
+            texto = "\n".join(lineas[inicio - 1:fin])
+            ok = bool(texto.strip()) and fin <= len(lineas)
+        except OSError:
+            texto, ok = "", False
+        salida[ident] = {
+            "id": ident, "ruta": ruta, "inicio": inicio, "fin": fin, "titulo": titulo,
+            "etiqueta": etiqueta, "texto": texto if ok else f"FALTA_SNIPPET {ruta}:{inicio}-{fin}",
+            "ok": ok,
+        }
+    return salida
+
+
+def filas_consolidado():
+    """Filas del dataset consolidado, contadas en disco (no hardcodeado)."""
+    ruta = RAIZ / "analysis" / "dataset" / "consolidado.csv"
+    try:
+        with ruta.open("r", encoding="utf-8", errors="replace") as fh:
+            return max(0, sum(1 for _ in fh) - 1)
+    except OSError:
+        return None
 
 
 # --------------------------------------------------------------------------- utilidades
@@ -163,6 +258,11 @@ def num(x, nd=2):
         entero, decimales = s.split(".")
         return entero.replace(",", ".") + "," + decimales
     return s.replace(",", ".")
+
+
+def num_o_dash(x, nd=2):
+    """Como num() pero para celdas donde la ausencia es un hecho honesto (n=0 / sin dato)."""
+    return "—" if x is None else num(x, nd)
 
 
 def pct(x, nd=2):
@@ -377,7 +477,7 @@ def tabla_sesiones(analisis):
             num(s["n_eval"], 0),
             pct(s["pct_motion"]),
             num(s["pps"], 4),
-            num(s["score_motion_mediana"], 4),
+            num_o_dash(s["score_motion_mediana"], 4),
             num(s["rssi"], 1),
             num(s["die"], 1),
         ])
@@ -415,27 +515,6 @@ def tabla_latencias(cifras):
             num(d.get("mediana_corr_truncacion_ms"), 1),
             num(d.get("p95_ms"), 1),
             pct(d.get("pct_abs_bajo_2s")),
-        ])
-    return filas
-
-
-def tabla_modelos(cifras):
-    m = cifras["modelo"]
-    filas = [["Modelo", "Accuracy", "Precisión", "Recall", "F1", "ROC-AUC", "n train / test"]]
-    base = m["baseline"]
-    filas.append(["Baseline (clase mayoritaria)", num(base.get("accuracy"), 4), "—", "—", "—", "—",
-                  num(m["n_filas"], 0) + " filas"])
-    for clave, etiqueta in (("logistic_regression", "Regresión logística (D8)"),
-                            ("decision_tree", "Árbol de decisión (D8)")):
-        d = m[clave] or {}
-        filas.append([
-            etiqueta,
-            num(d.get("accuracy"), 4),
-            num(d.get("precision"), 4),
-            num(d.get("recall"), 4),
-            num(d.get("f1"), 4),
-            num(d.get("roc_auc"), 4),
-            f'{num(d.get("n_train"), 0)} / {num(d.get("n_test"), 0)}',
         ])
     return filas
 
@@ -668,19 +747,27 @@ def entregables():
         ("Presentación", DOCS / "entrega" / "PRESENTACION.pptx"),
         ("Video explicativo", DOCS / "video_aulasense.mp4"),
         ("Guion y subtítulos del video", DOCS / "guion_video.md"),
+        ("Guion de demo en vivo (F26)", DOCS / "guion_demo.md"),
+        ("Manual de operación del dueño (F26)", DOCS / "NOTES_operacion.md"),
+        ("Entrega guiada para el profesor", DOCS / "ENTREGA_PROFESOR.md"),
         ("Subtítulos SRT", DOCS / "video_subtitulos.srt"),
         ("Póster de funcionamiento", RAIZ / "assets" / "poster_funcionamiento.png"),
         ("Diagrama técnico C4 (DSL/PNG/SVG)", RAIZ / "assets" / "diagrama_tecnico.dsl"),
-        ("Diagrama de contexto", RAIZ / "assets" / "diagrama_tecnico_contexto.png"),
+        ("Diagrama de contexto (F26)", RAIZ / "assets" / "diagrama_tecnico_contexto.png"),
+        ("Flujos F26 OTA/evidencia", RAIZ / "assets" / "diagrama_flujo_f26.png"),
         ("Componentes del nodo", RAIZ / "assets" / "diagrama_tecnico_componentes_nodo.png"),
         ("Componentes del dashboard", RAIZ / "assets" / "diagrama_tecnico_componentes_dashboard.png"),
         ("Métricas del pipeline", ANALISIS / "informe_metricas.md"),
+        ("Resumen Clef (F26)", ANALISIS / "clef_resumen.json"),
         ("EDA (informe)", RAIZ / "analysis" / "informe_eda.md"),
         ("JSON del pipeline", ANALISIS / "analisis.json"),
+        ("Dataset consolidado (solo real, F26)", RAIZ / "analysis" / "dataset" / "consolidado.csv"),
         ("Figuras del análisis", GRAFICOS),
         ("Dataset propio (jsonl por sesión)", RAIZ / "dataset"),
         ("Verdad terreno manual (CSV)", DOCS / "validacion_sesion1.csv"),
-        ("Código del servidor (ingesta/dashboard/visión)", RAIZ / "server"),
+        ("Código del servidor (ingesta/dashboard/visión/Clef)", RAIZ / "server"),
+        ("Firmware parcheado (app_imagen/app_provision/app_ota)",
+         RAIZ / "firmware" / "parche_aulasense"),
     ]
     return [{"nombre": n, "ruta": p, "bytes": tam_bytes(p), "existe": Path(p).exists(),
              "generado": n in generados}
@@ -693,12 +780,17 @@ def trazabilidad():
         (ANALISIS / "analisis.json", "métricas, GT, latencias, integridad, visión"),
         (ANALISIS / "eda.json", "EDA: horas, RSSI, autocorrelación, outliers"),
         (ANALISIS / "modelo_ocupacion.json", "modelo de ocupación y validación"),
+        (ANALISIS / "clef_resumen.json", "distribución Clef, confianza, calidad, costes medidos (F26)"),
+        (RAIZ / "analysis" / "dataset" / "consolidado.csv", "dataset 100 % real (regla ts F26)"),
         (ANALISIS / "informe_metricas.md", "resumen legible del pipeline"),
         (RAIZ / "analysis" / "informe_eda.md", "informe EDA formal"),
+        (DOCS / "NOTES_operacion.md", "operación F26: OTA, rollback, portal, duraciones medidas"),
+        (DOCS / "ENTREGA_PROFESOR.md", "recorrido guiado y reality-check del paquete"),
+        (DOCS / "guion_demo.md", "demo en vivo y comandos de verificación"),
         (RAIZ / "README.md", "contexto y arquitectura oficial"),
-        (RAIZ / "SPEC.md", "especificación técnica"),
+        (RAIZ / "SPEC.md", "especificación técnica (§16 = F26)"),
         (RAIZ / "PLAN.md", "plan maestro y decisiones"),
-        (DOCS / "guion_video.md", "guion del video explicativo"),
+        (TMP_PROYECTO / "f26_analisis.md", "análisis regenerado F26-h3 (cifras §9)"),
         (TMP_PROYECTO / "f25_vision_presupuesto.md", "presupuesto y consumos de visión IA"),
     ]
     filas = [["Insumo", "Bytes", "sha256 (12)", "Aporte"]]
@@ -795,7 +887,8 @@ PALABRAS_ESCENA = ("aula", "pared", "puerta", "escritorio", "techo", "interior",
                    "mesa", "ventana", "pizarra", "pasillo")
 PALABRAS_CORRUPCION = ("distorsion", "corrupt", "glitch", "artefact", "pixelad", "franja",
                        "bloques", "abstract", "falla", "ilegible", "sin detalle", "negra",
-                       "borros", "desenfocad", "desenfoque", "no hay evidencia", "sin evidencia")
+                       "borros", "desenfocad", "desenfoque", "no hay evidencia", "sin evidencia",
+                        "barras", "puntos de colores")
 PALABRAS_PERSONA = ("persona", "cabeza", "hombre", "mujer", "rostro", "cara", "silueta")
 NEGACION_PERSONA = re.compile(
     r"(no hay|sin|ninguna|no se pueden (?:distinguir|ver|apreciar|observar)|"
@@ -826,22 +919,20 @@ def _puntuar_foto(descripcion, etiquetas):
     return puntos
 
 
-def _jpeg_legible(ruta):
-    try:
-        with Image.open(ruta) as im:
-            im.verify()
-        with Image.open(ruta) as im:
-            im.load()
-        return True
-    except (OSError, ValueError):
-        return False
-
-
 def _candidatas_fotos():
+    """Candidatas SOLO por TEXTO de la BD (F26-f2-fix PRIVACIDAD).
+
+    CORRECCIÓN GATE-seguridad: este generador NO abre ni embebe píxeles de fotos reales:
+    las fotos del aula viven en server/datos/imagenes (gitignored) y su galería solo se
+    sirve en el servidor local tras login (regla 2 AGENTS — el repo es PÚBLICO). De la BD
+    en modo SOLO-LECTURA se toman el id y la DESCRIPCIÓN textual (sin personas
+    identificables, filtrada por 'sensible'), y la lámina muestra una REPRESENTACIÓN
+    SINTÉTICA del encuadre (mockup_qvga_privacidad).
+    """
     db = _instantanea_bd()
     if db is None:
         return []
-    consulta = ("select id, ruta, ts_ms, descripcion, etiquetas, vision_estado, evento_id "
+    consulta = ("select id, ts_ms, descripcion, etiquetas, vision_estado, evento_id "
                 "from imagenes where origen='real' and coalesce(imagen_purgada, 0)=0 "
                 "order by id")
     try:
@@ -850,25 +941,13 @@ def _candidatas_fotos():
         con.close()
     except sqlite3.Error:
         return []
-    raices = [r for r in (RAIZ_WSL, RAIZ / "server" / "datos")]
     salida = []
-    for ident, ruta, ts, desc, etiq, estado, evento in filas:
+    for ident, ts, desc, etiq, estado, evento in filas:
         if estado != "hecho":
-            continue
-        archivo = None
-        for raiz in raices:
-            try:
-                posible = Path(raiz) / ruta
-                if posible.is_file():
-                    archivo = posible
-                    break
-            except OSError:
-                continue
-        if archivo is None or not _jpeg_legible(archivo):
             continue
         texto = f"{desc or ''} {etiq or ''}".lower()
         salida.append({
-            "id": ident, "archivo": archivo, "ts": ts, "descripcion": (desc or "").strip(),
+            "id": ident, "ts": ts, "descripcion": (desc or "").strip(),
             "etiquetas": etiq or "", "evento_id": evento,
             "persona": _menciona_persona(texto),
             "sensible": any(k in texto for k in
@@ -880,22 +959,24 @@ def _candidatas_fotos():
 
 
 def _rango_foto(foto):
-    """Ordena de mejor a peor: escena reconocible primero, corrupción descrita al final."""
-    return (-foto["puntos"], foto["id"])
+    """Ordena de mejor a peor: escena reconocible primero; empate → la más reciente.
+
+    (F26-f2-fix: sin filtro de legibilidad por píxeles — no se abren las fotos —, así que
+    el desempate por id descendente favorece las capturas post-FixF, mejor descritas.)
+    """
+    return (-foto["puntos"], -foto["id"])
 
 
 def seleccionar_fotos(maximo=2):
-    """Elige 1-2 fotos reales VALIDAS y descritas ('hecho'): una de escena y una con persona.
+    """Elige 1-2 fotos reales SOLO por su descripción ('hecho'): escena primero.
 
-    La de persona se publica con recorte de privacidad (sin reconocimiento facial: la censura
-    es geométrica y se anota en el pie). Solo se acepta una foto con persona si la IA describe
-    escena real (puntos > 0), para no publicar un frame ilegible como "evidencia".
+    Se descarta cualquier descripción sensible (personas identificables, vestimenta,
+    primeros planos de cara): el entregable público cita SOLO descripciones de escena
+    neutras; los píxeles reales nunca salen del servidor local (regla 2).
     """
     candidatas = _candidatas_fotos()
     if not candidatas:
         return []
-    # descarta frames con descripción sensible (p. ej. persona sin camiseta): el entregable es
-    # académico y no necesita ese material para demostrar que hay evidencia
     candidatas = [f for f in candidatas if not f["sensible"]]
     if not candidatas:
         return []
@@ -915,28 +996,82 @@ def seleccionar_fotos(maximo=2):
     return elegidas[:maximo]
 
 
-def preparar_foto(foto, fraccion_privacidad=0.35):
-    """Copia la foto a .tmp y aplica el recorte de privacidad si hay persona.
+def anonimizar_descripcion(texto):
+    """Cita publicable: si la descripción afirmara presencia de personas, se anonimiza.
 
-    Devuelve dict con ruta lista para embeber + si se censuró + dimensiones originales.
+    Con la selección actual (escena sin personas) es una defensa en profundidad: sustituye
+    sustantivos de persona por 'figura no identificable' y elimina menciones de rostro/cara.
+    """
+    if not texto:
+        return ""
+    t = texto
+    if _menciona_persona(t.lower()):
+        t = re.sub(r"(?i)\b(hombre|hombres|mujer|mujeres|persona|personas|individuo|"
+                   r"individuos|alumno|alumnos|estudiante|estudiantes)\b",
+                   "figura no identificable", t)
+    t = re.sub(r"(?i)\b(rostro|rostros|cara|caras)\b", "zona difusa", t)
+    return t
+
+
+def mockup_qvga_privacidad():
+    """REPRESENTACIÓN SINTÉTICA del encuadre QVGA real (320x240, jpeg_quality=12).
+
+    Dibujado por código (PIL): cero píxeles reales. Es el marco docente que necesita la
+    lámina — proporción, encuadre y rótulos de privacidad — sin exponer la escena del aula
+    en un repo público (regla 2; orden del dueño: cero exposición de información privada).
     """
     TMP_IMG.mkdir(parents=True, exist_ok=True)
-    destino = TMP_IMG / f"evidencia_{foto['id']}.png"
-    recortada = False
-    try:
-        with Image.open(foto["archivo"]) as im:
-            im.load()
-            original = im.size
-            if foto["persona"]:
-                caja = (0, 0, max(1, int(im.width * (1 - fraccion_privacidad))), im.height)
-                im = im.crop(caja)
-                recortada = True
-            if im.mode not in ("RGB", "RGBA"):
-                im = im.convert("RGB")
-            im.save(destino, "PNG", optimize=True)
-    except (OSError, ValueError):
-        return None
-    return {"ruta": destino, "censurada": recortada, "original": original}
+    destino = TMP_IMG / "mockup_qvga_privacidad.png"
+    if destino.is_file():
+        destino.unlink()
+    ancho, alto = 960, 640                      # 3x la QVGA real 320x240
+    img = Image.new("RGB", (ancho, alto), (0x24, 0x2C, 0x33))
+    d = ImageDraw.Draw(img)
+    # rejilla esquemática de subportadoras (motivo CSI, no escena)
+    for x in range(0, ancho, 40):
+        d.line([(x, 0), (x, alto)], fill=(0x2E, 0x38, 0x40), width=1)
+    for y in range(0, alto, 40):
+        d.line([(0, y), (ancho, y)], fill=(0x2E, 0x38, 0x40), width=1)
+    # marco de encuadre punteado + escuadras de esquina
+    d.rectangle([30, 30, ancho - 30, alto - 30], outline=(0x8F, 0xD1, 0xDE), width=3)
+    for (ex, ey) in ((30, 30), (ancho - 30, 30), (30, alto - 30), (ancho - 30, alto - 30)):
+        sx = 1 if ex < ancho / 2 else -1
+        sy = 1 if ey < alto / 2 else -1
+        d.line([(ex, ey), (ex + 60 * sx, ey)], fill=BLANCO, width=6)
+        d.line([(ex, ey), (ex, ey + 60 * sy)], fill=BLANCO, width=6)
+    # silueta abstracta de movimiento (curva sinusoidal estilizada: NO es una persona)
+    puntos = [(60 + i, alto // 2 + int(90 * math.sin(i / 90.0))) for i in range(0, ancho - 120, 8)]
+    d.line(puntos, fill=(0x1F, 0x7A, 0x8C), width=5)
+    # rótulos (ajustados al ancho del lienzo: nada se corta)
+    def _fuente(tam, bold=False):
+        nombre = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+        while tam > 12:
+            try:
+                f = ImageFont.truetype(nombre, tam)
+            except OSError:
+                return ImageFont.load_default()
+            if max(d.textlength(t, font=f) for t in textos) <= ancho - 80:
+                return f
+            tam -= 2
+        return ImageFont.truetype(nombre, 12) if not bold else ImageFont.truetype(
+            "DejaVuSans-Bold.ttf", 12)
+
+    textos = ["ESQUEMA QVGA 320 x 240",
+              "representación sintética — cero píxeles reales",
+              "FOTO REAL OMITIDA POR PRIVACIDAD (regla 2)",
+              "la galería completa vive solo en el servidor local, tras login",
+              "evidencia: 1 JPEG por onset · jpeg_quality=12"]
+    f_grande = _fuente(42, bold=True)
+    f_media = _fuente(30)
+    d.text((ancho // 2, 92), textos[0], font=f_grande, fill=BLANCO, anchor="mm")
+    d.text((ancho // 2, 150), textos[1], font=f_media, fill=(0x8F, 0xD1, 0xDE), anchor="mm")
+    d.text((ancho // 2, alto - 150), textos[2], font=f_grande, fill=(0xE8, 0xB0, 0x4A),
+           anchor="mm")
+    d.text((ancho // 2, alto - 92), textos[3], font=f_media, fill=BLANCO, anchor="mm")
+    d.text((ancho // 2, alto - 46), textos[4], font=f_media, fill=(0x9A, 0xA6, 0xB3),
+           anchor="mm")
+    img.save(destino, "PNG", optimize=True)
+    return destino
 
 
 # --------------------------------------------------------------------------- DOCX: utilidades
@@ -1082,6 +1217,36 @@ def _bullets_docx(doc, items, estilo="List Bullet"):
         run = parrafo.add_run(item)
         run.font.size = Pt(10.5)
         parrafo.paragraph_format.space_after = Pt(3)
+
+
+def _codigo_docx(doc, snip, tam=7.8):
+    """Bloque de código real del repo (F26-f2): fondo tenue + Consolas + cita archivo:linea."""
+    cab = doc.add_paragraph()
+    run = cab.add_run("Código: " + snip["etiqueta"])
+    run.font.size = Pt(8.5)
+    run.bold = True
+    run.font.name = "Consolas"
+    run.font.color.rgb = _rgb_docx(ACENTO)
+    cab.paragraph_format.space_after = Pt(1)
+    for linea in (snip["texto"] or "").splitlines():
+        parrafo = doc.add_paragraph()
+        pPr = parrafo._p.get_or_add_pPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:fill"), "F4F7F9")
+        pPr.insert_element_before(shd, "w:tabs", "w:suppressAutoHyphens", "w:kinsoku",
+                                  "w:wordWrap", "w:overflowPunct", "w:topLinePunct",
+                                  "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+                                  "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing",
+                                  "w:mirrorIndents", "w:suppressOverlap", "w:jc", "w:textDirection",
+                                  "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl",
+                                  "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange")
+        r = parrafo.add_run(linea if linea.strip() else " ")
+        r.font.name = "Consolas"
+        r.font.size = Pt(tam)
+        parrafo.paragraph_format.space_after = Pt(0)
+        parrafo.paragraph_format.space_before = Pt(0)
+    doc.add_paragraph().paragraph_format.space_after = Pt(4)
 
 
 def _h(doc, texto, nivel=1):
@@ -1258,30 +1423,36 @@ def _seccion_arquitectura(doc, cifras, datos, cont):
     _h(doc, "3. Arquitectura del sistema")
     _p(doc, (
         "El sistema completo se organiza en cuatro capas. La capa de borde decide y no delega; "
-        "las demás transportan, guardan y analizan."
+        "las demás transportan, guardan y analizan — y, desde F26, operan la placa en remoto sin "
+        "jamás alcanzarla: la placa solo abre conexiones salientes (zero-asunción-LAN, D-F26-10)."
     ))
     _fig(doc, cont, RAIZ / "assets" / "diagrama_tecnico_contexto.png",
-         "Vista de contexto C4: usuarios, broker y servicios externos del sistema",
-         ancho_max_cm=11.0, alto_max_cm=16.0)
+         "Vista de contexto C4 (F26): placa, broker del dueño, WSL y VPS (solo broker + túneles)",
+         ancho_max_cm=12.5, alto_max_cm=15.0)
     _tabla_docx(doc, [
         ["Capa", "Componente", "Qué hace"],
         ["Borde", "ESP32-S3 GOOUUU v1.5 (N16R8) con ESPectre 3.2.0 parcheado "
-                  "(app_feedback, app_imagen, app_provision)",
+                  "(app_feedback, app_imagen, app_provision; + app_ota en F26)",
          "Lee CSI HT20 2.4 GHz (~100 muestras/s), ejecuta el MLP de 529 parámetros y decide "
          "idle | motion cada 250 ms; buzzer GPIO14 + WS2812 GPIO48; 1 JPEG QVGA de evidencia al "
-         "onset (cooldown 15 s, gate de memoria)."],
-        ["Transporte", f"MQTT autenticado en {BROKER}",
-         "Prefijo aislado aulasense/v1/devices/<id> con topics motion, health, sensing, config e "
-         "image (b64, QoS 0, retain=false → la foto no persiste en el broker). HTTP :8001 queda "
-         "como canal alternativo."],
+         "onset (cooldown 15 s, gate de heap interno 95/24 sin latch); portal fijo de "
+         "provisioning y OTA por comando MQTT con rollback en el bootloader (SPEC §16)."],
+        ["Transporte", f"MQTT autenticado en {BROKER} (broker del dueño: SOLO Mosquitto + "
+                       "túneles SSH de publicación)",
+          "Prefijo aislado aulasense/v1/devices/<id> con topics motion, health, sensing, config e "
+          "image (b64, QoS 0, retain=false → la foto no persiste en el broker) más los retains "
+          "F26 (ota, imagen_estado, heap_interno); el comando aulasense_ota lo publica la "
+          "ingesta y la placa lo consume por su conexión saliente. HTTP :8001 queda "
+          "como canal alternativo LAN-only."],
         ["Servidor", "WSL Debian 13 «" + DISTRO_WSL + "» (systemd, sin Docker): ingesta + "
-                     "dashboard FastAPI + worker de visión",
+                     "dashboard FastAPI + worker de visión + worker Clef + estático OTA :8101",
          "Ingesta valida el esquema, reengancha el reloj del nodo (R3) y escribe SQLite en modo "
-         "WAL (writer único). Dashboard en :8100, portproxy loopback 127.0.0.1:8000 y "
-         f"publicación en {URL_PUBLICA} por túnel SSH."],
+         "WAL (writer único). Dashboard en :8100 → túnel wsl-port → público :10062; estático "
+         "OTA :8101 → túnel → público :10064. El VPS no ejecuta código del proyecto "
+         f"(publicación: {URL_PUBLICA})."],
         ["Análisis", "Python: analysis/*.py (pandas, sklearn) y este generador",
-         "EDA (horas, RSSI, autocorrelación, outliers), modelo de ocupación a 10 min, 11 figuras "
-         "y generación reproducible de este informe y de la presentación."],
+         "EDA (horas, RSSI, autocorrelación, outliers), modelo de ocupación a 10 min, resumen "
+         "Clef, 13 figuras y generación reproducible de este informe y de la presentación."],
     ], anchos=(2.4, 6.4, 7.8), tam=8.5)
     _p(doc, (
         "Privacidad de la arquitectura: el CSI crudo nunca sale del chip; la imagen es evidencia "
@@ -1293,6 +1464,11 @@ def _seccion_arquitectura(doc, cifras, datos, cont):
     _fig(doc, cont, RAIZ / "assets" / "poster_funcionamiento.png",
          "Póster de funcionamiento: ondas Wi-Fi perturbadas por una persona, inferencia en el "
          "chip y salida al dashboard", ancho_max_cm=9.0, alto_max_cm=12.0)
+    if (RAIZ / "assets" / "diagrama_flujo_f26.png").is_file():
+        _fig(doc, cont, RAIZ / "assets" / "diagrama_flujo_f26.png",
+             "Flujos F26 fuente-a-destino: OTA (comando MQTT → gate post-quiesce → descarga → "
+             "SHA-256 → reboot → self-check → rollback 225 s) y evidencia (onset CSI → foto → "
+             "MQTT → visión → Clef)", ancho_max_cm=15.5, alto_max_cm=11.0)
     _p(doc, (
         "El diagrama de contenedores completo (assets/diagrama_tecnico.png, con el detalle de "
         "topics, tablas y unidades systemd) se incluye en el Anexo A: está pensado para lectura "
@@ -1304,10 +1480,13 @@ def _seccion_metodologia(doc, cifras, datos):
     _h(doc, "4. Metodología de datos")
     gt = cifras["gt"]
     _p(doc, (
-        "Fuente de verdad: la BD canónica del servidor (modo SOLO-LECTURA para este análisis). "
-        "Los archivos jsonl del dataset son el volcado histórico de cada sesión y se conservan "
-        "como evidencia; cuando discrepan de la BD se reporta la divergencia en lugar de "
-        "reescribir nada."
+        "Fuente de verdad: la BD canónica del servidor (modo SOLO-LECTURA para este análisis; "
+        "cero escrituras — el writer único es la ingesta). Los archivos jsonl del dataset son el "
+        "volcado histórico de cada sesión y se conservan como evidencia; cuando discrepan de la "
+        "BD se reporta la divergencia en lugar de reescribir nada. Desde F26 el export aplica "
+        "además una regla de validez temporal explícita (venta [2026-01-01, ahora+1 h]): la "
+        "única imagen fuera de venta (id 56, época ~2083, fire-test histórico) queda documentada "
+        "y FILTRADA del consolidado — la BD no se edita (regla 10)."
     ))
     _p(doc, (
         f"La verdad terreno de las sesiones F4 es pasiva y está corroborada por foto: "
@@ -1318,6 +1497,10 @@ def _seccion_metodologia(doc, cifras, datos):
         "interpretan como aula vacía."
     ))
     _h(doc, "4.1 Sesiones y volúmenes", 2)
+    _p(doc, (
+        "El contrato de eventos que la ingesta valida antes de escribir (código real del repo):"
+    ))
+    _codigo_docx(doc, datos["snippets"]["motion_schema"])
     _tabla_docx(doc, tabla_sesiones(datos["analisis"]), tam=8.5, alinear_primera=True,
                 anchos=(2.0, 1.9, 2.6, 1.7, 1.7, 2.3, 2.0, 2.0))
     _p(doc, "", tam=8)
@@ -1336,10 +1519,15 @@ def _seccion_metodologia(doc, cifras, datos):
                         + ", ".join(f"{tipo}={n}" for tipo, n in m["por_tipo"].items()) + ")"
                         for m in marcas) or "sin archivos de validación manual todavía"
     _p(doc, (
-        f"Marcas de validación presentes hoy: {detalle}. El tramo idle es lo que habilita "
-        "verdaderos negativos, falsos positivos y por tanto FPR y precisión. En cuanto existan "
-        "filas idle en docs/validacion_sesion2|3.csv, el MISMO pipeline produce esas métricas sin "
-        "cambios de código; este generador las publicará al reejecutarse."
+        f"Marcas de validación presentes hoy: {detalle}. S2B y S3B (sesiones nocturnas en "
+        "remoto, 2026-11-16/17) ya entraron solas al pipeline por el glob de sesiones, pero su "
+        "GT fotográfico es CERO (la cámara del sitio no subió en esas ventanas: sus CSV solo "
+        "tienen cabecera): aportan estabilidad multi-día, distribución y telemetría, NO "
+        "recall/precisión. El tramo idle es lo que habilita verdaderos negativos, falsos "
+        "positivos y por tanto FPR y precisión: en cuanto existan filas idle en un "
+        "docs/validacion_sesion*.csv, el MISMO pipeline produce esas métricas sin cambios de "
+        "código y este generador las publicará al reejecutarse. Por eso las métricas de "
+        "validación siguen ancladas a S1, la única sesión con tramos motion foto-corroborados."
     ))
     pendientes = pendientes_pipeline(ANALISIS / "informe_metricas.md")
     if pendientes:
@@ -1394,6 +1582,13 @@ def _seccion_resultados(doc, cifras, datos, cont):
          pie_figura(GRAFICOS / "eda_score_por_hora.png"))
 
     _h(doc, "5.3 Evidencia fotográfica y correlación con los eventos", 2)
+    _caja_nota(doc, (
+        "Política de privacidad del paquete público (regla 2, orden del dueño: cero "
+        "exposición de información privada): este informe NO adjunta píxeles de las fotos "
+        "reales del aula. La evidencia fotográfica vive SOLO en la galería del servidor "
+        "local, accesible tras login; aquí se reportan sus conteos, correlaciones y las "
+        "descripciones textuales de la IA (filtradas: sin personas identificables)."
+    ))
     _p(doc, (
         f"De {num(corr['fotos'], 0)} fotos reales (tras excluir el fire-test), "
         f"{num(corr['emparejadas'], 0)} se emparejan con un onset dentro de la ventana de "
@@ -1457,15 +1652,14 @@ def _seccion_resultados(doc, cifras, datos, cont):
     ))
     _tabla_docx(doc, tabla_vision(cifras), anchos=(6.2, 3.0, 3.0), tam=9, alinear_primera=True)
     _p(doc, "", tam=6)
-    otras = [i for i in vis["por_resultado"] if i.get("resultado") == "hecho"]
-    if otras:
-        _p(doc, (
-            f"Ojo con los dos universos: el registro de llamadas suma "
-            f"{num(otras[0].get('n'), 0)} llamadas 'hecho', que cubren 36 imágenes distintas "
-            "(3 descripciones duplicadas) e incluyen 2 imágenes sintéticas de prueba; la cifra "
-            f"publicada de {num(vis['hecho'], 0)} imágenes reales es la del estado de la cola en "
-            "la BD, no la del contador de llamadas."
-        ), cursiva=True)
+    _p(doc, (
+        f"Ojo con los dos universos: el registro de LLAMADAS (tabla vision_uso) y el estado de "
+        f"la COLA en la BD son conteos distintos — la cifra publicada de "
+        f"{num(vis['hecho'], 0)} imágenes reales descritas es el estado de la cola "
+        "(origen=real), no la suma de llamadas. La pasada F26 (2026-11-17) añadió "
+        "26 llamadas / 12.180 tokens sobre las fotos nuevas, con media medida de ~468 "
+        "tokens/imagen y 0 fallos."
+    ), cursiva=True)
     desperdicio = pres.get("desperdicio_tok")
     _p(doc, (
         "Incidente honesto: una tanda se lanzó dos veces con procesos solapados y "
@@ -1504,95 +1698,282 @@ def _seccion_resultados(doc, cifras, datos, cont):
     ))
 
 
+def _tabla_clef_docx(clef):
+    dist = (clef or {}).get("distribucion_taxonomia") or {}
+    filas = [["Etiqueta (taxonomía SPEC §16.6)", "n", "%", "confianza", "cubrimiento",
+              "calidad media"]]
+    orden = ("IMAGEN_DEGRADADA", "SIN_PERSONAS_VISIBLES", "CIRCULACION",
+             "PERSONAS_SENTADAS", "PRESENTACION_AL_FRENTE", "AGLOMERACION_OTRA")
+    for etiqueta in orden:
+        d = dist.get(etiqueta) or {}
+        filas.append([etiqueta, num(d.get("n"), 0), pct(d.get("pct")),
+                      num_o_dash(d.get("conf_media"), 3), num_o_dash(d.get("cubre_media"), 3),
+                      num_o_dash(d.get("calidad_media"), 3)])
+    return filas
+
+
+def _seccion_clef(doc, cifras, datos, cont):
+    clef = datos.get("clef") or {}
+    sn = datos["snippets"]
+    hall = clef.get("hallazgo_degradacion") or {}
+    rev = clef.get("revision_humana") or {}
+    costes = clef.get("costes_medidos") or {}
+    _h(doc, "6. Decisión de aula con Clef (F26)")
+    _p(doc, (
+        "F26 añadió una segunda capa de IA sobre la evidencia fotográfica: la "
+        "clasificación de la escena del aula con la Decisions API de OpenRouter (familia "
+        "Cloudflare Clef). El worker (server/vision/clef.py) usa una cascada barata→cara: "
+        "cloudflare/clef-flash decide solo sobre el TEXTO de la descripción de visión, y "
+        "escala a cloudflare/clef (que ve la imagen real) cuando la confianza es menor de "
+        "0,6. La taxonomía tiene 6 etiquetas mutuamente excluyentes; una respuesta fuera de "
+        "ella se rechaza (fail-closed hacia revisión humana). Las JPEG no decodificables se "
+        "clasifican IMAGEN_DEGRADADA en local, sin gastar llamada."
+    ))
+    _codigo_docx(doc, sn["clef_url"])
+    _codigo_docx(doc, sn["clef_payload"])
+    _p(doc, (
+        f"Medido sobre las fotos reales del dataset: {num(clef.get('n_decisiones_reales'), 0)} "
+        f"decisiones ('hecho', origen=real; las 2 sintéticas históricas quedan excluidas por "
+        f"la regla 10, sin editar la BD). Modelos: "
+        + " · ".join(f"{m} = {n}" for m, n in (clef.get('modelos') or {}).items())
+        + f". Confianza media global {num(clef.get('confianza_media_global'), 3)}; el badge "
+        f"REVISION_HUMANA (cubrimiento < {num((rev.get('umbral_cubre') or 0.7), 1)}) se "
+        f"activó en {num(rev.get('n'), 0)}/{num(clef.get('n_decisiones_reales'), 0)} "
+        f"decisiones ({pct(rev.get('pct'))})."
+    ))
+    _tabla_docx(doc, _tabla_clef_docx(clef), anchos=(5.4, 1.3, 1.6, 1.9, 2.1, 1.9), tam=8.5,
+                alinear_primera=True)
+    _p(doc, "", tam=6)
+    _caja_nota(doc, (
+        "HALLAZGO CENTRAL — decodificable ≠ legible: " + pct(hall.get("tasa_degradada_pct")) +
+        " de las decisiones fueron IMAGEN_DEGRADADA con calidad perceptual media " +
+        num(hall.get("calidad_media_degradada"), 3) + " frente a " +
+        num(hall.get("calidad_media_sin_personas"), 3) + " de las legibles — y ocurre también "
+        "en las fotos nuevas post-F26 que pasan el control PIL estricto: el modelo ve el píxel "
+        "y sigue juzgando la escena ilegible. El cuello NO es la decodificación ni la IA: es "
+        "el encuadre QVGA con jpeg_quality=12 que el firmware eligió por presupuesto de "
+        "memoria. Cero PERSONAS_SENTADAS: el aula nunca quedó bien encuadrada en las sesiones. "
+        "La mejora está diseñada post-entrega: subir la calidad por OTA (no altera el sensing "
+        "CSI; ver §7 y §9)."
+    ))
+    if (GRAFICOS / "clef_distribucion_decisiones.png").is_file():
+        _fig(doc, cont, GRAFICOS / "clef_distribucion_decisiones.png",
+             pie_figura(GRAFICOS / "clef_distribucion_decisiones.png"))
+    if (GRAFICOS / "clef_revision_calidad.png").is_file():
+        _fig(doc, cont, GRAFICOS / "clef_revision_calidad.png",
+             pie_figura(GRAFICOS / "clef_revision_calidad.png"))
+    _h(doc, "6.1 Coste medido (regla 16)", 2)
+    _bullets_docx(doc, [
+        f"Paso 0 de calibración ANTES del lote: 809 tokens / $1,54e-5 / 747 ms (evidencia "
+        f".tmp/f26_clef_paso0.json). Solo entonces se autorizó el lote.",
+        f"Consumo real acumulado F26 (tabla clef_uso): {num(costes.get('clef_uso_filas_api'), 0)} "
+        f"llamadas API + {num(costes.get('clef_uso_filas_tope'), 0)} rechazos por tope · "
+        f"{num(costes.get('clef_tokens'), 0)} tokens · "
+        f"${num(costes.get('clef_coste_usd'), 5)} USD · 0 fallos ni refusals.",
+        "Matrícula honesta de subestimación: la pata flash de las escaladas no se audita por "
+        "separado; el coste real es ~5-10 % mayor (mejora de 1 línea anotada, no aplicada).",
+        f"Visión del mismo día: "
+        f"{num(((costes.get('vision_uso_dia') or {}).get('llamadas')), 0)} llamadas · "
+        f"{num(((costes.get('vision_uso_dia') or {}).get('tokens_total')), 0)} tokens "
+        "(la clave del Token Plan factura en Credits del plan, sin USD por llamada).",
+    ])
+    _p(doc, (
+        "Limitación de la capa: no existe ground truth de etiquetas de escena, así que se "
+        "reporta DISTRIBUCIÓN y CONFIANZA, no precisión de la decisión (constancia escrita en "
+        "docs/analisis/clef_resumen.json). Clef decide sobre la FOTO (evidencia de evento), no "
+        "sobre el CSI: no reemplaza al detector."
+    ))
+
+
+def _seccion_operacion(doc, cifras, datos):
+    sn = datos["snippets"]
+    _h(doc, "7. Operación F26: OTA por aire, rollback, portal y monitoreo")
+    _p(doc, (
+        "La fase final convirtió el despliegue en operación remota honesta: la placa vive lejos "
+        "del servidor y SOLO hace conexiones salientes (MQTT al broker del dueño y GET HTTP del "
+        "binario de actualización por el túnel público). El servidor jamás alcanza a la placa; "
+        "el recovery remoto es el rollback de la OTA, no un canal hacia el nodo."
+    ))
+    _h(doc, "7.1 OTA: comando → gate → SHA-256 → reboot → self-check", 2)
+    _p(doc, (
+        "El módulo propio app_ota.c suscribe el topic aulasense_ota (comandos que la ingesta "
+        "PUBLICA; la ingesta nunca suscribe ese topic). El flujo de un apply: gate de heap "
+        "INTERNO post-quiesce (96/48 KB — los 120/64 del plan original se enmendaron con "
+        "evidencia: en 200 muestras de banco ninguna alcanzaba 120 y el post-quiesce medido es "
+        "103/48, con 120/64 la primera OTA por aire habría sido imposible), pausa de captura y "
+        "telemetría, descarga (~34 s medidos para 1.418.720 B), verificación SHA-256 + tamaño "
+        "byte a byte contra el manifest publicado por código, cambio de slot, reboot, "
+        "self-check de 90 s estables + 120 s de gracia y validación de la imagen. E2E ~163 s."
+    ))
+    _codigo_docx(doc, sn["ota_inicio"])
+    _codigo_docx(doc, sn["ota_aplicar"])
+    _p(doc, (
+        "Fail-closed demostrado: con el sha alterado la placa descarga, rechaza "
+        "(OTA_ERROR etapa=sha256) y NO reinicia — el slot actual nunca se toca antes de "
+        "verificar. La protección anti-brick vive en el bootloader (doble slot con "
+        "PENDING_VERIFY): un bin malo con SHA válido hace que la placa revierta SOLO a la "
+        "imagen buena en 225,2 s medidos, sin intervención humana (probado con f26.7-test de "
+        "self-check fallido a propósito; la placa 'resucitó sola' 5 veces, 1 planeada + 4 por "
+        "un bug de rutas del runner). La OTA buena quedó demostrada DOS veces por aire: "
+        "f26.4 → f26.5 → f26.6, la build viva al cerrar la fase."
+    ))
+    _codigo_docx(doc, sn["ota_cadena"])
+    _h(doc, "7.2 Duraciones medidas (Anexo A de NOTES_operacion)", 2)
+    _tabla_docx(doc, [
+        ["Paso", "Medido"],
+        ["check publicado → evento OTA_CHECK en BD", "~1 s"],
+        ["apply publicado → OTA_INICIO (pasa gate post-quiesce)", "~0,5 s"],
+        ["Descarga del bin 1.418.720 B por el túnel", "32,2-35 s (~34 s)"],
+        ["OTA_OK → reboot → evento FIRMWARE", "19-22 s"],
+        ["Self-check hasta validar", "~91-110 s"],
+        ["E2E apply → placa validada de vuelta", "~161-163 s"],
+        ["Rollback automático (bin malo con sha válido)", "225,2 s sin humano"],
+        ["Agujero de telemetría esperado durante apply", "~30 s"],
+        ["Sha alterado → OTA_ERROR etapa=sha256 (sin reboot)", "rechazo a los ~34 s"],
+    ], anchos=(9.6, 5.0), tam=9)
+    _p(doc, "", tam=6)
+    _h(doc, "7.3 Portal de provisioning fijo (D-F26-4, ya flasheado)", 2)
+    _p(doc, (
+        "Si la WiFi del sitio falla 3 ciclos, la placa sube el AP fija AULASENSE-CFG (WPA2; la "
+        "pass canónica está documentada en docs/NOTES_operacion.md §4, orden explícita del "
+        "dueño: es una capacidad LOCAL que exige asociación física). Portal sin token en "
+        "http://192.168.4.1/cfg con rutas GET /cfg (formulario), GET /cfg/estado (JSON) y POST "
+        "/cfg/wifi (guarda NVS → AP OFF → STA puro → connect). Guardas heredadas intactas: "
+        "Origin/Referer 403, cooldown 5 s (429), body ≤255 B y la placa nunca loguea SSID ni "
+        "pass (solo longitudes). Confirmación remota sin volver al sitio: los eventos "
+        "CFG_GUARDADA y STA_RECONECTADO aterrizan en config_eventos cuando la placa recupera "
+        "MQTT. Regla de colisión: SSID fijo → una placa a la vez en provisioning."
+    ))
+    _h(doc, "7.4 Monitoreo: panel /salud y verificación post-energía", 2)
+    _bullets_docx(doc, [
+        "GET /api/salud (tras login) + panel /salud con semáforos: ingesta, MQTT, frescura de "
+        "telemetría (umbral 5 min), heap INTERNO, colas de visión y Clef, disco, túneles y "
+        "estado OTA retenido.",
+        "Anti-falsa-alarma: durante una OTA hay un agujero de telemetría de ~30 s ESPERADO; con "
+        "el retain ota no-idle el panel marca ota_en_curso=true y no alarma.",
+        "No confundir métricas: free_memory_kb ≈ 8,2 MB es PSRAM y no sirve para los gates; "
+        "los números útiles son internal_free_kb / internal_largest_block_kb (régimen de banco "
+        "103-106 / 56 KB), publicados por el retain heap_interno cada 30 s.",
+        "Tras re-energizar en el sitio: telemetría fresca ≤5 min, retain imagen_estado con "
+        "camera_ok=true y build=f26.x, MAX(id) de imágenes creciendo con el tránsito y evento "
+        "FIRMWARE nuevo. Todo por consulta SOLO-LECTURA (mode=ro): writer único = ingesta.",
+        "Verificación por CLI desde el host: powershell tools\\wsl_aulasense.ps1 status y "
+        "powershell tools\\wsl_aulasense.ps1 salud (docs/guion_demo.md:29-32; el JSON de "
+        "túneles expone solo state/remote, nunca la pass del VPS).",
+        "Regla de campo de la evidencia: ratio onsets→fotos ≥ 80 % en ventanas con tránsito; si "
+        "baja, revisar descartes/GATE_OFF en config_eventos y solo entonces serial en lectura "
+        "(lee_serial.py, sin reset).",
+    ])
+
+
 def _seccion_limitaciones(doc, cifras, datos):
-    _h(doc, "6. Limitaciones honestas")
+    _h(doc, "8. Limitaciones honestas")
     mejor = cifras["modelo"]["mejor_umbral"] or {}
+    clef = datos.get("clef") or {}
+    hall = clef.get("hallazgo_degradacion") or {}
     _p(doc, (
         "Estas limitaciones no son notas al pie: condicionan cómo deben leerse los resultados "
         "anteriores."
     ))
     _bullets_docx(doc, [
-        "FPR y precisión no computables todavía: el ground truth actual es solo de movimiento "
-        "(pasivo y corroborado por foto). Sin tramos idle declarados no existen verdaderos "
-        "negativos; los huecos son sin-dato, no sala vacía. Se activan solas al llegar las "
-        "marcas de S2/S3.",
-        "RSSI sin variación útil: el nodo estuvo junto al AP (rango "
-        f"{num((datos['eda'].get('rssi_efecto') or {}).get('rssi_min'), 0)}…"
-        f"{num((datos['eda'].get('rssi_efecto') or {}).get('rssi_max'), 0)} dBm), por lo que el "
-        "experimento no informa sobre distancia ni sobre efecto de paredes. La correlación "
-        "observada es ruido de canal, no una relación física demostrada.",
-        "Precisión-piso del modelo: el mejor umbral da precisión "
-        f"{num(mejor.get('precision_piso'), 4)} contando como falso positivo todo onset fuera de "
-        "los tramos GT; es una cota inferior, porque el GT no cubre todas las horas con presencia "
-        "real.",
-        "D8 = baseline: el modelo de ocupación se compara contra la clase mayoritaria; con "
-        f"{num(cifras['modelo']['n_filas'], 0)} ventanas entrenables y "
-        f"{num((cifras['modelo']['logistic_regression'] or {}).get('n_test'), 0)} de test, la "
-        "mejora es indicativa. No se promete accuracy de dataset largo (lección E10).",
-        "N2 ruteo LAN: el acceso público se resuelve por túnel SSH al VPS; el portproxy "
-        "LAN → WSL es opcional y no es un requisito del sistema. Si el túnel cae, el dashboard "
-        "sigue vivo en loopback dentro de la VM.",
+        "FPR y precisión no computables: el ground truth actual es solo de movimiento "
+        "(pasivo y corroborado por foto). S2B/S3B llegaron con GT fotográfico CERO (cámara "
+        "caída en el sitio remoto): aportan estabilidad multi-día y distribución, no "
+        "validación. Sin tramos idle declarados no existen verdaderos negativos; los huecos "
+        "son sin-dato, no aula vacía. Las métricas de validación siguen ancladas a S1.",
+        "Clef sin GT de escena: sus decisiones reportan distribución y confianza, NO "
+        "precisión; el " + pct((clef.get('revision_humana') or {}).get('pct')) +
+        " con badge REVISION_HUMANA existe precisamente por eso. Y el cuello real de la "
+        "evidencia es el encuadre QVGA q12: " + pct(hall.get('tasa_degradada_pct')) +
+        " de las fotos acabaron IMAGEN_DEGRADADA (§6).",
+        "OTA y dashboard por HTTP sin TLS (decisión D3 del dueño, declarada): el tramo "
+        "distro→VPS va cifrado por SSH y el tramo VPS→placa es HTTP plano MITIGADO por "
+        "SHA-256 + rollback automático; TLS (nginx + Let's Encrypt) queda post-entrega. "
+        "El aislamiento de topics en el broker compartido es por convención: ACLs pendientes.",
+        "Rotación de la pass SSH del VPS pendiente (acción humana): la gestiona la app local "
+        "wsl-port y no vive en el .env del proyecto. La pass canónica del AP figura en "
+        "docs/NOTES_operacion.md por orden explícita del dueño (capacidad local, no credencial "
+        "de red); en este informe y en la presentación no se publica el valor.",
+        f"Ratio fotos↔onsets: el emparejamiento es {pct(cifras['correlacion']['emparejadas_pct'])} "
+        "y tras F26 hay fotos sin onset ±20 s (re-habilitaciones de gate); la regla de campo "
+        "(≥80 % onset→foto con tránsito) queda para seguimiento en el aula con lee_serial.",
+        "RSSI sin variación útil: el nodo del banco quedó cerca del AP; el experimento no "
+        "informa sobre distancia ni efecto de paredes. La correlación observada es ruido de "
+        "canal, no una relación física demostrada.",
+        "Precisión-piso del modelo predictivo y D8 = baseline: con ventanas entrenables cortas "
+        "la comparación es indicativa. No se promete accuracy de dataset largo (lección E10).",
         "Alcance del sensing: una placa cubre una zona; se detecta movimiento, no presencia "
         "estacionaria; no se identifica ni se cuenta personas; la temperatura del die es proxy "
         "de carga de cómputo, no temperatura ambiente; el reloj del nodo es monótono y la época "
-        "la estima el PC (re-enganche R3).",
-        "Integridad de imagen: el encoder del dispositivo generaba frames rotos antes de Fix F; "
-        "el transporte quedó descartado como causa, pero la tasa histórica "
-        f"({frac(cifras['integridad']['tasa'])}) no representa al firmware corregido.",
+        "la estima el PC (re-enganche R3). Escenarios E2-E5 del portal (caída real del router) "
+        "pendientes de ventana natural.",
+        "Integridad de imagen: el encoder del dispositivo generaba frames rotos antes de "
+        "Fix F; la tasa histórica no representa al firmware corregido.",
     ])
 
 
 def _seccion_seguridad(doc, cifras):
-    _h(doc, "7. Seguridad y privacidad")
+    _h(doc, "9. Seguridad y privacidad")
     _p(doc, (
         "La privacidad del proyecto es acotada y por mitigación, no «por construcción»: hay "
         "imágenes, aunque sean pocas y locales. Los controles aplicados son:"
     ))
     _bullets_docx(doc, [
-        "Sin reconocimiento facial ni caras-ML. La visión opcional es detección de persona y la "
-        "IA principal es el detector CSI en el chip.",
+        "Sin reconocimiento facial ni caras-ML. La visión opcional describe escenas y la IA "
+        "principal es el detector CSI en el chip.",
         "Captura mínima: un JPEG QVGA por onset de movimiento, cooldown de 15 s, tarea de baja "
-        "prioridad que nunca bloquea el detector y gate de memoria que la desactiva si el heap "
-        "cae. El CSI crudo no sale del chip.",
+        "prioridad que nunca bloquea el detector y gate de heap interno (95/24, sin latch) que "
+        "la desactiva si el memoria cae. El CSI crudo no sale del chip.",
         "Destino local: galería servida solo con login; el broker autenticado recibe la imagen "
         "con retain=false (no persiste). Nada de nube.",
-        "Rate limits: recepción de imagen 1 cada 10 s por dispositivo y control de cuota en la "
-        "visión IA (120/día, 20/hora) con dedupe por hash y backoff.",
-        "Portal de configuración en ruta privada con token de 8 hex en NVS, guard de "
-        "Origin/Referer, cooldown de 5 s, cabeceras de seguridad y registro que nunca escribe "
-        "SSID ni contraseñas (solo longitudes).",
-        "Credenciales: la contraseña de admin y la clave de IA se generan por código "
-        "(secrets.token_hex en el alta) y viven en claves/.env, gitignored; nunca se imprimen en "
-        "documentos, informes ni evidencia. Rotación recomendada con tools/reset_admin.py antes "
-        "de la entrega y tras cualquier demo pública.",
-        "Retención: las imágenes son purgables (por defecto 30 días) y la purga conserva la fila "
-        "y su descripción, de modo que el dataset no se rompe al borrar datos personales. Las "
-        "imágenes están gitignored.",
+        "Rate limits: recepción de imagen 1 cada 10 s por dispositivo, cuota de visión "
+        "(120/día, 20/hora) y de Clef con las mismas ventanas, ambas con dedupe por hash y "
+        "backoff; toda tanda precedida de Paso 0 de medición.",
+        "Portal de configuración FIJO (F26, SPEC §16.2): AP WPA2 AULASENSE-CFG + rutas "
+        "/cfg, /cfg/estado, /cfg/wifi sin token; guardas de Origin/Referer (403), cooldown "
+        "5 s (429), body ≤255 B, cabeceras duras y registro que nunca escribe SSID ni "
+        "contraseñas (solo longitudes). El token NVS de F24 fue eliminado del código.",
+        "Credenciales: todo vive en el .env ÚNICO de la raíz (gitignored; reglas 7 y 15), "
+        "generado SOLO por código (secrets.token_hex) y migrado byte a byte por "
+        "tools/consolidar_env.py; las claves del dueño (IA/broker) nunca se imprimen en logs, "
+        "reportes ni documentos. La pass canónica del AP es la única excepción publicada, por "
+        "orden explícita del dueño, solo en .env + docs/NOTES_operacion.md (capacidad local). "
+        "La pass SSH del VPS no entra al repo (la gestiona wsl-port; rotación pendiente).",
+        "Superficie pública: el dashboard solo abre por túnel SSH y exige sesión (401 sin "
+        "cookie en /api/eventos); el estático OTA no expone datos personales (solo bins y "
+        "manifest). El JSON de túneles que lee /salud expone únicamente state/remote.",
+        "Retención: las imágenes son purgables (por defecto 30 días) y la purga conserva la "
+        "fila y su descripción, de modo que el dataset no se rompe al borrar datos personales. "
+        "Las imágenes están gitignored.",
     ])
 
 
 def _seccion_conclusion(doc, cifras, datos):
     k = cifras_clave(cifras)
-    _h(doc, "8. Conclusiones")
+    _h(doc, "10. Conclusiones")
     _p(doc, (
         "El proyecto demuestra el ciclo completo de un sistema de datos con IA en el borde: "
         "sensado físico (CSI), inferencia en el dispositivo, transporte con autenticación, "
-        "almacenamiento consultable, dashboard en vivo, análisis estadístico y un modelo "
-        "predictivo con validación honesta. El detector CSI cumple la promesa mínima con "
-        f"evidencia: recall {k['recall']} sobre {k['tramos_gt']} tramos de movimiento "
+        "almacenamiento consultable, dashboard en vivo, análisis estadístico, dos capas de IA "
+        "opcional con coste medido y —el cierre F26— operación remota real: actualización por "
+        "aire con verificación SHA-256 y rollback anti-brick demostrados, portal de "
+        "provisioning fijo y monitoreo con semáforos. El detector CSI cumple la promesa mínima "
+        f"con evidencia: recall {k['recall']} sobre {k['tramos_gt']} tramos de movimiento "
         "corroborados por foto, sin depender de la cámara."
     ))
     _p(doc, (
-        "Lo que falta también está medido: sin marcas idle no hay FPR ni precisión; el dataset es "
-        "corto; las imágenes históricas tienen un 42,6 % de frames rotos por un defecto de "
-        "encoder ya corregido; y el modelo de ocupación apenas supera al baseline. Publicar esas "
-        "carencias junto a los aciertos es parte del entregable, no un apéndice."
+        "Lo que falta también está medido y ordenado: sin marcas idle no hay FPR ni precisión; "
+        "el GT fotográfico de S2B/S3B fue cero; el 75 % de las fotos son ilegibles para la IA "
+        "de decisión por el presupuesto de calidad JPEG (mejora diseñada post-entrega, "
+        "desplegable por OTA); TLS y ACLs de broker quedan declarados como deuda con su "
+        "mitigación actual. Publicar esas carencias junto a los aciertos es parte del "
+        "entregable, no un apéndice."
     ))
     _p(doc, (
-        "Operativamente el sistema queda reproducible: el pipeline de análisis, la regeneración "
-        "de este informe y la presentación son comandos; las sesiones nuevas se descubren por "
-        "glob y las métricas que hoy no son computables se activan sin cambios de código cuando "
-        "existan sus datos."
+        "Operativamente el sistema queda reproducible y gobernable por una persona: el pipeline "
+        "de análisis, la regeneración de este informe y la presentación son comandos; la OTA se "
+        "dispara con check→verificación externa→apply (docs/NOTES_operacion.md); y todo cambio "
+        "futuro de firmware viaja por aire sobre la build única F26 (placa viva f26.6)."
     ))
     _caja_nota(doc, f"Sistema en vivo: {URL_PUBLICA} (login requerido). "
                     f"Regeneración: python tools/generar_informe.py")
@@ -1674,6 +2055,8 @@ def construir_docx(cifras, datos, salida):
     _seccion_arquitectura(doc, cifras, datos, cont)
     _seccion_metodologia(doc, cifras, datos)
     _seccion_resultados(doc, cifras, datos, cont)
+    _seccion_clef(doc, cifras, datos, cont)
+    _seccion_operacion(doc, cifras, datos)
     _seccion_limitaciones(doc, cifras, datos)
     _seccion_seguridad(doc, cifras)
     _seccion_conclusion(doc, cifras, datos)
@@ -1870,73 +2253,14 @@ def _nota_lamina(lamina, texto, izquierda, arriba, ancho, alto=Inches(0.9), tam=
     return caja
 
 
-def _flujo_capas(lamina, izquierda, arriba, ancho, alto_caja=Inches(0.95),
-                 separacion=Inches(0.28)):
-    """Flujo de las 4 capas dibujado con formas: legible a tamaño de lámina.
-
-    El diagrama C4 exportado (6060 px) es un artefacto para página/pantalla completa; a tamaño
-    de diapositiva su texto queda a ~1 pt, así que se usa esta versión vectorial y el original
-    vive en el informe (Anexo A).
-    """
-    pasos = [
-        ("BORDE · ESP32-S3", "CSI HT20 2.4 GHz · MLP de 529 parámetros · decisión cada 250 ms"),
-        ("TRANSPORTE · MQTT", f"{BROKER} · topics por dispositivo · retain=false"),
-        ("SERVIDOR · WSL Debian 13", "ingesta → SQLite (WAL) → dashboard FastAPI en :8100"),
-        ("ANÁLISIS · Python", "EDA + modelo de 10 min → 11 figuras → este informe y la charla"),
-    ]
-    y = arriba
-    for indice, (titulo, detalle) in enumerate(pasos):
-        caja = lamina.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, izquierda, y, ancho,
-                                       alto_caja)
-        caja.fill.solid()
-        caja.fill.fore_color.rgb = _prgb(FONDO_CLARO)
-        caja.line.color.rgb = _prgb(ACENTO)
-        caja.line.width = PPt(1.25)
-        caja.shadow.inherit = False
-        tf = caja.text_frame
-        tf.word_wrap = True
-        tf.margin_left = Inches(0.14)
-        tf.margin_right = Inches(0.1)
-        tf.margin_top = Inches(0.05)
-        tf.margin_bottom = Inches(0.03)
-        parrafo = tf.paragraphs[0]
-        parrafo.text = titulo
-        parrafo.font.size = PPt(11.5)
-        parrafo.font.bold = True
-        parrafo.font.name = "Calibri"
-        parrafo.font.color.rgb = _prgb(AZUL)
-        parrafo.alignment = PP_ALIGN.LEFT
-        segundo = tf.add_paragraph()
-        segundo.text = detalle
-        segundo.font.size = PPt(9.5)
-        segundo.font.name = "Calibri"
-        segundo.font.color.rgb = _prgb(GRIS)
-        y = y + alto_caja
-        if indice < len(pasos) - 1:
-            flecha = lamina.shapes.add_shape(
-                MSO_SHAPE.DOWN_ARROW, izquierda + int(ancho / 2) - Inches(0.09),
-                y + Inches(0.035), Inches(0.18), separacion - Inches(0.07))
-            flecha.fill.solid()
-            flecha.fill.fore_color.rgb = _prgb(ACENTO)
-            flecha.line.fill.background()
-            flecha.shadow.inherit = False
-            y = y + separacion
-
-
-def _caja_titulo(lamina, texto, izquierda, arriba, ancho):
-    caja = lamina.shapes.add_textbox(izquierda, arriba, ancho, Inches(0.4))
-    tf = caja.text_frame
-    tf.word_wrap = True
-    parrafo = tf.paragraphs[0]
-    parrafo.text = texto
-    parrafo.font.size = PPt(13)
-    parrafo.font.bold = True
-    parrafo.font.name = "Calibri"
-    parrafo.font.color.rgb = _prgb(ACENTO)
-    return caja
-
-
 # --------------------------------------------------------------------------- PPTX: láminas
+
+# F26-f2: la presentación es el RECORRIDO PASO A PASO del proyecto terminado, desde
+# cero (qué es el CSI) hasta la operación real (OTA, portal, salud) y las limitaciones
+# honestas. Cada bloque 1-12 lleva su código REAL leído del repo con su referencia
+# archivo:linea (verificable por grep). Fuente: docs/NOTES_operacion.md,
+# docs/ENTREGA_PROFESOR.md, docs/guion_demo.md y .tmp/f26_analisis.md (cifras §9).
+
 
 def _lamina_titulo(prs, datos, cifras):
     lamina = prs.slides.add_slide(prs.slide_layouts[6])
@@ -1964,12 +2288,13 @@ def _lamina_titulo(prs, datos, cifras):
     parrafo.font.name = "Calibri"
     parrafo.font.color.rgb = _prgb((0xC9, 0xD8, 0xE2))
 
-    caja = lamina.shapes.add_textbox(Inches(0.95), Inches(3.95), Inches(11.5), Inches(1.6))
+    caja = lamina.shapes.add_textbox(Inches(0.95), Inches(3.95), Inches(11.5), Inches(1.9))
     tf = caja.text_frame
     tf.word_wrap = True
     lineas = (
         f"{MATERIA} · {INSTITUTO}",
         f"Autor: {AUTOR}   ·   {fecha_larga(datos['fecha'])}",
+        "Paso a paso desde cero hasta el proyecto terminado, con código real del repo",
         f"Dashboard público: {URL_PUBLICA}",
         f"Pipeline de análisis: {cifras['pipeline']['version'] or 'n/d'} · "
         f"{fecha_corta(cifras['pipeline']['generado_utc'])}",
@@ -1981,319 +2306,530 @@ def _lamina_titulo(prs, datos, cifras):
         parrafo.font.name = "Calibri"
         parrafo.font.color.rgb = _prgb(AZUL if indice < 2 else GRIS)
         parrafo.space_after = PPt(7)
-    _pie_lamina(lamina, prs, f"Regenerable con: python tools/generar_informe.py")
+    _pie_lamina(lamina, prs, "Regenerable con: python tools/generar_informe.py")
 
 
-def _lamina_problema(prs, cifras):
-    lamina = _nueva_lamina(prs, "El problema: de la cámara al Wi-Fi", "Origen del proyecto")
-    _bullets(lamina, [
-        "DriveGuard (proyecto anterior): dashcam con detección de caras para microsueño. El "
-        "detector nunca encontró un rostro real en vivo.",
-        "El fallo no era un bug: luz variable, ángulo y oclusión degradan la detección facial "
-        "fuera del laboratorio.",
-        "Y una cámara permanente en un aula tiene un costo de privacidad difícil de sostener.",
-        "Giro de enfoque: medir cómo perturban el campo Wi-Fi (CSI), sin vídeo, micrófono ni "
-        "radar.",
-        "AulaSense detecta movimiento y ocupación dinámica; no presencia, no identidad, no "
-        "conteo de personas.",
-    ], Inches(0.85), Inches(1.85), Inches(7.1), Inches(3.2), tam=15)
-    _kpis(lamina, [("0", "caras detectadas en vivo"), ("529", "parámetros del detector"),
-                   ("250 ms", "periodo de decisión")],
-          Inches(0.85), Inches(5.3), Inches(7.1), alto=Inches(1.0))
-    _imagen_ppt(lamina, RAIZ / "assets" / "poster_funcionamiento.png",
-                Inches(8.2), Inches(1.8), Inches(4.3), Inches(4.6))
-    _imagen_ppt(lamina, RAIZ / "assets" / "poster_funcionamiento.png",
-                Inches(8.2), Inches(1.8), Inches(4.3), Inches(4.7))
-    _fuente_lamina(lamina, "Fuente: docs/PROPUESTA.md · archivo dashcam-ia/ (E1–E3) · "
-                           "assets/poster_funcionamiento.png")
-    _pie_lamina(lamina, prs)
+def _caja_codigo(lamina, snip, izquierda, arriba, ancho, alto):
+    """Caja oscura de código con su referencia archivo:linea (copiado del repo en vivo)."""
+    caja = lamina.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, izquierda, arriba, ancho, alto)
+    caja.fill.solid()
+    caja.fill.fore_color.rgb = _prgb((0x10, 0x1A, 0x24))
+    caja.line.color.rgb = _prgb(ACENTO)
+    caja.line.width = PPt(1)
+    caja.shadow.inherit = False
+    tf = caja.text_frame
+    tf.word_wrap = True
+    tf.margin_left = Inches(0.1)
+    tf.margin_right = Inches(0.08)
+    tf.margin_top = Inches(0.06)
+    tf.margin_bottom = Inches(0.04)
+    parrafo = tf.paragraphs[0]
+    parrafo.text = snip["etiqueta"]
+    parrafo.font.size = PPt(8)
+    parrafo.font.bold = True
+    parrafo.font.name = "Consolas"
+    parrafo.font.color.rgb = _prgb((0x8F, 0xD1, 0xDE))
+    lineas = (snip["texto"] or "").splitlines()
+    tam = 8.5 if len(lineas) <= 12 else 7.5 if len(lineas) <= 18 else 6.8
+    for linea in lineas:
+        p = tf.add_paragraph()
+        p.text = linea if linea.strip() else " "
+        p.font.size = PPt(tam)
+        p.font.name = "Consolas"
+        p.font.color.rgb = _prgb((0xE8, 0xF0, 0xF4))
+        p.space_after = PPt(0)
+        p.line_spacing = 1.0
+    return caja
 
 
-def _lamina_como_funciona(prs, datos):
-    lamina = _nueva_lamina(prs, "Cómo funciona: cuatro capas", "Arquitectura")
-    _flujo_capas(lamina, Inches(8.0), Inches(1.78), Inches(4.6))
-    _bullets(lamina, [
-        "Borde: ESP32-S3 con ESPectre 3.2.0 parcheado; CSI HT20 2.4 GHz, MLP de 529 parámetros, "
-        "decisión idle | motion cada 250 ms en el chip.",
-        "Transporte: MQTT autenticado con prefijo aislado por dispositivo; la foto de evidencia "
-        "viaja con retain=false y no persiste en el broker.",
-        "Servidor: WSL Debian 13 con systemd (sin Docker): ingesta, SQLite en modo WAL y "
-        "dashboard FastAPI con login.",
-        "Análisis: pandas + sklearn, 11 figuras, informe y presentación generados por código.",
-        "Salidas físicas del nodo: buzzer GPIO14 y LED WS2812 GPIO48; la foto es accesoria, no "
-        "la fuente de verdad.",
-    ], Inches(0.85), Inches(1.85), Inches(6.6), Inches(4.5), tam=14)
-    _fuente_lamina(lamina, "Diagrama C4 completo en el informe (Anexo A); esquema equivalente "
-                           "dibujado aquí para legibilidad a tamaño de lámina")
-    _pie_lamina(lamina, prs)
-
-
-def _lamina_detector(prs):
-    lamina = _nueva_lamina(prs, "El detector vive en el chip", "Edge-first")
-    _kpis(lamina, [("8→24→12→1", "MLP del detector"), ("529", "parámetros"),
-                    ("~100 pps", "muestras CSI/s"), ("250 ms", "cadencia de decisión")],
-           Inches(0.85), Inches(1.8), Inches(11.6), alto=Inches(1.2))
-    _bullets(lamina, [
-        "El PC no procesa la señal cruda: recibe eventos y métricas (regla edge-first).",
-        "Perfil High Accuracy sin calibración (umbral 0.5); perfil ligero alternativo con "
-        "calibración de ~10 s.",
-        "Telemetría del propio nodo cada 30 s: ms/detección, % CPU, heap libre, pps de CSI, RSSI, "
-        "canal y temperatura del die (proxy de carga, no ambiente).",
-        "Gate de memoria: si el heap baja de 120 KB o el mayor bloque de 64 KB, la captura de "
-        "evidencia se desactiva sola y el detector sigue funcionando.",
-    ], Inches(0.85), Inches(3.25), Inches(5.7), Inches(3.0), tam=14)
-    _imagen_ppt(lamina, RAIZ / "assets" / "diagrama_tecnico_componentes_nodo.png",
-                Inches(6.7), Inches(3.2), Inches(6.1), Inches(2.5))
-    _fuente_lamina(lamina, "Fuente: SPEC.md §3 · assets/diagrama_tecnico_componentes_nodo.png")
-    _pie_lamina(lamina, prs)
-
-
-def _lamina_datos(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Datos: sesiones y verdad terreno", "Metodología")
+def _lamina_roadmap(prs, datos, cifras):
+    lamina = _nueva_lamina(prs, "De cero a proyecto terminado: 12 pasos", "Hoja de ruta")
+    izquierda = [
+        "1 — Qué es Wi-Fi CSI y por qué edge-first",
+        "2 — Arquitectura real (VPS = broker + túneles; WSL = todo lo demás)",
+        "3 — Montaje de la placa GOOUUU (GPIO, alimentación)",
+        "4 — Firmware ESPectre + parche AulaSense",
+        "5 — Eventos JSON por MQTT (topics y payloads)",
+        "6 — Servidor en WSL debian-aulasense (writer único → SQLite)",
+    ]
+    derecha = [
+        "7 — Broker del dueño y túneles de publicación wsl-port",
+        "8 — Fotos-evidencia y visión IA (Qwen)",
+        "9 — Decisión de aula con Clef (+ hallazgo honesto)",
+        "10 — Dataset y análisis (métricas con n)",
+        "11 — Operación F26: OTA por aire, rollback, portal, /salud",
+        "12 — Limitaciones honestas y post-entrega",
+    ]
+    _bullets(lamina, izquierda, Inches(0.85), Inches(1.8), Inches(5.8), Inches(3.6), tam=14)
+    _bullets(lamina, derecha, Inches(6.85), Inches(1.8), Inches(5.8), Inches(3.6), tam=14)
     k = cifras_clave(cifras)
-    _kpis(lamina, [(k["evaluaciones"], "evaluaciones analizadas"),
-                    (k["tramos_gt"], "tramos con movimiento"),
-                    (k["fotos"], "fotos de evidencia"),
-                    (k["emparejadas"], "foto ↔ onset")],
-           Inches(0.85), Inches(1.75), Inches(11.6))
-    _tabla_ppt(lamina, tabla_sesiones(datos["analisis"]), Inches(0.85), Inches(3.15),
-               Inches(11.6), Inches(1.5), tam=10,
-               anchos=(1.1, 1.3, 1.3, 1.0, 1.0, 1.4, 1.2, 1.2))
-    _bullets(lamina, [
-        "Verdad terreno pasiva corroborada por foto: cada onset con imagen dentro de ±20 s "
-        "define un tramo de movimiento; los huecos son sin-dato, no aula vacía.",
-        "Sin marcas idle todavía: FPR y precisión se activan solas cuando lleguen S2/S3.",
-        "Sesiones y volúmenes se descubren por glob en dataset/sesion_*/: nada se escribe a mano.",
-    ], Inches(0.85), Inches(4.95), Inches(11.6), Inches(1.6), tam=13.5)
-    _fuente_lamina(lamina, "Fuente: analisis.json · metricas_por_sesion · eda.json · rango")
+    filas = num(datos.get("consolidado_filas"), 0) if datos.get("consolidado_filas") else "n/d"
+    clef = datos.get("clef") or {}
+    hall = clef.get("hallazgo_degradacion") or {}
+    _kpis(lamina, [
+        (filas, "filas reales en el consolidado"),
+        (k["evaluaciones"], "evaluaciones del detector"),
+        (k["recall"], "recall motion (n=" + k["tramos_gt"] + ")"),
+        (frac((hall.get("tasa_degradada_pct") or 0) / 100.0, 0), "fotos Clef IMAGEN_DEGRADADA"),
+        ("225 s", "rollback automático medido"),
+    ], Inches(0.85), Inches(5.55), Inches(11.6), alto=Inches(1.05))
+    _fuente_lamina(lamina, "Fuente: .tmp/f26_analisis.md §9 · docs/ENTREGA_PROFESOR.md · "
+                           "analysis/dataset/consolidado.csv (contado en disco)")
     _pie_lamina(lamina, prs)
 
 
-def _lamina_dashboard(prs, datos):
-    lamina = _nueva_lamina(prs, "Dashboard público y en vivo", "Producto")
-    _caja_titulo(lamina, URL_PUBLICA, Inches(0.85), Inches(1.75), Inches(6.0))
+def _lamina_b1_csi(prs, cifras):
+    lamina = _nueva_lamina(prs, "Paso 1 — Qué es Wi-Fi CSI y por qué edge-first",
+                           "El fenómeno físico")
     _bullets(lamina, [
-        "Servido desde la distro WSL " + DISTRO_WSL + " (puerto interno 8100) y publicado por "
-        "túnel SSH: /login responde 200 y /api/eventos responde 401 sin cookie.",
-        "Tres vistas: Monitoreo (estado idle | motion, score, métricas edge, feed), Reportes "
-        "(KPIs, series, heatmap horario, export CSV) y Validación (matriz de confusión).",
-        "Galería de evidencia con búsqueda por texto sobre las descripciones de la IA.",
-        "Login con admin único, cookie HttpOnly + SameSite y lockout progresivo.",
-    ], Inches(0.85), Inches(2.25), Inches(5.9), Inches(3.6), tam=14)
-    if datos["frame"]:
-        _imagen_ppt(lamina, datos["frame"], Inches(6.85), Inches(1.72), Inches(5.85),
-                    Inches(4.75))
+        "Origen: el proyecto anterior (dashcam anti-microsueño) nunca detectó un rostro real "
+        "en vivo. El giro: dejar de mirar a las personas y medir cómo perturban el campo Wi-Fi.",
+        "CSI (Channel State Information): cada subportadora OFDM del Wi-Fi 2.4 GHz describe "
+        "amplitud y fase del canal; un cuerpo en movimiento altera ese patrón de forma medible.",
+        "Edge-first: una red neuronal (MLP 8→24→12→1) corre ENTERA dentro del ESP32-S3 y "
+        "decide idle | motion cada 250 ms. El PC solo ingesta, almacena, visualiza y analiza.",
+        "El CSI crudo nunca sale del chip: por la red viajan eventos ya decididos.",
+        "Framing honesto: se detecta MOVIMIENTO, no presencia estacionaria; idle ≠ sala vacía; "
+        "no se identifica ni se cuenta personas.",
+        "Sin micrófono, sin radar, sin hardware extra: la placa y el router que ya estaban.",
+    ], Inches(0.85), Inches(1.8), Inches(7.4), Inches(4.0), tam=13.5)
+    _kpis(lamina, [("529", "parámetros del MLP"), ("250 ms", "periodo de decisión"),
+                   ("~100", "muestras CSI/s")],
+          Inches(0.85), Inches(5.9), Inches(7.4), alto=Inches(0.95))
+    _imagen_ppt(lamina, RAIZ / "assets" / "poster_funcionamiento.png",
+                Inches(8.5), Inches(1.8), Inches(4.1), Inches(4.6))
+    _fuente_lamina(lamina, "Fuente: docs/ENTREGA_PROFESOR.md §Qué hace único este proyecto · "
+                           "AGENTS.md reglas 1 y 11 · assets/poster_funcionamiento.png")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b2_arquitectura(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 2 — La arquitectura real (SPEC §16.10)", "Dónde corre cada cosa")
+    _bullets(lamina, [
+        "VPS = SOLO broker Mosquitto (MQTT/TCP :14769) + túneles SSH de publicación. "
+        "No ejecuta código del proyecto.",
+        "WSL debian-aulasense (systemd, venv, sin Docker) = TODO lo demás: ingesta, SQLite, "
+        "dashboard :8100, workers visión+Clef y estático OTA :8101.",
+        "Outbound-only (zero-asunción-LAN): la placa solo abre conexiones salientes; el "
+        "servidor JAMÁS alcanza a la placa. Recovery remoto = rollback de la OTA.",
+        "Publicación: dashboard :8100 → túnel → :10062; OTA :8101 → túnel → :10064. "
+        "HTTP :8001 queda LAN-only alternativo.",
+        "IA opcional: visión Qwen (Token Plan) y decisión Clef (OpenRouter Decisions API).",
+    ], Inches(0.75), Inches(1.75), Inches(5.6), Inches(4.6), tam=12.5)
+    _imagen_ppt(lamina, preparar_imagen(RAIZ / "assets" / "diagrama_tecnico_contexto.png", 1500),
+                Inches(6.5), Inches(1.7), Inches(6.2), Inches(2.75))
+    _imagen_ppt(lamina, preparar_imagen(RAIZ / "assets" / "diagrama_flujo_f26.png", 1500),
+                Inches(7.05), Inches(4.55), Inches(5.6), Inches(2.0))
+    _fuente_lamina(lamina, "Diagramas F26 regenerados: assets/diagrama_tecnico*.png "
+                           "(Structurizr) + assets/diagrama_flujo_f26.png (Mermaid) — "
+                           ".tmp/f26d_diagrama.md")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b3_montaje(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 3 — Montaje de la placa GOOUUU ESP32-S3 v1.5", "Hardware")
+    _caja_codigo(lamina, datos["snippets"]["gpio"], Inches(0.75), Inches(1.8), Inches(6.3),
+                 Inches(4.55))
+    _bullets(lamina, [
+        "GOOUUU ESP32-S3-CAM v1.5 (N16R8): 16 MB flash + 8 MB PSRAM octal + OV3660 + "
+        "buzzer + WS2812 onboard.",
+        "Alimentación: USB-C 5 V (fuente o power bank). Consumo ~1-2 W con detector y cámara "
+        "al aire.",
+        "Buzzer en GPIO14 (LEDC) y WS2812 en GPIO48 (RMT): feedback local en cada transición.",
+        "Cámara OV3660 usa el bus DVP GPIO4-18 SOLO con AULASENSE_IMAGEN=y; ningún otro "
+        "periférico puede tocarlo.",
+        "Consola = USB-Serial-JTAG (COM6), NO UART. El flash UART ocurrió UNA vez; todo lo "
+        "demás viajó por OTA (paso 11).",
+        "Prohibido USB device stack (re-muxea el PHY y apaga el JTAG = riesgo de brick).",
+    ], Inches(7.3), Inches(1.8), Inches(5.35), Inches(4.6), tam=12)
+    _fuente_lamina(lamina, "Snippet: firmware/parche_aulasense/Kconfig.projbuild:26-44 · "
+                           "AGENTS.md §GPIO · docs/ENTREGA_PROFESOR.md §Cómo reproducir")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b4_firmware(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 4 — Firmware: ESPectre + parche AulaSense", "El parche en el chip")
+    _caja_codigo(lamina, datos["snippets"]["imagen_task"], Inches(0.75), Inches(1.8),
+                 Inches(6.15), Inches(4.55))
+    _bullets(lamina, [
+        "Base: ESPectre 3.2.0 (GPLv3, clonado por tag) sobre ESP-IDF v5.5.6 "
+        "(eim run idf.py build). El derivado vive en firmware/parche_aulasense/.",
+        "app_feedback.c — buzzer/LED en la transición idle→motion.",
+        "app_imagen.c — captura QVGA de evidencia SOLO en el ONSET (task propia prio 3, "
+        "cola de 4 onsets drop-oldest, cooldown 15 s): la imagen se descarta si hace falta, "
+        "el evento NUNCA.",
+        "app_provision.c — portal fijo de red (paso 11). app_ota.c — actualización por aire "
+        "(paso 11).",
+        "Gate de memoria SIN latch (F26): free<95 KB o largest<24 KB de heap INTERNO apaga "
+        "la captura; se re-evalúa en cada onset.",
+        "Regla de espejo: parche ↔ árbol vivo diff cero + hash, verificado al cerrar cada "
+        "tarea de placa (10/10 archivos en F26).",
+    ], Inches(7.15), Inches(1.8), Inches(5.5), Inches(4.6), tam=12)
+    _fuente_lamina(lamina, "Snippet: firmware/parche_aulasense/app_imagen.c:939-955 · "
+                           "README del parche §F26 · AGENTS.md regla 17")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b5_eventos(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 5 — Eventos JSON por MQTT", "El contrato de datos")
+    _caja_codigo(lamina, datos["snippets"]["topics"], Inches(0.75), Inches(1.75), Inches(6.0),
+                 Inches(4.6))
+    _caja_codigo(lamina, datos["snippets"]["event_json"], Inches(6.95), Inches(1.75),
+                 Inches(5.7), Inches(2.75))
+    _bullets(lamina, [
+        "Prefijo aislado en broker compartido: aulasense/v1/devices/<id>/{motion,health,"
+        "image,config_eventos,ota,…}.",
+        "motion payload validado al entrar: {timestamp_ms, state:idle|motion, score 0..1} "
+        "(server/ingesta/esquema.py:196-209).",
+        "Imagen: JSON+b64 QoS 0 retain=false — la foto NO persiste en el broker.",
+        "Comandos servidor→placa viajan por el topic aulasense_ota (la ingesta publica, "
+        "nunca suscribe): la placa los consume por su MQTT saliente.",
+    ], Inches(6.95), Inches(4.65), Inches(5.7), Inches(2.0), tam=11)
+    _fuente_lamina(lamina, "Snippets: server/ingesta/esquema.py:30-54 · "
+                           "firmware/parche_aulasense/app_imagen.c:301-318 · SPEC §6/§16.4")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b6_servidor(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 6 — Servidor en WSL debian-aulasense", "Ingesta con writer único")
+    _caja_codigo(lamina, datos["snippets"]["writer_doc"], Inches(0.75), Inches(1.75),
+                 Inches(6.0), Inches(2.05))
+    _caja_codigo(lamina, datos["snippets"]["on_message"], Inches(0.75), Inches(3.95),
+                 Inches(6.0), Inches(2.55))
+    _bullets(lamina, [
+        "WSL Debian 13 nativo: systemd + venv python3.13, SIN Docker (restricción dura).",
+        "Patrón paho→cola→writer único: el callback de paho SOLO encola; un único hilo escribe "
+        "SQLite (WAL) y CSV. Jamás dos stacks vivos (split-brain).",
+        "El decoder de imagen (límite 64 KB, b64 estricto, magic JPEG, sha256) corre en el "
+        "writer: por eso el payload entra CRUDO a la cola (y los eventos JSON parseados por "
+        "la misma vía, línea 1633).",
+        "BD canónica: /home/aulasense/aulasense-datos/aulasense.db (ext4). No existe CLI "
+        "sqlite3: toda consulta es SOLO-LECTURA (mode=ro) por el venv.",
+        "Reloj del nodo es monótono: la ingesta estima la época en cada health (re-enganche R3) "
+        "y la serie se lee por orden de id.",
+        "Encima: dashboard FastAPI con login (:8100), worker de visión y worker Clef.",
+    ], Inches(7.0), Inches(1.75), Inches(5.65), Inches(4.8), tam=11.5)
+    _fuente_lamina(lamina, "Snippets: server/ingesta/ingesta_mqtt.py:1-9 y 1610-1623 · "
+                           "SPEC §7-§8 · AGENTS.md reglas 3 y 4")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b7_broker(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 7 — Broker del dueño + túneles wsl-port", "Publicación sin abrir puertos")
+    _bullets(lamina, [
+        "Broker compartido del dueño: broker.gilman.pro:14769 (MQTT/TCP) con usuario de nodo "
+        "y de ingesta; el aislamiento por prefijo de topic es de convención (ACLs: "
+        "post-entrega).",
+        "La placa, el PC y el VPS NO se ven directamente: la publicación se hace con túneles "
+        "SSH de retorno (reverse forward) gestionados por la app local wsl-port.",
+        "Regla dura: antes de add, tunnels list (puerto libre validado, jamás tocar túneles "
+        "ajenos); auto-start para que sobrevivan reinicios.",
+        "Verificación externa: HTTP 200 al manifiesto OTA por el puerto público + "
+        "/login 200 y /api/eventos 401 sin cookie en el dashboard.",
+        "El JSON de túneles que consume el panel /salud SOLO expone state/remote: nunca la "
+        "pass SSH del VPS (esa vive en wsl-port, no en el repo).",
+    ], Inches(0.75), Inches(1.75), Inches(6.3), Inches(4.0), tam=12)
+    _caja_codigo(lamina, datos["snippets"]["tuneles"], Inches(7.25), Inches(1.75),
+                 Inches(5.4), Inches(2.35))
+    _caja_codigo(lamina, datos["snippets"]["salud_cmd"], Inches(7.25), Inches(4.25),
+                 Inches(5.4), Inches(1.6))
+    _nota_lamina(lamina, "El comando real usó --remote-port 10064: asignado y verificado "
+                         "(libre en tunnels list + TCP-test externo; state=running).",
+                 Inches(7.25), Inches(5.95), Inches(5.4), Inches(0.6), tam=10)
+    _fuente_lamina(lamina, "Snippets: SPEC.md:1174-1179 (comandos reales) · "
+                           "docs/guion_demo.md:29-32 · NOTES_operacion §topología")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b8_vision(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 8 — Fotos-evidencia y visión IA (Qwen)", "Describir sin prometer")
+    _caja_codigo(lamina, datos["snippets"]["vision_payload"], Inches(0.75), Inches(1.75),
+                 Inches(6.1), Inches(2.75))
+    cm = ((datos.get("clef") or {}).get("costes_medidos") or {})
+    vd = cm.get("vision_uso_dia") or {}
+    vt = cm.get("vision_uso_total") or {}
+    if vd:
+        media = round((vd.get("tokens_total") or 0) / max(1, vd.get("llamadas") or 1))
+        consumo = (
+            f"Consumo F26 medido: {num(vd.get('llamadas'), 0)} llamadas · "
+            f"{num(vd.get('tokens_total'), 0)} tokens ({num(media, 0)} tok/llamada media)."
+        )
+        if vt:
+            consumo += (f" Histórico total: {num(vt.get('llamadas'), 0)} llamadas / "
+                        f"{num((vt.get('tokens_in') or 0) + (vt.get('tokens_out') or 0), 0)} "
+                        "tokens · 0 fallos en la tanda F26.")
     else:
-        _imagen_ppt(lamina, RAIZ / "assets" / "diagrama_tecnico_componentes_dashboard.png",
-                    Inches(6.85), Inches(1.72), Inches(5.85), Inches(4.3))
-    _fuente_lamina(lamina, "Captura: fotograma de docs/video_aulasense.mp4 (escena de acceso, "
-                           "todo tras login) · docs/README.md §Cómo ver el sistema")
-    _pie_lamina(lamina, prs)
-
-
-def _lamina_fotos(prs, datos):
-    lamina = _nueva_lamina(prs, "Fotos-evidencia: qué se ve y qué no", "Evidencia")
-    preparadas = datos["fotos"]
-    if not preparadas:
+        consumo = ("Consumo F26: sin clef_resumen.json al generar (no se inventa: ver la "
+                   "tabla vision_uso en el informe).")
+    _bullets(lamina, [
+        "El worker tools/vision_describe.py --once es AGENTE-MEDIADO (ToS del Token Plan): "
+        "una pasada viva a la vez, lanzada y esperada dentro del turno.",
+        "Rate limits medidos y persistentes: 120 imágenes/día y 20/hora, dedupe por hash y "
+        "backoff exponencial ante 429; Paso 0 de medición antes de cada lote.",
+        "QC local ANTES de gastar API: JPEG ilegible = error, sin llamada (20 irreparables "
+        "históricas quedaron así, documentadas).",
+        consumo,
+        "Las descripciones alimentan la búsqueda por texto de la galería (sobre texto ya "
+        "almacenado).",
+    ], Inches(0.75), Inches(4.75), Inches(6.1), Inches(1.8), tam=10)
+    fotos = datos.get("fotos") or []
+    if fotos:
+        foto = fotos[0]
+        # F26-f2-fix PRIVACIDAD: se embebe el MOCKUP SINTÉTICO (cero píxeles reales);
+        # de la foto id N solo se cita su descripción textual (filtrada no sensible).
+        _imagen_ppt(lamina, datos.get("mockup") or mockup_qvga_privacidad(),
+                    Inches(7.15), Inches(1.75), Inches(5.4), Inches(2.6))
+        descripcion = anonimizar_descripcion(foto["descripcion"])
+        if len(descripcion) > 220:
+            descripcion = descripcion[:220] + "…"
+        pie = (f"Encuadre esquemático de la evidencia (QVGA real 320x240): la foto id "
+               f"{foto['id']} se OMITE por privacidad — la galería vive solo en el "
+               "servidor local tras login (regla 2). Descripción real generada por la IA:")
+        caja = lamina.shapes.add_textbox(Inches(7.15), Inches(4.5), Inches(5.45), Inches(2.1))
+        tf = caja.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = pie
+        p.font.size = PPt(10)
+        p.font.name = "Calibri"
+        p.font.color.rgb = _prgb(GRIS)
+        p2 = tf.add_paragraph()
+        p2.text = "«" + descripcion + "»"
+        p2.font.size = PPt(10.5)
+        p2.font.italic = True
+        p2.font.name = "Calibri"
+        p2.font.color.rgb = _prgb(AZUL)
+    else:
+        _imagen_ppt(lamina, datos.get("mockup") or mockup_qvga_privacidad(),
+                    Inches(7.15), Inches(1.75), Inches(5.4), Inches(2.6))
         _bullets(lamina, [
-            "Sin fotos válidas y descritas disponibles en la BD canónica en este momento.",
-            "El generador selecciona solo imágenes reales con vision_estado='hecho' y JPEG "
-            "legible; si no hay, lo dice en lugar de inventar.",
-        ], Inches(0.85), Inches(1.9), Inches(11.5), Inches(2.5), tam=16)
-    else:
-        ancho = Inches(4.35) if len(preparadas) > 1 else Inches(5.6)
-        izquierda = Inches(0.85)
-        for indice, foto in enumerate(preparadas[:2]):
-            _imagen_ppt(lamina, foto["ruta"], izquierda, Inches(1.8), ancho, Inches(3.05))
-            pie = (f"Imagen id {foto['id']}"
-                   + (f" · evento {foto['evento_id']}" if foto["evento_id"] else "")
-                   + (" · recorte de privacidad del 35 % derecho" if foto["censurada"]
-                      else " · sin personas identificables"))
-            caja = lamina.shapes.add_textbox(izquierda, Inches(4.95), ancho, Inches(0.9))
-            tf = caja.text_frame
-            tf.word_wrap = True
-            parrafo = tf.paragraphs[0]
-            parrafo.text = pie
-            parrafo.font.size = PPt(10)
-            parrafo.font.name = "Calibri"
-            parrafo.font.color.rgb = _prgb(GRIS)
-            descripcion = (foto["descripcion"][:150] + "…") if len(foto["descripcion"]) > 150 \
-                else foto["descripcion"]
-            segundo = tf.add_paragraph()
-            segundo.text = "Descripción IA: " + descripcion
-            segundo.font.size = PPt(9)
-            segundo.font.italic = True
-            segundo.font.name = "Calibri"
-            segundo.font.color.rgb = _prgb(GRIS_SUAVE)
-            izquierda = izquierda + ancho + Inches(0.35)
-    _fuente_lamina(lamina, "Selección automática por BD (origen real, vision_estado='hecho', "
-                           "JPEG validado). Sin reconocimiento facial: la censura es un recorte "
-                           "geométrico y se anota.")
+            "Sin descripciones disponibles al generar (la selección lee la BD canónica en "
+            "modo SOLO-LECTURA y solo por texto). El generador lo dice en lugar de inventar; "
+            "los píxeles reales nunca se embeben (regla 2).",
+        ], Inches(7.15), Inches(4.5), Inches(5.4), Inches(2.0), tam=11)
+    _fuente_lamina(lamina, "Snippet: server/vision/cliente.py:873-888 · "
+                           ".tmp/f26_analisis.md §7 (costes medidos)")
     _pie_lamina(lamina, prs)
 
 
-def _lamina_metricas_1(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Métricas I: detección frente a la verdad terreno",
-                                            "Resultados")
+def _tabla_clef_ppt(clef):
+    dist = (clef or {}).get("distribucion_taxonomia") or {}
+    filas = [["Etiqueta (taxonomia §16.6)", "n", "%", "conf", "calidad"]]
+    orden = ("IMAGEN_DEGRADADA", "SIN_PERSONAS_VISIBLES", "CIRCULACION",
+             "PERSONAS_SENTADAS", "PRESENTACION_AL_FRENTE", "AGLOMERACION_OTRA")
+    for etiqueta in orden:
+        d = dist.get(etiqueta) or {}
+        filas.append([
+            etiqueta,
+            num(d.get("n"), 0),
+            pct(d.get("pct")),
+            num_o_dash(d.get("conf_media"), 3),
+            num_o_dash(d.get("calidad_media"), 3),
+        ])
+    return filas
+
+
+def _lamina_b9_clef(prs, datos, cifras):
+    lamina = _nueva_lamina(prs, "Paso 9 — Decisión de aula con Clef (OpenRouter)", "IA de decisión + hallazgo honesto")
+    clef = datos.get("clef") or {}
+    hall = clef.get("hallazgo_degradacion") or {}
+    rev = clef.get("revision_humana") or {}
+    costes = clef.get("costes_medidos") or {}
+    kpis = [
+        (pct(hall.get("tasa_degradada_pct"), 1), "decisiones IMAGEN_DEGRADADA"),
+        (num(clef.get("confianza_media_global"), 3), "confianza media"),
+        (f"{num(rev.get('n'), 0)}/{num(clef.get('n_decisiones_reales'), 0)}", "badge REVISION_HUMANA"),
+        ("$" + num(costes.get("clef_coste_usd"), 4), "coste medido (62 llamadas)"),
+    ]
+    _kpis(lamina, kpis, Inches(0.75), Inches(1.7), Inches(12.0), alto=Inches(1.0))
+    _caja_codigo(lamina, datos["snippets"]["clef_url"], Inches(0.75), Inches(2.95),
+                 Inches(6.15), Inches(0.85))
+    _caja_codigo(lamina, datos["snippets"]["clef_payload"], Inches(0.75), Inches(3.95),
+                 Inches(6.15), Inches(1.55))
+    _bullets(lamina, [
+        "Cascada: clef-flash (solo el TEXTO de la descripción) escala a clef (con la imagen) "
+        "si la confianza < 0,6; una choice fuera de la taxonomía se rechaza (fail-closed).",
+        "IMAGEN_DEGRADADA se decide LOCAL para JPEG no decodificables: 0 llamadas. Paso 0 "
+        "medido antes del lote: 809 tokens / $1,54e-5 / 747 ms.",
+        "HALLAZGO (decodificable ≠ legible): calidad " +
+        num(hall.get("calidad_media_degradada"), 3) + " vs " +
+        num(hall.get("calidad_media_sin_personas"), 3) + " — cuello QVGA q12, no la IA; cero "
+        "PERSONAS_SENTADAS.",
+        "Sin GT de escena: se reporta DISTRIBUCIÓN, no precisión de la decisión.",
+    ], Inches(0.75), Inches(5.5), Inches(6.15), Inches(1.05), tam=9)
+    _tabla_ppt(lamina, _tabla_clef_ppt(clef), Inches(7.1), Inches(2.95), Inches(5.55),
+               Inches(2.15), tam=9.5, anchos=(2.6, 0.6, 0.8, 0.8, 0.9))
+    _imagen_ppt(lamina, GRAFICOS / "clef_revision_calidad.png", Inches(7.1), Inches(5.25),
+                Inches(5.55), Inches(1.75))
+    _fuente_lamina(lamina, "Snippets: server/vision/clef.py:87 y 648-651 · "
+                           "tabla: docs/analisis/clef_resumen.json (60 decisiones reales)")
+    _pie_lamina(lamina, prs)
+
+
+def _lamina_b10_dataset(prs, cifras, datos):
+    lamina = _nueva_lamina(prs, "Paso 10 — Dataset propio y análisis con tamaño muestral",
+                           "Medido, no prometido")
     k = cifras_clave(cifras)
-    _kpis(lamina, [(k["recall"], "recall de motion"), (f"{k['tp']} / {k['fn']}", "TP / FN"),
-                    (k["tramos_gt"], "tramos GT"), (k["integridad"], "integridad JPEG")],
-           Inches(0.85), Inches(1.75), Inches(11.6))
-    _tabla_ppt(lamina, tabla_confusion(cifras)[:7], Inches(0.85), Inches(3.15), Inches(6.3),
-               Inches(2.6), tam=10.5, anchos=(2.6, 1.4))
-    _imagen_ppt(lamina, GRAFICOS / "matriz_confusion.png", Inches(7.4), Inches(3.05),
-                Inches(5.1), Inches(2.8))
+    filas = num(datos.get("consolidado_filas"), 0) if datos.get("consolidado_filas") else "n/d"
+    pps_vals = [s["pps"] for s in cifras["sesiones"] if s.get("pps")]
+    pps_txt = (f"{num(min(pps_vals), 2)}-{num(max(pps_vals), 2)}" if pps_vals else "n/d")
+    n_fig = len(datos.get("figuras") or [])
+    _kpis(lamina, [
+        (filas, "filas 100 % reales (consolidado)"),
+        (k["evaluaciones"], "evaluaciones del detector"),
+        (k["recall"], "recall motion (anclado a S1)"),
+        (k["tramos_gt"], "tramos GT n= con foto"),
+    ], Inches(0.75), Inches(1.7), Inches(12.0), alto=Inches(1.0))
     _bullets(lamina, [
-        "RECALL-ONLY: sin tramos idle no hay verdaderos negativos y por tanto FPR ni precisión "
-        "no son computables; se declara, no se estima.",
-    ], Inches(0.85), Inches(5.9), Inches(11.6), Inches(0.8), tam=12)
-    _fuente_lamina(lamina, "Fuente: analisis.json · confusion (pipeline "
-                           f"{cifras['pipeline']['version']})")
+        "Verdad terreno PASIVA corroborada por foto: onset + foto en ±20 s = tramo motion; "
+        "los huecos son sin-dato, no aula vacía.",
+        "NOTA honesta S2B/S3B (sesiones nocturnas remotas): GT fotográfico = 0 (cámara caída "
+        "en el sitio): sirven para estabilidad multi-día (pps de evaluación "
+        + pps_txt + " en " + num(len(cifras['sesiones']), 0) + " sesiones) y "
+        "distribución, NO para recall/precision. Las métricas siguen ancladas a S1: recall "
+        + k["recall"] + " (TP " + k["tp"] + "/FN " + k["fn"] + ", n=" + k["tramos_gt"] + ").",
+        "Precision no computable: sin marcas idle no hay verdaderos negativos (se declara, no "
+        "se estima).",
+        "Fila ts_ms absurda (id 56, época 2083): DOCUMENTADA y FILTRADA con regla explícita "
+        "en el export; la BD NO se edita.",
+        "Modelo de ocupación (sklearn, n_test " +
+        num((cifras['modelo']['logistic_regression'] or {}).get('n_test'), 0) +
+        " con 5 positivos): accuracy " + num((cifras['modelo']['decision_tree'] or {}).get('accuracy'), 3) +
+        " = baseline mayoritario → ejercicio docente SIN promesas (lección E10).",
+        num(n_fig, 0) + " figuras del pipeline regeneradas (glob de sesiones: todo entra solo).",
+    ], Inches(0.75), Inches(2.95), Inches(6.6), Inches(3.9), tam=10.5)
+    _imagen_ppt(lamina, GRAFICOS / "eda_sesiones_comparativa.png", Inches(7.55), Inches(2.9),
+                Inches(5.15), Inches(1.85))
+    _imagen_ppt(lamina, GRAFICOS / "matriz_confusion.png", Inches(7.55), Inches(4.85),
+                Inches(5.15), Inches(1.85))
+    _fuente_lamina(lamina, "Fuente: .tmp/f26_analisis.md §1-§5 · analisis.json · eda.json · "
+                           "analysis/dataset/consolidado.csv")
     _pie_lamina(lamina, prs)
 
 
-def _lamina_metricas_2(prs, cifras):
-    lamina = _nueva_lamina(prs, "Métricas II: latencia, volumen y actividad",
-                                            "Resultados")
-    lat = cifras["latencias"]["eventos"] or {}
-    _kpis(lamina, [(num(lat.get("mediana_corr_truncacion_ms"), 0), "ms mediana evento → BD"),
-                    (num(lat.get("p95_ms"), 0), "ms p95 (sesgo de truncación)"),
-                    (pct(lat.get("pct_abs_bajo_2s")), "filas con |Δ| < 2 s"),
-                    (num(cifras["eda"]["pps_medio"], 2), "evaluaciones/s de media")],
-           Inches(0.85), Inches(1.75), Inches(11.6))
-    _tabla_ppt(lamina, tabla_latencias(cifras), Inches(0.85), Inches(3.12), Inches(6.1),
-               Inches(1.25), tam=10, anchos=(1.0, 0.6, 1.1, 1.3, 0.9, 0.9))
-    _caja_titulo(lamina, "Distribución del score del detector", Inches(7.35), Inches(3.0),
-                 Inches(5.1))
-    _imagen_ppt(lamina, GRAFICOS / "histograma_scores.png", Inches(7.3), Inches(3.3),
-                Inches(5.2), Inches(2.7))
+def _lamina_b11_ota(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 11a — Operación F26: OTA por aire con rollback",
+                           "La placa se actualiza sola (y revive sola)")
+    _caja_codigo(lamina, datos["snippets"]["ota_inicio"], Inches(0.75), Inches(1.72),
+                 Inches(6.15), Inches(1.8))
+    _caja_codigo(lamina, datos["snippets"]["ota_aplicar"], Inches(0.75), Inches(3.65),
+                 Inches(6.15), Inches(2.85))
     _bullets(lamina, [
-        "La columna recibido_en se trunca a 1 s: la mediana bruta es negativa y la corregida "
-        "(+500 ms) es la cifra honesta.",
-        "El nodo mantiene ~100 muestras CSI/s con el detector consumiendo una fracción pequeña "
-        "del CPU; la telemetría lo registra cada 30 s.",
-    ], Inches(0.85), Inches(4.55), Inches(6.2), Inches(1.8), tam=13)
-    _fuente_lamina(lamina, "Fuente: analisis.json · latencias · eda.json · pps_autocorrelacion")
+        "Flow de un apply: comando MQTT (check→apply) → gate de heap INTERNO post-quiesce "
+        "96/48 KB (enmendado con evidencia: con los 120/64 del plan la primera OTA era "
+        "imposible) → pausa captura+telemetría → descarga del bin por el túnel público "
+        "(~34 s para 1,4 MB) → SHA-256+size → set_boot → reboot → self-check 90 s + gracia "
+        "120 s → imagen validada. E2E ~163 s.",
+        "Fail-closed: hash alterado → OTA_ERROR etapa=sha256 SIN reboot (el slot actual "
+        "nunca se toca antes de verificar).",
+        "Anti-brick en el BOOTLOADER: bin malo con SHA válido → PENDING_VERIFY → no supera "
+        "el self-check → revierte SOLO a la imagen buena. Probado: la placa resucitó sola "
+        "5 veces (1 planeada + 4 por un bug de rutas del runner).",
+        "Demostrado DOS veces por aire: f26.4 → f26.5 → f26.6 (build viva al cerrar F26).",
+        "Agujero de telemetría ~30 s ESPERADO durante apply; el panel /salud lo sabe por el "
+        "retain OTA y pone ota_en_curso=true (cero falsas alarmas).",
+    ], Inches(7.1), Inches(1.72), Inches(5.55), Inches(4.8), tam=10.5)
+    _imagen_ppt(lamina, preparar_imagen(RAIZ / "assets" / "diagrama_flujo_f26.png", 1200),
+                Inches(7.1), Inches(6.0), Inches(5.55), Inches(0.95))
+    _fuente_lamina(lamina, "Snippets: firmware/parche_aulasense/app_ota.c:618-625 y 641-656 · "
+                           "evidencia: .tmp/f26_g1_ota.md · .tmp/f26_g2_rollback.md")
     _pie_lamina(lamina, prs)
 
 
-def _lamina_modelo(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Modelo de ocupación (ventana de 10 minutos)",
-                                            "Análisis")
-    m = cifras["modelo"]
-    lr = m["logistic_regression"] or {}
-    _kpis(lamina, [(num(lr.get("accuracy"), 3), "accuracy (regresión logística)"),
-                   (num(m["baseline"].get("accuracy"), 3), "baseline de clase mayoritaria"),
-                   (num(m["n_filas"], 0), "ventanas entrenables"),
-                   (frac(m["cobertura_indicador"] / 100 if m["cobertura_indicador"] else None),
-                    "cobertura del indicador")],
-          Inches(0.85), Inches(1.75), Inches(11.6))
-    _tabla_ppt(lamina, tabla_modelos(cifras), Inches(0.85), Inches(3.12), Inches(7.55),
-               Inches(1.85), tam=10, anchos=(2.5, 1.05, 0.95, 0.85, 0.75, 0.85, 1.1))
-    _caja_titulo(lamina, "Precisión / recall por umbral", Inches(8.75), Inches(3.05),
-                 Inches(3.8))
-    _imagen_ppt(lamina, GRAFICOS / "ocupacion_pr_umbral.png", Inches(8.7), Inches(3.35),
-                Inches(3.9), Inches(2.6))
+def _lamina_b11_operacion(prs, datos):
+    lamina = _nueva_lamina(prs, "Paso 11b — Operación F26: portal fijo, /salud y verificación remota",
+                           "Todo remoto es outbound o solo-lectura")
+    _caja_codigo(lamina, datos["snippets"]["ota_cadena"], Inches(0.75), Inches(1.75),
+                 Inches(6.35), Inches(1.95))
     _bullets(lamina, [
-        "Split temporal 80/20 sin mezclar: el modelo nunca ve el futuro al entrenar.",
-        "La mejora sobre el baseline es real pero pequeña; se reporta con tamaño muestral "
-        "(lección E10), no como promesa de precisión.",
-    ], Inches(0.85), Inches(5.15), Inches(7.5), Inches(1.3), tam=12.5)
-    _fuente_lamina(lamina, "Fuente: modelo_ocupacion.json · entrenamiento (split "
-                           f"{m['split'] or 'n/d'}) · figuras del pipeline")
+        "Portal de provisioning FIJO (F26, ya flasheado): si la WiFi falla 3 ciclos sube el "
+        "AP AULASENSE-CFG (WPA2; pass documentada en docs/NOTES_operacion.md §4) con rutas "
+        "sin token GET /cfg, GET /cfg/estado, POST /cfg/wifi.",
+        "Guardas heredadas: Origin/Referer 403, cooldown 5 s (429), body ≤255 B y la placa "
+        "NUNCA loguea SSID ni pass (solo longitudes). Capacidad LOCAL: exige estar junto a "
+        "la placa; una placa a la vez (SSID fijo).",
+        "Confirmación remota sin volver al sitio: eventos CFG_GUARDADA y STA_RECONECTADO "
+        "aterrizan en config_eventos cuando la placa recupera MQTT.",
+        "Panel /salud (tras login): semáforos de ingesta, MQTT, frescura de telemetría, heap "
+        "INTERNO (no confundir con los ~8,2 MB de PSRAM), colas visión/Clef, disco, túneles "
+        "y estado OTA. Verificación por CLI: wsl_aulasense.ps1 salud.",
+        "Tras re-energizar en el sitio: telemetría < 5 min, retain imagen_estado camera_ok, "
+        "MAX(id) de imágenes creciendo con el tránsito y evento FIRMWARE nuevo.",
+    ], Inches(0.75), Inches(3.95), Inches(6.35), Inches(3.0), tam=10)
+    _kpis(lamina, [("≈34 s", "descarga del bin"), ("≈163 s", "E2E apply validado"),
+                   ("225 s", "rollback solo (medido)"), ("≈30 s", "agujero esperado")],
+          Inches(7.35), Inches(1.75), Inches(5.3), alto=Inches(1.0))
+    _tabla_ppt(lamina, [
+        ["Umbral (heap interno)", "free / largest", "Cuándo"],
+        ["Captura de foto", "95 / 24 KB", "cada onset, sin latch"],
+        ["Gate OTA", "96 / 48 KB", "post-quiesce, antes de descargar"],
+        ["Régimen medido", "103–106 / 56 KB", "banco F26 (con evidencia)"],
+    ], Inches(7.35), Inches(3.1), Inches(5.3), Inches(1.4), tam=9.5,
+        anchos=(1.7, 1.2, 1.7))
+    _nota_lamina(lamina, "Duraciones y umbrales medidos en F26 (Anexo A de NOTES_operacion; "
+                         "SPEC §16.1 enmendado de 120/64 a 96/48 con 200 muestras de banco). "
+                         "La OTA es SIEMPRE a mano: chequeo automático desactivado por "
+                         "decisión del dueño.",
+                 Inches(7.35), Inches(4.75), Inches(5.3), Inches(1.7), tam=10)
+    _fuente_lamina(lamina, "Snippet: docs/NOTES_operacion.md:140-144 · §2 §4 §5 · "
+                           "docs/guion_demo.md pasos 0-7")
     _pie_lamina(lamina, prs)
 
 
-def _lamina_integridad(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Integridad JPEG: la parte incómoda", "Honestidad")
-    integ = cifras["integridad"]
-    _kpis(lamina, [(frac(integ["tasa"]), "tasa de integridad"),
-                    (num(integ["validas"], 0), "JPEG válidos"),
-                    (num(integ["rotas"], 0), "JPEG rotos"),
-                    (num(cifras["vision"]["error"], 0), "no decodificables por la IA")],
-           Inches(0.85), Inches(1.75), Inches(11.6))
+def _lamina_b12_limitaciones(prs, datos, cifras):
+    lamina = _nueva_lamina(prs, "Paso 12 — Limitaciones honestas y qué queda después",
+                           "Lo que no se puede afirmar · post-entrega")
+    _caja_codigo(lamina, datos["snippets"]["jpeg_q"], Inches(0.75), Inches(1.72),
+                 Inches(6.15), Inches(1.95))
     _bullets(lamina, [
-        "No es un problema de transporte: tamaño en disco y sha256 coinciden con el envoltorio "
-        "recibido; la corrupción nace en el encoder del dispositivo.",
-        "Tres árbitros independientes (PIL de la distro, PIL de Windows y ffmpeg) coinciden en el "
-        "diagnóstico: 23 frames rotos sobre 54 evaluables.",
-        "La compilación Fix F corrige el origen: las frames rotas son histórico previo a la "
-        "corrección y no se presentan como éxito parcial.",
-        "Control de calidad estricto de dos etapas (estricta + tolerante) para no repetir falsos "
-        "negativos al validar antes de gastar cuota de IA.",
-        "Lección de método: se reporta la tasa real (57,4 %) aunque sea incómoda; el estado "
-        "«error» de visión de esas 20 imágenes es consecuencia del mismo defecto, no del modelo.",
-    ], Inches(0.85), Inches(3.2), Inches(11.5), Inches(3.0), tam=15)
-    _fuente_lamina(lamina, "Fuente: analisis.json · integridad_jpeg · vision")
-    _pie_lamina(lamina, prs)
-
-
-def _lamina_vision(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Visión IA: uso real y presupuesto", "Costos")
-    v = cifras["vision"]
-    pres = datos["presupuesto"]
-    media = pres.get("media_tok")
-    _kpis(lamina, [(num(v["hecho"], 0), "imágenes descritas"),
-                   (num(v["tokens"], 0), "tokens medidos"),
-                   (num(media, 1) if media else "n/d", "tokens/imagen (media)"),
-                   (f"{num((pres.get('topes') or {}).get('dia'), 0)} / "
-                    f"{num((pres.get('topes') or {}).get('hora'), 0)}", "tope día / hora")],
-          Inches(0.85), Inches(1.75), Inches(11.6))
-    _tabla_ppt(lamina, tabla_vision(cifras), Inches(0.85), Inches(3.15), Inches(5.2),
-               Inches(1.5), tam=10.5, anchos=(2.2, 1.0, 1.0))
-    _p_nota = ("Registro de llamadas: 39 «hecho» cubren 36 imágenes distintas (3 duplicadas) "
-               "e incluyen 2 sintéticas; las 34 reales son el estado de la cola en la BD.")
-    _nota_lamina(lamina, _p_nota, Inches(0.85), Inches(4.78), Inches(5.25), Inches(0.95))
+        "Limitaciones de fondo: motion ≠ presencia estacionaria; idle ≠ sala vacía; una placa "
+        "cubre una zona; die temp es carga de cómputo, no ambiente; precision NO computable "
+        "(sin marcas idle); Clef sin GT de escena (distribución, no precisión); dataset corto "
+        "(el modelo = baseline, reportado con n).",
+        "Seguridad declarada (D3): OTA y dashboard por HTTP + SHA-256 SIN TLS (mitigado por "
+        "hash + rollback; TLS nginx+Let's Encrypt post-entrega). Broker compartido sin ACLs "
+        "por topic (pendiente). Pass SSH del VPS fuera del repo (la gestiona wsl-port; su "
+        "ROTACIÓN es acción humana pendiente).",
+        "Cuello real medido de la evidencia: jpeg_quality=12 (arriba) → 75 % DEGRADADA. "
+        "Plan post-entrega: subirla a ~18-24 POR OTA (no toca el sensing CSI) ajustando en "
+        "la misma OTA el tope b64 de 16.384 chars y conservando el QC PIL.",
+        "Ratio onsets→fotos ≥ 80 % = regla de campo de evidencia sana (hoy 67,5 % de match y "
+        "26 fotos sin onset ±20 s: re-habilitaciones de gate; revisar con lee_serial si baja "
+        "en el aula). Escenarios E2-E5 del portal pendientes de ventana natural.",
+    ], Inches(0.75), Inches(3.85), Inches(6.15), Inches(3.1), tam=9.5)
+    _kpis(lamina, [("75 %", "fotos ilegibles para Clef"), ("71,25 %", "integridad JPEG (57/80)"),
+                   ("67,5 %", "fotos↔onset ±20 s"), ("0", "precision (sin idle: declarado)")],
+          Inches(7.1), Inches(1.72), Inches(5.55), alto=Inches(1.0))
+    _imagen_ppt(lamina, GRAFICOS / "clef_distribucion_decisiones.png", Inches(7.1),
+                Inches(2.95), Inches(5.55), Inches(2.6))
     _bullets(lamina, [
-        "Modo agente-mediado con la allowlist del plan de tokens; rate limits persistentes, "
-        "dedupe por hash y backoff ante 429.",
-        "Incidente honesto: dos procesos solapados describieron tres imágenes dos veces y "
-        "desperdiciaron " + (num(pres.get("desperdicio_tok"), 0) if pres.get("desperdicio_tok")
-                             else "parte del presupuesto") + " tokens.",
-        "Lección aplicada: no programar pasadas fuera del turno y medir con una llamada de "
-        "prueba antes de cada lote.",
-        "El coste se reporta en tokens medidos; no se publica una cifra de dinero sin "
-        "confirmarla en la consola del proveedor.",
-    ], Inches(6.35), Inches(3.05), Inches(6.1), Inches(3.2), tam=13)
-    _fuente_lamina(lamina, "Fuente: analisis.json · vision · .tmp/f25_vision_presupuesto.md")
-    _pie_lamina(lamina, prs)
-
-
-def _lamina_limitaciones(prs, cifras):
-    lamina = _nueva_lamina(prs, "Limitaciones honestas", "Lo que no se puede afirmar")
-    mejor = cifras["modelo"]["mejor_umbral"] or {}
-    _bullets(lamina, [
-        "Sin marcas idle no hay FPR ni precisión: el ground truth actual solo cubre movimiento. "
-        "Se activan solas con S2/S3.",
-        "RSSI sin variación: nodo junto al AP, rango estrecho; el experimento no informa sobre "
-        "distancia ni obstáculos.",
-        "Precisión-piso del modelo: " + num(mejor.get("precision_piso"), 3) +
-        " en el mejor umbral, contando como falso positivo todo onset fuera del GT.",
-        "Dataset corto: la comparación del modelo es contra baseline, con tamaño muestral "
-        "declarado (lección E10).",
-        "Alcance físico: una placa por zona; idle ≠ sala vacía; la temperatura del die es carga "
-        "de cómputo, no ambiente.",
-        "Acceso público por túnel al VPS; el portproxy LAN → WSL es opcional (N2).",
-    ], Inches(0.85), Inches(1.85), Inches(11.5), Inches(4.6), tam=15)
-    _fuente_lamina(lamina, "Fuente: analisis.json · notación honesta de confusion y "
-                           "modelo_ocupacion.json · nota_honest_e10")
+        "Post-entrega en orden: 1) calidad JPEG por OTA · 2) TLS OTA+dashboard · "
+        "3) rotación pass VPS (humano) · 4) ACLs por topic · 5) pasada incremental remota "
+        "si la reinstalación en sitio ocurre tras la entrega.",
+    ], Inches(7.1), Inches(5.75), Inches(5.55), Inches(1.2), tam=10)
+    _fuente_lamina(lamina, "Snippet: firmware/parche_aulasense/app_imagen.c:647-656 · "
+                           "NOTES_operacion §7-§8 · .tmp/f26_analisis.md §4 §6")
     _pie_lamina(lamina, prs)
 
 
 def _lamina_conclusion(prs, cifras, datos):
-    lamina = _nueva_lamina(prs, "Conclusión", "Cierre")
+    lamina = _nueva_lamina(prs, "Proyecto terminado: qué ver y qué queda", "Cierre")
     k = cifras_clave(cifras)
     _bullets(lamina, [
-        "Sistema completo y reproducible: sensado CSI, inferencia en el chip, MQTT autenticado, "
-        "SQLite, dashboard con login, EDA y modelo predictivo.",
-        f"Evidencia medida: recall {k['recall']} sobre {k['tramos_gt']} tramos de movimiento "
-        "corroborados por foto, sin usar la cámara como fuente de verdad.",
-        "Las carencias están cuantificadas: FPR pendiente de marcas idle, dataset corto, frames "
-        "históricos corruptos por un encoder ya corregido.",
-        "Todo el entregable se regenera con un comando; mañana, con S2/S3 y la pasada 4 de "
-        "visión, se refresca solo.",
-    ], Inches(0.85), Inches(1.85), Inches(11.5), Inches(3.5), tam=16)
-    caja = lamina.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.85), Inches(5.35),
+        "Ciclo completo demostrado con la placa LEJOS del servidor: sensado CSI en-chip → "
+        "eventos JSON por MQTT → ingesta WSL + SQLite → dashboard con login → visión + "
+        "decisión IA → análisis y paquete de documentos, todo regenerable por comando.",
+        "F26 cerró lo que faltaba: OTA por aire demostrada dos veces, rollback automático "
+        "probado (225 s), portal fijo flasheado, panel /salud y decisión de aula con Clef "
+        "con coste medido ($0,0053/62 llamadas).",
+        "Evidencia con tamaño muestral: recall " + k["recall"] + " (n=" + k["tramos_gt"] +
+        ", anclado a S1) sobre " + k["evaluaciones"] + " evaluaciones; las carencias "
+        "(precision no computable, GT=0 en S2B/S3B, 75 % degradadas) están publicadas con "
+        "los aciertos.",
+        "Para el profesor: docs/ENTREGA_PROFESOR.md es el recorrido guiado de 14 piezas "
+        "(dashboard en vivo, video, dataset, código, diagramas, informe y presentación).",
+    ], Inches(0.85), Inches(1.85), Inches(11.5), Inches(3.7), tam=14)
+    caja = lamina.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.85), Inches(5.5),
                                    Inches(11.6), Inches(0.95))
     caja.fill.solid()
     caja.fill.fore_color.rgb = _prgb(FONDO_CLARO)
@@ -2302,9 +2838,10 @@ def _lamina_conclusion(prs, cifras, datos):
     tf = caja.text_frame
     tf.word_wrap = True
     parrafo = tf.paragraphs[0]
-    parrafo.text = f"{URL_PUBLICA}   ·   python tools/generar_informe.py"
+    parrafo.text = (f"{URL_PUBLICA} (login por canal privado del curso)   ·   "
+                    "python tools/generar_informe.py")
     parrafo.alignment = PP_ALIGN.CENTER
-    parrafo.font.size = PPt(16)
+    parrafo.font.size = PPt(15)
     parrafo.font.bold = True
     parrafo.font.name = "Calibri"
     parrafo.font.color.rgb = _prgb(AZUL)
@@ -2317,18 +2854,20 @@ def construir_pptx(cifras, datos, salida):
     prs.slide_height = Inches(7.5)
 
     _lamina_titulo(prs, datos, cifras)
-    _lamina_problema(prs, cifras)
-    _lamina_como_funciona(prs, datos)
-    _lamina_detector(prs)
-    _lamina_datos(prs, cifras, datos)
-    _lamina_dashboard(prs, datos)
-    _lamina_fotos(prs, datos)
-    _lamina_metricas_1(prs, cifras, datos)
-    _lamina_metricas_2(prs, cifras)
-    _lamina_modelo(prs, cifras, datos)
-    _lamina_integridad(prs, cifras, datos)
-    _lamina_vision(prs, cifras, datos)
-    _lamina_limitaciones(prs, cifras)
+    _lamina_roadmap(prs, datos, cifras)
+    _lamina_b1_csi(prs, cifras)
+    _lamina_b2_arquitectura(prs, datos)
+    _lamina_b3_montaje(prs, datos)
+    _lamina_b4_firmware(prs, datos)
+    _lamina_b5_eventos(prs, datos)
+    _lamina_b6_servidor(prs, datos)
+    _lamina_b7_broker(prs, datos)
+    _lamina_b8_vision(prs, datos)
+    _lamina_b9_clef(prs, datos, cifras)
+    _lamina_b10_dataset(prs, cifras, datos)
+    _lamina_b11_ota(prs, datos)
+    _lamina_b11_operacion(prs, datos)
+    _lamina_b12_limitaciones(prs, datos, cifras)
     _lamina_conclusion(prs, cifras, datos)
 
     salida.parent.mkdir(parents=True, exist_ok=True)
@@ -2338,21 +2877,114 @@ def construir_pptx(cifras, datos, salida):
 
 # --------------------------------------------------------------------------- verificación
 
-def verificar_salidas(ruta_docx, ruta_pptx, cifras, limite_mb=10):
-    """Roundtrip de lectura + spot-check de 5 cifras + tamaño. Devuelve (ok, lineas)."""
+def _sha_bytes(datos):
+    return hashlib.sha256(datos).hexdigest()
+
+
+def _hashes_fotos_reales():
+    """sha256 de TODO píxel real de evidencia (espejo Windows + BD WSL) + recortes viejos.
+
+    F26-f2-fix PRIVACIDAD: ni uno solo de estos blobs puede aparecer como medio embebido
+    en los entregables públicos. SOLO lectura; si un origen no está montado, se omite con
+    nota (el whitelist de la auditoría sigue garantizando el origen de cada blob).
+    """
+    hashes, origen_visto = set(), False
+    dirs = [RAIZ / "server" / "datos" / "imagenes", RAIZ_WSL / "imagenes"]
+    for d in dirs:
+        try:
+            if not d.is_dir():
+                continue
+            origen_visto = True
+            for p in d.rglob("*"):
+                if p.is_file():
+                    hashes.add(_sha_bytes(p.read_bytes()))
+        except OSError:
+            continue
+    try:
+        for p in TMP_IMG.glob("evidencia_*.png"):
+            hashes.add(_sha_bytes(p.read_bytes()))
+    except OSError:
+        pass
+    return hashes, origen_visto
+
+
+def _hashes_permitidos():
+    """Universo de medios legítimos: figuras EDA/Clef, assets, preparados .tmp y frames."""
+    fuentes = []
+    for d in (GRAFICOS, RAIZ / "assets", TMP_IMG, TMP_FRAMES):
+        try:
+            if d.is_dir():
+                fuentes.extend(p for p in d.glob("*") if p.is_file())
+        except OSError:
+            continue
+    hashes = set()
+    for p in fuentes:
+        try:
+            hashes.add(_sha_bytes(p.read_bytes()))
+        except OSError:
+            continue
+    return hashes
+
+
+def _medios_embebidos(ruta):
+    import zipfile
+    with zipfile.ZipFile(ruta) as z:
+        return {n: z.read(n) for n in z.namelist()
+                if n.startswith(("word/media/", "ppt/media/"))}
+
+
+def auditoria_medios(rutas):
+    """(ok, lineas): cada blob embebido está en el whitelist y NINGÚN píxel real circula."""
+    prohibidos, origen_visto = _hashes_fotos_reales()
+    permitidos = _hashes_permitidos()
+    lineas, ok = [], True
+    for etiqueta, ruta in rutas:
+        try:
+            medios = _medios_embebidos(ruta)
+        except OSError as exc:
+            ok = False
+            lineas.append(f"[FALLA] auditoría {etiqueta}: no se pudo abrir el zip ({exc})")
+            continue
+        malas = []
+        for nombre, blob in sorted(medios.items()):
+            h = _sha_bytes(blob)
+            if h in prohibidos:
+                malas.append(f"{nombre} = PÍXEL DE FOTO REAL")
+            elif h not in permitidos:
+                malas.append(f"{nombre} = blob sin origen conocido")
+        if malas:
+            ok = False
+            for m in malas:
+                lineas.append(f"[FALLA] auditoría {etiqueta}: {m}")
+        else:
+            lineas.append(f"[OK] auditoría {etiqueta}: {len(medios)} medios embebidos, "
+                          "todos de figuras/diagramas/mockup sintético — cero píxeles de "
+                          "fotos reales"
+                          + ("" if origen_visto else " (origen de fotos no montado: "
+                             "verificación por whitelist)"))
+    return ok, lineas
+
+
+def verificar_salidas(ruta_docx, ruta_pptx, cifras, limite_mb=10, datos=None):
+    """Roundtrip de lectura + spot-checks + bloques + snippets + secretos. Devuelve (ok, lineas)."""
     from docx import Document as DocumentoLector
     from pptx import Presentation as PresentacionLectora
 
     lineas = []
     ok = True
 
+    def marca(estado, texto):
+        nonlocal ok
+        if estado != "OK":
+            ok = False
+        lineas.append(f"[{estado}] {texto}")
+
     tam_docx = ruta_docx.stat().st_size if Path(ruta_docx).is_file() else 0
     tam_pptx = ruta_pptx.stat().st_size if Path(ruta_pptx).is_file() else 0
     for etiqueta, tam in (("INFORME.docx", tam_docx), ("PRESENTACION.pptx", tam_pptx)):
         dentro = 0 < tam < limite_mb * (1 << 20)
-        ok = ok and dentro
-        lineas.append(f"[{'OK' if dentro else 'FALLA'}] {etiqueta}: {tam_legible(tam)} "
-                      f"(límite {limite_mb} MB)")
+        marca("OK" if dentro else "FALLA", f"{etiqueta}: {tam_legible(tam)} "
+                                           f"(límite {limite_mb} MB)")
 
     documento = DocumentoLector(str(ruta_docx))
     parrafos = [p.text for p in documento.paragraphs]
@@ -2360,13 +2992,27 @@ def verificar_salidas(ruta_docx, ruta_pptx, cifras, limite_mb=10):
         for fila in tabla.rows:
             parrafos.extend(celda.text for celda in fila.cells)
     texto_doc = "\n".join(parrafos)
-    lineas.append(f"[OK] roundtrip DOCX: {len(documento.paragraphs)} párrafos, "
-                  f"{len(documento.tables)} tablas, "
-                  f"{len(documento.inline_shapes)} imágenes")
+    marca("OK", f"roundtrip DOCX: {len(documento.paragraphs)} párrafos, "
+                f"{len(documento.tables)} tablas, {len(documento.inline_shapes)} imágenes")
 
     presentacion = PresentacionLectora(str(ruta_pptx))
-    lineas.append(f"[OK] roundtrip PPTX: {len(presentacion.slides)} láminas")
+    texto_ppt = []
+    for lamina in presentacion.slides:
+        for forma in lamina.shapes:
+            if forma.has_text_frame:
+                for parrafo in forma.text_frame.paragraphs:
+                    texto_ppt.append("".join(run.text for run in parrafo.runs))
+            if getattr(forma, "has_table", False):
+                for fila in forma.table.rows:
+                    for celda in fila.cells:
+                        texto_ppt.append(celda.text)
+    texto_ppt = "\n".join(texto_ppt)
+    marca("OK", f"roundtrip PPTX: {len(presentacion.slides)} láminas")
 
+    def normaliza(t):
+        return re.sub(r"\s+", " ", t or "").strip()
+
+    # 1) cifras clave del pipeline en el informe
     k = cifras_clave(cifras)
     c = cifras["confusion"]
     chequeos = [
@@ -2378,9 +3024,58 @@ def verificar_salidas(ruta_docx, ruta_pptx, cifras, limite_mb=10):
         ("TP", num(c["tp"], 0) + " verdaderos positivos"),
     ]
     for etiqueta, valor in chequeos:
-        encontrado = valor in texto_doc
-        ok = ok and encontrado
-        lineas.append(f"[{'OK' if encontrado else 'FALLA'}] spot-check {etiqueta}: «{valor}»")
+        marca("OK" if valor in texto_doc else "FALLA",
+              f"spot-check {etiqueta}: «{valor}»")
+
+    # 2) los 12 bloques paso a paso deben estar nombrados en la presentación
+    bloques_vistos = [n for n in range(1, 13) if f"Paso {n}" in texto_ppt]
+    marca("OK" if len(bloques_vistos) == 12 else "FALLA",
+          f"bloques 1-12 presentes en PPTX: {len(bloques_vistos)}/12 {bloques_vistos}")
+    marca("OK" if len(presentacion.slides) >= 14 else "FALLA",
+          f"láminas ≥ 14: {len(presentacion.slides)}")
+
+    # 3) snippets: leídos del repo, citados con archivo:linea y reproducibles por grep
+    sn = (datos or {}).get("snippets") or {}
+    if not sn:
+        marca("FALLA", "registro SNIPPETS vacío (datos['snippets'] no cargado)")
+    doc_n, ppt_n = normaliza(texto_doc), normaliza(texto_ppt)
+    for ident, s in sorted(sn.items()):
+        ruta = RAIZ / s["ruta"]
+        try:
+            fresco = "\n".join(ruta.read_text(encoding="utf-8", errors="replace")
+                               .splitlines()[s["inicio"] - 1:s["fin"]])
+        except OSError:
+            fresco = ""
+        en_artefacto = (normaliza(s["texto"]) in ppt_n or normaliza(s["texto"]) in doc_n
+                        if s["texto"] else False)
+        bueno = bool(s["ok"]) and fresco == s["texto"] and en_artefacto
+        marca("OK" if bueno else "FALLA",
+              f"snippet {ident}: {s['ruta']}:{s['inicio']}-{s['fin']} "
+              f"(coincide con disco y embebido en el paquete)")
+
+    # 4) residuos y secretos. El «None» del código real de los snippets (p. ej.
+    #    ``str | None`` en esquema.py) NO es un placeholder roto: se examina el texto
+    #    fuera de los bloques de código.
+    for texto, origen in ((texto_doc, "DOCX"), (texto_ppt, "PPTX")):
+        plana = normaliza(texto)
+        for s in sn.values():
+            plana = plana.replace(normaliza(s["texto"]), " ")
+        for residuo in ("None", "FALTA_SNIPPET"):
+            marca("OK" if residuo not in plana else "FALLA",
+                  f"cero «{residuo}» (fuera de snippets) en {origen}")
+        for secreto in ("itse-aulasense", "sk-sp-", "sk-[A-Za-z0-9]"):
+            encontrado = re.search(re.escape(secreto), plana) if "sk-[" not in secreto \
+                else re.search(secreto, plana)
+            marca("OK" if not encontrado else "FALLA",
+                  f"cero secreto «{secreto}» en {origen}")
+    nd_doc, nd_ppt = texto_doc.count("n/d"), texto_ppt.count("n/d")
+    lineas.append(f"[INFO] marcadores «n/d»: DOCX {nd_doc} · PPTX {nd_ppt} "
+                  "(deben ser 0 salvo insumo ausente justificado)")
+
+    # 5) F26-f2-fix PRIVACIDAD: ni un píxel de foto real del aula en los entregables
+    aud_ok, aud_lineas = auditoria_medios((("DOCX", ruta_docx), ("PPTX", ruta_pptx)))
+    ok = ok and aud_ok
+    lineas.extend(aud_lineas)
 
     return ok, lineas
 
@@ -2394,12 +3089,17 @@ def cargar_datos(segundo_frame=47.0, sin_fotos=False, sin_video=False):
     modelo = leer_json(ANALISIS / "modelo_ocupacion.json", {}) or {}
     cond = analisis.get("condiciones") or {}
 
+    # F26-f2-fix PRIVACIDAD: solo TEXTO de la BD (id + descripción no sensible) + mockup
+    # sintético dibujado por código. Ningún píxel de foto real se abre ni se embebe.
     fotos = []
     if not sin_fotos:
-        for foto in seleccionar_fotos(2):
-            preparada = preparar_foto(foto)
-            if preparada:
-                fotos.append({**foto, **preparada})
+        fotos = seleccionar_fotos(2)
+        if fotos:
+            mockup = mockup_qvga_privacidad()
+        else:
+            mockup = None
+    else:
+        mockup = None
 
     frame = None if sin_video else capturar_frame_video(DOCS / "video_aulasense.mp4", segundo_frame)
 
@@ -2408,6 +3108,9 @@ def cargar_datos(segundo_frame=47.0, sin_fotos=False, sin_video=False):
         "analisis": analisis,
         "eda": eda,
         "modelo": modelo,
+        "clef": leer_json(ANALISIS / "clef_resumen.json", {}) or {},
+        "snippets": cargar_snippets(),
+        "consolidado_filas": filas_consolidado(),
         "metricas_md": leer_texto(ANALISIS / "informe_metricas.md"),
         "informe_eda_md": leer_texto(RAIZ / "analysis" / "informe_eda.md"),
         "ventana_ms": cond.get("ventana_foto_onset_ms") or 20000,
@@ -2419,6 +3122,7 @@ def cargar_datos(segundo_frame=47.0, sin_fotos=False, sin_video=False):
         "presupuesto": presupuesto_vision(),
         "flag_ts": texto_flag_ts(analisis),
         "fotos": fotos,
+        "mockup": mockup,
         "frame": frame,
     }
 
@@ -2438,11 +3142,14 @@ def main(argv=None):
         print("ERROR: falta docs/analisis/analisis.json — ejecuta antes analysis/run_analisis.ps1")
         return 2
 
-    print("F6-a · leyendo insumos …")
+    print("F26-f2 · leyendo insumos …")
     datos = cargar_datos(args.segundo_frame, args.sin_fotos, args.sin_video)
     cifras = extraer_cifras(datos["analisis"], datos["eda"], datos["modelo"])
+    sn_faltan = [i for i, s in datos["snippets"].items() if not s["ok"]]
     print(f"  sesiones: {len(cifras['sesiones'])} · figuras: {len(datos['figuras'])} · "
-          f"fotos: {len(datos['fotos'])} · frame video: {'sí' if datos['frame'] else 'no'}")
+          f"fotos: {len(datos['fotos'])} · frame video: {'sí' if datos['frame'] else 'no'} · "
+          f"snippets: {len(datos['snippets']) - len(sn_faltan)}/{len(datos['snippets'])}"
+          + (f" FALTAN {sn_faltan}" if sn_faltan else ""))
 
     salida = Path(args.out)
     ruta_docx = salida / "INFORME.docx"
@@ -2453,7 +3160,7 @@ def main(argv=None):
     print("  generando PRESENTACION.pptx …")
     construir_pptx(cifras, datos, ruta_pptx)
 
-    ok, lineas = verificar_salidas(ruta_docx, ruta_pptx, cifras)
+    ok, lineas = verificar_salidas(ruta_docx, ruta_pptx, cifras, datos=datos)
     print("\nVerificación:")
     for linea in lineas:
         print("  " + linea)

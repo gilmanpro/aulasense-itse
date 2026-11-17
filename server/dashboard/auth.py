@@ -2,8 +2,10 @@
 
 Alcance (F25-e)
 ---------------
-* Loader de entorno: ``.env`` de la raíz (WiFi/MQTT/upload) + ``claves/.env``
-  (credenciales de auth/IA, **prioridad**). Ver AGENTS regla 15 y D-F25-9.
+* Loader de entorno (F26, SPEC §16.8): ``.env`` UNICO de la raíz — fuente
+  canónica de TODO (auth/IA incluida; las antiguas ``claves/.env`` quedan solo
+  como lectura retrocompatible de último recurso; sus valores fueron migrados y
+  archivados en ``claves/*.bak-f26``). Ver AGENTS regla 15 y D-F26-6.
 * Hash de la password admin en formato **autodescriptivo**:
   - escritura por defecto ``scrypt$N$r$p$salt_b64$hash_b64`` (``hashlib.scrypt``,
     stdlib): el MISMO algoritmo en los dos runtimes del proyecto (WSL py3.13 y
@@ -125,10 +127,11 @@ def ahora_ms() -> int:
 
 
 # ------------------------------------------------------------------------------
-# Loader de entorno: .env raíz + claves/.env (prioridad para auth/IA)
+# Loader de entorno (F26): .env raíz ÚNICO canónico; claves/.env solo lectura
+# retrocompatible de último recurso (SPEC §16.8 — ya no tiene preferencia).
 # ------------------------------------------------------------------------------
 def ruta_claves_env() -> Path:
-    """Ruta de ``claves/.env`` (``AULASENSE_CLAVES_ENV`` la sobreescribe en tests)."""
+    """Ruta de ``claves/.env`` histórico (``AULASENSE_CLAVES_ENV`` la sobreescribe en tests)."""
     crudo = os.environ.get("AULASENSE_CLAVES_ENV", "").strip()
     if crudo:
         return Path(crudo).expanduser()
@@ -153,15 +156,17 @@ def _leer_archivo(ruta: Path) -> dict[str, str]:
 
 
 def cargar_env(exportar: bool = True) -> dict[str, str]:
-    """Fusiona ``claves/.env`` (gana) sobre el ``.env`` de la raíz.
+    """Carga el ``.env`` UNICO de la raiz (canonico, F26/SPEC 16.8) y completa
+    SOLO nombres ausentes desde ``claves/.env`` (lectura retrocompatible, sin
+    preferencia; sus valores ya fueron migrados al unico).
 
     Con ``exportar`` rellena ``os.environ`` SOLO con claves ausentes: un valor
     ya presente en el proceso (o inyectado por monkeypatch en tests) manda. La
     password admin NO se exporta al entorno del proceso: solo se lee del archivo
     cuando hace falta (``valor_env``), para no ampliar su superficie.
     """
-    fusion: dict[str, str] = dict(_leer_archivo(ruta_env_raiz()))
-    fusion.update(_leer_archivo(ruta_claves_env()))
+    fusion: dict[str, str] = dict(_leer_archivo(ruta_claves_env()))
+    fusion.update(_leer_archivo(ruta_env_raiz()))  # la raiz es canonica: gana siempre
     if exportar:
         for clave, valor in fusion.items():
             if clave in _NO_EXPORTAR:
@@ -171,14 +176,15 @@ def cargar_env(exportar: bool = True) -> dict[str, str]:
 
 
 def valor_env(clave: str, defecto: str = "") -> str:
-    """Prioridad: entorno del proceso → ``claves/.env`` → ``.env`` de la raíz."""
+    """F26/SPEC 16.8: entorno del proceso → ``.env`` UNICO de la raíz (canónico) →
+    ``claves/.env`` solo como lectura retrocompatible si la raíz no define la clave."""
     del_proceso = os.environ.get(clave)
     if del_proceso not in (None, ""):
         return del_proceso
-    valor = _leer_archivo(ruta_claves_env()).get(clave)
-    if valor not in (None, ""):
-        return valor
     valor = _leer_archivo(ruta_env_raiz()).get(clave)
+    if valor is not None and valor != "":
+        return valor
+    valor = _leer_archivo(ruta_claves_env()).get(clave)
     return valor if valor is not None and valor != "" else defecto
 
 
@@ -188,12 +194,14 @@ def usuario_admin() -> str:
 
 
 def escribir_password(password: str, usuario: str | None = None) -> Path:
-    """Escribe la password admin en ``claves/.env`` (NUNCA la imprime).
+    """Escribe la password admin en el ``.env`` UNICO de la raíz (NUNCA la imprime).
 
-    Preserva el resto de líneas; si el archivo no existe lo crea. Devuelve la
-    ruta. Uso exclusivo del bootstrap por código y de ``tools/reset_admin.py``.
+    F26 (SPEC §16.8 / D-F26-6): la raiz es el destino canonico — ya no se escribe
+    en ``claves/.env`` (esa via es solo lectura retrocompatible). Preserva el
+    resto de las líneas; si el archivo no existe lo crea. Devuelve la ruta. Uso
+    exclusivo del bootstrap por código y de ``tools/reset_admin.py``.
     """
-    ruta = ruta_claves_env()
+    ruta = ruta_env_raiz()
     ruta.parent.mkdir(parents=True, exist_ok=True)
     lineas = ruta.read_text(encoding="utf-8").splitlines() if ruta.is_file() else []
     usuario = (usuario or usuario_admin()).strip() or "admin"
@@ -525,10 +533,11 @@ def obtener_usuario(con: sqlite3.Connection, username: str) -> dict[str, Any] | 
 def asegurar_admin(con: sqlite3.Connection) -> None:
     """Bootstrap idempotente del admin único (§9.2).
 
-    - Sin fila en ``usuarios``: crea el usuario con el hash de la password de
-      ``claves/.env``; si no hay password, la GENERA (``secrets.token_hex(16)``)
-      y la escribe en ``claves/.env``. El valor nunca se imprime.
-    - Con fila: NO reescribe nada salvo que la password de ``claves/.env`` ya no
+    - Sin fila en ``usuarios``: crea el usuario con el hash de la password del
+      ``.env`` UNICO de la raiz; si no hay password, la GENERA
+      (``secrets.token_hex(16)``) y la escribe en la raiz. El valor nunca se
+      imprime.
+    - Con fila: NO reescribe nada salvo que la password del ``.env`` ya no
       verifique contra el hash (el dueño la cambió a mano ⇒ se resincroniza).
     """
     username = usuario_admin()

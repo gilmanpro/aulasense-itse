@@ -40,9 +40,20 @@ def _env_falso(tmp_path: Path, texto: str) -> Path:
 
 
 # --- gen_firmware_config ---------------------------------------------------
+# F26-b: la tool lee el .env UNICO y emite SOLO simbolos que existen en Kconfig
+# (saneo de los nombres fantasma AULASENSE_WIFI_*/DEVICE_LABEL). Los tests fijan
+# el conjunto de simbolos "vivos" por monkeypatch para ser deterministas sin
+# depender del clone vendor en disco.
+
+VIVOS_PRUEBA = {
+    "ESPECTRE_WIFI_SSID", "ESPECTRE_WIFI_PASSWORD",
+    "AULASENSE_UPLOAD_HOST", "AULASENSE_UPLOAD_PORT", "AULASENSE_UPLOAD_TOKEN",
+    "AULASENSE_PROVISION_AP_SSID", "AULASENSE_PROVISION_AP_PASS",
+}
 
 
-def test_gen_firmware_config_escribe_y_oculta_clave(tmp_path, capsys):
+def test_gen_firmware_config_escribe_y_oculta_clave(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(gen_firmware_config, "simbolos_kconfig", lambda: set(VIVOS_PRUEBA))
     env = _env_falso(
         tmp_path,
         "WIFI_SSID=AulaDemo-2G\n"
@@ -56,27 +67,63 @@ def test_gen_firmware_config_escribe_y_oculta_clave(tmp_path, capsys):
 
     assert codigo == 0
     contenido = salida.read_text(encoding="utf-8")
-    assert 'CONFIG_AULASENSE_WIFI_SSID="AulaDemo-2G"' in contenido
-    assert f'CONFIG_AULASENSE_WIFI_PASS="{CLAVE_FALSA}"' in contenido
-    assert 'CONFIG_AULASENSE_DEVICE_LABEL="AulaSense-Test"' in contenido
-    assert "verificar nombres Kconfig nativos ESPectre al integrar F3" in contenido
+    # simbolos REALES del vendor native:
+    assert 'CONFIG_ESPECTRE_WIFI_SSID="AulaDemo-2G"' in contenido
+    assert f'CONFIG_ESPECTRE_WIFI_PASSWORD="{CLAVE_FALSA}"' in contenido
+    # nombres FANTASMA: suprimidos (el archivo no los ASIGNA; la nota explicativa
+    # puede mencionarlos), y DEVICE_LABEL no tiene simbolo Kconfig → queda anotado
+    # como omitido, NUNCA emitido.
+    assert 'CONFIG_AULASENSE_WIFI_SSID="' not in contenido
+    assert 'CONFIG_AULASENSE_WIFI_PASS="' not in contenido
+    assert 'CONFIG_AULASENSE_DEVICE_LABEL="AulaSense-Test"' not in contenido
+    assert "FANTASMA" in contenido  # nota explicativa del saneamiento
 
-    # La clave NUNCA sale por consola
+    # La clave NUNCA sale por consola (solo vive en el sdkconfig gitignored)
     assert CLAVE_FALSA not in capturado.out
     assert CLAVE_FALSA not in capturado.err
-    assert "WIFI_PASS: presente (oculta)" in capturado.out
+    assert "AULASENSE_UPLOAD_TOKEN" in capturado.out
 
 
-def test_gen_firmware_config_falla_si_ssid_vacio(tmp_path, capsys):
+def test_gen_firmware_config_ssid_vacio_degrada_sin_error(tmp_path, capsys, monkeypatch):
+    """F26 (SPEC 16.2): la red del sitio se provisiona por portal/NVS; WIFI_SSID vacio
+    es WARN no-bloqueante (se omite el default de compilacion), rc 0."""
+    monkeypatch.setattr(gen_firmware_config, "simbolos_kconfig", lambda: set(VIVOS_PRUEBA))
     env = _env_falso(tmp_path, f"WIFI_SSID=\nWIFI_PASS={CLAVE_FALSA}\n")
     salida = tmp_path / "sdkconfig.defaults.local"
 
     codigo = gen_firmware_config.main(["--env", str(env), "--out", str(salida)])
     capturado = capsys.readouterr()
 
-    assert codigo == 1
-    assert "WIFI_SSID vacío" in capturado.out
-    assert not salida.exists()
+    assert codigo == 0
+    assert "WIFI_SSID vacio" in capturado.out
+    assert CLAVE_FALSA not in capturado.out
+    contenido = salida.read_text(encoding="utf-8")
+    assert 'CONFIG_ESPECTRE_WIFI_SSID="' not in contenido  # no se emite linea vacia
+
+
+def test_gen_firmware_config_vierte_provision_y_anota_no_queima(tmp_path, capsys, monkeypatch):
+    """PROVISION del .env UNICO → sdkconfig; simbolo aun no definido en Kconfig
+    (c1 en curso) → NO se emite, queda anotado como preparado."""
+    monkeypatch.setattr(gen_firmware_config, "simbolos_kconfig",
+                        lambda: {"AULASENSE_UPLOAD_HOST", "AULASENSE_UPLOAD_PORT",
+                                 "AULASENSE_UPLOAD_TOKEN", "AULASENSE_PROVISION_AP_PASS"})
+    env = _env_falso(
+        tmp_path,
+        "WIFI_SSID=AulaDemo-2G\nWIFI_PASS=pass-demo-prueba\n"
+        "AULASENSE_PROVISION_AP_SSID=AULASENSE-CFG\n"
+        "AULASENSE_PROVISION_AP_PASS=pass-canonica-de-prueba\n",
+    )
+    salida = tmp_path / "sdkconfig.defaults.local"
+
+    codigo = gen_firmware_config.main(["--env", str(env), "--out", str(salida)])
+    capturado = capsys.readouterr()
+
+    assert codigo == 0
+    contenido = salida.read_text(encoding="utf-8")
+    assert 'CONFIG_AULASENSE_PROVISION_AP_PASS="pass-canonica-de-prueba"' in contenido
+    assert "CONFIG_AULASENSE_PROVISION_AP_SSID" not in contenido  # sin simbolo aun
+    assert "PREPARADOS" in contenido
+    assert "pass-canonica-de-prueba" not in capturado.out  # nunca impresa
 
 
 # --- config_mqtt -----------------------------------------------------------

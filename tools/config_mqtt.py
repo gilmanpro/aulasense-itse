@@ -1,7 +1,15 @@
 """config_mqtt.py — configura el broker MQTT del nodo vía Direct HTTP (SPEC §5, F1d).
 
+⚠️ CANAL LAN-ONLY (F26, D-F26-10 zero-asunción-LAN): el Direct HTTP del nodo
+(:62587) SOLO es alcanzable cuando tu PC y la placa comparten la misma red local.
+El servidor (WSL/VPS) JAMÁS alcanza a la placa remota: la gestión remota de MQTT
+u OTA se hace por comandos MQTT iniciados POR LA PLACA (topic aulasense_ota), no
+por esta tool. Si el nodo no está en tu LAN, esta tool NO sirve: usa el portal
+fijo http://192.168.4.1/cfg (SPEC §16.2) o espera el canal OTA/MQTT.
+
 Hace un PATCH a `http://{host}:62587/espectre/v1/mqtt` con el cuerpo
-`{scheme,host,port,username,password,topic_prefix}` leído del `.env` (MQTT_*).
+`{scheme,host,port,username,password,topic_prefix}` leído del `.env` UNICO de la
+raiz (SPEC §16.8; `claves/` ya no es fuente).
 Headers obligatorios: `Origin: https://test.espectre.dev` + `Content-Type: application/json`
 (el firmware acepta solo orígenes listados, igual que el CLI; SPEC §5).
 
@@ -180,7 +188,11 @@ def enviar(host: str, cfg: dict[str, str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description="PATCH /espectre/v1/mqtt del nodo (SPEC §5) leyendo MQTT_* del .env."
+        description=(
+            "PATCH /espectre/v1/mqtt del nodo (SPEC §5) leyendo MQTT_* del .env UNICO. "
+            "⚠ LAN-ONLY (D-F26-10): exige que placa y PC compartan red local; para gestion "
+            "remota usa comandos MQTT (aulasense_ota) o el portal fijo /cfg."
+        )
     )
     ap.add_argument("--host", default="", help="IP/host del nodo (default: AULASENSE_NODE_IP o 127.0.0.1)")
     ap.add_argument("--check", action="store_true", help="valida el .env sin enviar nada (no requiere --host)")

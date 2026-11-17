@@ -6,6 +6,8 @@ Interfaz publica (la consumen la ingesta, el dashboard y los tests):
 - ``parse_topic(topic, topic_prefix)`` -> ``(device_id, suffix)`` o ``None``.
 - ``ESQUEMA_SQL`` -> DDL literal de SPEC §8 (tablas + indices, idempotente).
 - ``migrar_esquema_f25(conn)`` -> migracion idempotente de SPEC §8.2 (F25).
+- ``migrar_esquema_f26(conn)`` -> migracion idempotente de SPEC §16.5 (F26:
+  decision_*, clef_uso, estado_sistema, telemetria.internal_*, enum config).
 - ``nombre_tabla_sesiones_login(conn)`` -> nombre real de la tabla de sesiones de
   login (``sesiones`` o ``sesiones_auth`` si la F3 ya ocupa el nombre).
 
@@ -21,7 +23,8 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from typing import Any, Callable
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 
 LOG = logging.getLogger("aulasense.esquema")
 
@@ -42,6 +45,13 @@ SUFFIX_VALIDOS: tuple[str, ...] = (
     "aulasense_temp",
     "aulasense_config",
     "image",
+    # F26 (SPEC §16.4): retains nuevos del parche. El vendor tambien publica un
+    # retain ``ota`` pero su servicio nunca se invoca -> sin colision (PLAN
+    # D-F26-1). ``aulasense_ota`` es topic de COMANDO servidor->placa: la ingesta
+    # PUBLICA ahi, nunca suscribe (D-F26-2), por eso no figura en esta lista.
+    "ota",
+    "imagen_estado",
+    "heap_interno",
 )
 
 # Tipos que se persisten (interfaz fijada por el coordinador).
@@ -56,6 +66,9 @@ KINDS_VALIDOS: tuple[str, ...] = (
     "aulasense_temp",
     "aulasense_config",
     "image",
+    "ota",
+    "imagen_estado",
+    "heap_interno",
 )
 
 # Mapa suffix del topic -> kind logico devuelto por ``validar``.
@@ -70,9 +83,17 @@ _SUFFIX_A_KIND: dict[str, str] = {
     "aulasense_temp": "aulasense_temp",
     "aulasense_config": "aulasense_config",
     "image": "image",
+    "ota": "ota",
+    "imagen_estado": "imagen_estado",
+    "heap_interno": "heap_interno",
 }
 
-# Eventos de provision/config/captura del parche F24 (SPEC §6.1/§8.1).
+# Eventos de provision/config/captura del parche F24 (SPEC §6.1/§8.1), los
+# nuevos F26 de placa (SPEC §16.4: OTA_*/FIRMWARE/IMAGEN_INIT/CAMARA_ERROR/
+# AP_ERROR) y los derivados de monitoreo SISTEMA_* (D-F26-8: los inserta la
+# PROPIA ingesta en el borde de cambio -- patron NODO_ONLINE/OFFLINE --, no la
+# placa; se listan aqui porque VIVEN en la misma tabla ``config_eventos`` y el
+# CHECK del tipo debe aceptarlos).
 EVENTOS_CONFIG: tuple[str, ...] = (
     "AP_FALLBACK",
     "CFG_GUARDADA",
@@ -80,6 +101,21 @@ EVENTOS_CONFIG: tuple[str, ...] = (
     "IMAGEN_ON",
     "IMAGEN_GATE_OFF",
     "IMAGEN_DESCARTE",
+    # F26 eventos de placa (SPEC §16.4).
+    "OTA_CHECK",
+    "OTA_INICIO",
+    "OTA_OK",
+    "OTA_ERROR",
+    "FIRMWARE",
+    "IMAGEN_INIT",
+    "CAMARA_ERROR",
+    "AP_ERROR",
+    # F26 derivados de monitoreo por la ingesta (SPEC §16.7).
+    "SISTEMA_MQTT_CAIDO",
+    "SISTEMA_MQTT_RECUPERADO",
+    "SISTEMA_TELEMETRIA_STALE",
+    "SISTEMA_DISCO_WARN",
+    "SISTEMA_TUNEL_CAIDO",
 )
 
 _ID_HEX16 = re.compile(r"^[0-9a-f]{16}$")
@@ -375,6 +411,91 @@ def _validar_image(p: dict[str, Any], topic: str) -> str | None:
     return None
 
 
+# --- Validadores F26 (SPEC §16.3/§16.4) ------------------------------------
+
+# Estado machines del retain ``ota`` (SPEC §16.4, coherente con app_ota.c F26-c1).
+_ESTADOS_OTA: tuple[str, ...] = (
+    "idle",
+    "checking",
+    "downloading",
+    "verifying",
+    "rebooting",
+    "error",
+)
+
+
+def _validar_ota(p: dict[str, Any]) -> str | None:
+    """Retain ``ota``: estado de la OTA del modulo propio (SPEC §16.4)."""
+    if p.get("estado") not in _ESTADOS_OTA:
+        return "ota.estado debe ser uno de " + "|".join(_ESTADOS_OTA)
+    ts = p.get("ts_ms")
+    if not _es_int(ts):
+        return "ota.ts_ms debe ser entero"
+    if ts < 0:
+        return "ota.ts_ms no puede ser negativo"
+    for campo in ("version_actual", "version_objetivo", "detalle"):
+        if p.get(campo) is not None and not _es_str(p[campo]):
+            return f"ota.{campo} debe ser texto o null"
+    if _es_str(p.get("detalle")) and len(p["detalle"]) > 120:
+        return "ota.detalle supera 120 caracteres"
+    if p.get("sha256_ok") is not None and not _es_bool(p["sha256_ok"]):
+        return "ota.sha256_ok debe ser booleano o null"
+    if _claves_secreto(p):
+        return "ota incluye campos de secreto no permitidos"
+    return None
+
+
+def _validar_imagen_estado(p: dict[str, Any]) -> str | None:
+    """Retain ``imagen_estado`` (SPEC §16.3): observabilidad de camara/gate.
+
+    Solo se exige lo minimo accionable (``camara_ok``, ``captura_habilitada``,
+    ``ts_ms``); el resto de campos, si vienen, debe respetar su tipo.
+    """
+    if not _es_bool(p.get("camara_ok")):
+        return "imagen_estado.camara_ok debe ser booleano"
+    if not _es_bool(p.get("captura_habilitada")):
+        return "imagen_estado.captura_habilitada debe ser booleano"
+    ts = p.get("ts_ms")
+    if not _es_int(ts):
+        return "imagen_estado.ts_ms debe ser entero"
+    if ts < 0:
+        return "imagen_estado.ts_ms no puede ser negativo"
+    for campo in ("camara_pid", "camara_err", "build"):
+        if p.get(campo) is not None and not _es_str(p[campo]):
+            return f"imagen_estado.{campo} debe ser texto o null"
+    for campo in ("pipeline_ok", "gate_off", "imagen_habilitado"):
+        if p.get(campo) is not None and not _es_bool(p[campo]):
+            return f"imagen_estado.{campo} debe ser booleano o null"
+    for campo in ("descartes", "imagenes_ok"):
+        if p.get(campo) is not None and not _es_int(p[campo]):
+            return f"imagen_estado.{campo} debe ser entero o null"
+    for campo in ("internal_free_kb", "internal_largest_block_kb"):
+        if p.get(campo) is not None and not _es_num(p[campo]):
+            return f"imagen_estado.{campo} debe ser numerico o null"
+    if _claves_secreto(p):
+        return "imagen_estado incluye campos de secreto no permitidos"
+    return None
+
+
+def _validar_heap_interno(p: dict[str, Any]) -> str | None:
+    """Retain ``heap_interno`` (SPEC §16.3): heap INTERNO, nunca PSRAM."""
+    ts = p.get("ts_ms")
+    if not _es_int(ts):
+        return "heap_interno.ts_ms debe ser entero"
+    if ts < 0:
+        return "heap_interno.ts_ms no puede ser negativo"
+    for campo in ("internal_free_kb", "internal_largest_block_kb"):
+        if campo not in p:
+            return f"heap_interno.{campo} es obligatorio"
+        if not _es_num(p[campo]):
+            return f"heap_interno.{campo} debe ser numerico"
+        if p[campo] < 0:
+            return f"heap_interno.{campo} no puede ser negativo"
+    if _claves_secreto(p):
+        return "heap_interno incluye campos de secreto no permitidos"
+    return None
+
+
 # Marcadores de nombre que delatan un secreto dentro de ``aulasense_config``.
 _MARCAS_SECRETO = ("ssid", "pass", "password", "token")
 # Sufijos que SI se permiten: solo longitudes/flags, nunca el valor.
@@ -482,6 +603,12 @@ def validar(topic: str, payload: dict) -> dict[str, Any]:
         fallo = _validar_aulasense_config(payload)
     elif kind == "image":
         fallo = _validar_image(payload, topic)
+    elif kind == "ota":
+        fallo = _validar_ota(payload)
+    elif kind == "imagen_estado":
+        fallo = _validar_imagen_estado(payload)
+    elif kind == "heap_interno":
+        fallo = _validar_heap_interno(payload)
     else:  # aulasense_temp
         fallo = _validar_aulasense_temp(payload)
 
@@ -490,8 +617,29 @@ def validar(topic: str, payload: dict) -> dict[str, Any]:
     return _ok(kind, payload)
 
 
+# DDL de ``config_eventos`` con FUENTE UNICA: el CHECK de ``tipo`` se genera
+# desde ``EVENTOS_CONFIG`` tanto para BD nuevas (dentro de ``ESQUEMA_SQL``)
+# como para la reconstruccion R8/F26 (SQLite no permite ALTER de un CHECK).
+def _ddl_config_eventos(idempotente: bool) -> str:
+    existe = "IF NOT EXISTS " if idempotente else ""
+    tipos = ",".join(f"'{tipo}'" for tipo in EVENTOS_CONFIG)
+    return (
+        "CREATE TABLE "
+        + existe
+        + "config_eventos (\n"
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,\n"
+        f"  tipo TEXT NOT NULL CHECK(tipo IN ({tipos})),\n"
+        "  detalle TEXT,\n"
+        "  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),\n"
+        "  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))\n"
+        ");"
+    )
+
+
 # DDL literal de SPEC §8 (idempotente: IF NOT EXISTS en tablas e indices).
-ESQUEMA_SQL: str = """
+# El bloque final ``config_eventos`` se GENERA (ver ``_ddl_config_eventos``).
+_ESQUEMA_SQL_BASE: str = """
 CREATE TABLE IF NOT EXISTS dispositivos (
   device_id TEXT PRIMARY KEY, label TEXT, frontend TEXT, firmware TEXT, chip TEXT, csi_profile TEXT,
   first_seen_ms INTEGER, last_seen_ms INTEGER,
@@ -585,18 +733,17 @@ CREATE TABLE IF NOT EXISTS imagenes (
 CREATE INDEX IF NOT EXISTS idx_img_dev_ts ON imagenes(device_id, ts_ms);
 CREATE INDEX IF NOT EXISTS idx_img_evento ON imagenes(evento_id);
 CREATE INDEX IF NOT EXISTS idx_img_purgada ON imagenes(imagen_purgada);
-
--- Eventos de provision/config/captura (D-F24-7, sin secretos). Topic aulasense_config (§6.1).
-CREATE TABLE IF NOT EXISTS config_eventos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
-  tipo TEXT NOT NULL CHECK(tipo IN ('AP_FALLBACK','CFG_GUARDADA','STA_RECONECTADO','IMAGEN_ON','IMAGEN_GATE_OFF','IMAGEN_DESCARTE')),
-  detalle TEXT,                           -- ≤120 chars, SIN secretos (solo longitudes/flags)
-  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
-  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);
 """
+
+# ``config_eventos`` se anexa generada desde EVENTOS_CONFIG (fuente unica; F26
+# dio de alta OTA_*/FIRMWARE/IMAGEN_INIT/CAMARA_ERROR/AP_ERROR/SISTEMA_* en el
+# CHECK de BD nuevas sin duplicar la lista literal).
+ESQUEMA_SQL: str = (
+    _ESQUEMA_SQL_BASE
+    + "\n-- Eventos de provision/config/captura (D-F24-7 + F26, sin secretos).\n"
+    + _ddl_config_eventos(True)
+    + "\nCREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms);\n"
+)
 
 
 # --- Migracion F25 (SPEC §8.2) ---------------------------------------------
@@ -733,20 +880,116 @@ def _asegurar_indice_hash_unico(conn: sqlite3.Connection) -> int:
     return descartadas
 
 
-# DDL de ``config_eventos`` para la reconstruccion R8: el CHECK se genera desde
-# ``EVENTOS_CONFIG`` (fuente unica). El literal de ``ESQUEMA_SQL`` tambien se
-# actualizo (BD nuevas), pero SQLite no permite ALTER de un CHECK: las BD ya
-# creadas en produccion se reconstruyen con ESTE DDL.
-_DDL_CONFIG_EVENTOS = """
-CREATE TABLE config_eventos (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  device_id TEXT NOT NULL, ts_ms INTEGER NOT NULL,
-  tipo TEXT NOT NULL CHECK(tipo IN ({tipos})),
-  detalle TEXT,
-  origen TEXT NOT NULL DEFAULT 'real' CHECK(origen IN ('real','sintetico')),
-  recibido_en TEXT NOT NULL DEFAULT (datetime('now'))
-);
-""".format(tipos=",".join(f"'{tipo}'" for tipo in EVENTOS_CONFIG))
+# DDL de ``config_eventos`` para la reconstruccion R8/F26: el CHECK se genera
+# desde ``EVENTOS_CONFIG`` con la MISMA fuente que las BD nuevas (F26 elimino
+# la duplication de la lista literal). SQLite no permite ALTER de un CHECK: las
+# BD ya creadas en produccion se reconstruyen con ESTE DDL.
+_DDL_CONFIG_EVENTOS = _ddl_config_eventos(False)
+
+# Columnas copiadas en la reconstruccion R8 (orden = DDL vigente).
+_COLUMNAS_CONFIG_EVENTOS: tuple[str, ...] = (
+    "id",
+    "device_id",
+    "ts_ms",
+    "tipo",
+    "detalle",
+    "origen",
+    "recibido_en",
+)
+
+
+def _existe_tabla(conn: sqlite3.Connection, tabla: str) -> bool:
+    """True si ``tabla`` existe (``sqlite_master``); el nombre se valida antes."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tabla) is None:
+        raise ValueError(f"nombre de tabla invalido: {tabla!r}")
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (tabla,)
+        ).fetchone()
+        is not None
+    )
+
+
+@contextmanager
+def _transaccion_migracion(conn: sqlite3.Connection, nombre: str) -> Iterator[None]:
+    """Transaccion explicita de una migracion: ``BEGIN IMMEDIATE`` … ``COMMIT``.
+
+    ``BEGIN IMMEDIATE`` toma el lock de escritura al entrar: la migracion corre
+    en el writer unico (AGENTS.md regla 3), asi ningun otro proceso puede colarse
+    entre el ``INSERT…SELECT`` y el ``DROP`` de una reconstruccion. Si el llamador
+    YA trae una transaccion abierta (la implicita de un DML previo de la misma
+    migracion) se usa un ``SAVEPOINT``: no se commitea trabajo ajeno ni se aborta
+    su transaccion. En error: ``ROLLBACK`` (o ``ROLLBACK TO``) y la excepcion sube;
+    ``nombre`` debe ser un identificador literal de este modulo.
+    """
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", nombre) is None:
+        raise ValueError(f"nombre de savepoint invalido: {nombre!r}")
+    propia = not conn.in_transaction
+    savepoint = f"migracion_{nombre}"
+    if propia:
+        conn.execute("BEGIN IMMEDIATE")
+    else:
+        conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        yield
+    except BaseException:
+        try:
+            if propia:
+                conn.rollback()
+            else:
+                conn.execute(f"ROLLBACK TO {savepoint}")
+                conn.execute(f"RELEASE {savepoint}")
+        except sqlite3.Error:  # pragma: no cover - conexion ya rota
+            pass
+        raise
+    else:
+        if propia:
+            conn.commit()
+        else:
+            conn.execute(f"RELEASE {savepoint}")
+
+
+def _enum_config_eventos_vigente(ddl: str | None) -> bool:
+    """True si el DDL de ``config_eventos`` ya lista TODOS los ``EVENTOS_CONFIG``."""
+    return bool(ddl) and all(f"'{tipo}'" in ddl for tipo in EVENTOS_CONFIG)
+
+
+def _legacy_volcada_en_config_eventos(conn: sqlite3.Connection) -> bool:
+    """True si TODA fila de ``config_eventos_legacy`` ya vive en la tabla nueva."""
+    fila = conn.execute(
+        "SELECT COUNT(*) FROM config_eventos_legacy AS legacy "
+        "WHERE NOT EXISTS (SELECT 1 FROM config_eventos AS nuevo "
+        "WHERE nuevo.id = legacy.id)"
+    ).fetchone()
+    return int(fila[0] if fila is not None else 0) == 0
+
+
+def _descartar_config_eventos_legacy(conn: sqlite3.Connection) -> bool:
+    """Completa y descarta una ``config_eventos_legacy`` huerfana (crash R8).
+
+    Estado legitimo de entrada: la tabla vigente ya tiene el enum completo. Aun
+    asi puede faltarle alguna fila si el proceso murio entre el ``CREATE`` y el
+    ``INSERT…SELECT`` de la version SIN transaccion (gate F26-bd MEDIO-1): se
+    completan por id (``INSERT OR IGNORE``) y solo cuando NINGUNA fila de la copia
+    queda sin volcar se hace ``DROP``. Devuelve ``True`` si la copia desaparecio.
+    """
+    columnas = ", ".join(_COLUMNAS_CONFIG_EVENTOS)
+    with _transaccion_migracion(conn, "r8_legacy"):
+        conn.execute(
+            f"INSERT OR IGNORE INTO config_eventos ({columnas}) "
+            f"SELECT {columnas} FROM config_eventos_legacy"
+        )
+        if not _legacy_volcada_en_config_eventos(conn):
+            LOG.warning(
+                "migracion R8: config_eventos_legacy conserva filas sin volcar; "
+                "NO se descarta (se reintenta en la proxima pasada)"
+            )
+            return False
+        conn.execute("DROP TABLE config_eventos_legacy")
+    LOG.info(
+        "migracion R8: se descarta config_eventos_legacy huerfana (enum ya vigente)"
+    )
+    return True
 
 
 def _migrar_config_eventos_enum(conn: sqlite3.Connection) -> bool:
@@ -755,28 +998,67 @@ def _migrar_config_eventos_enum(conn: sqlite3.Connection) -> bool:
     SQLite no permite modificar un CHECK: se copia la tabla tal cual, se recrea
     con el enum vigente de ``EVENTOS_CONFIG`` (fuente unica) y se restauran las
     filas con sus ids. Idempotente: si el CHECK ya lista todos los eventos, no
-    toca nada. Devuelve ``True`` solo cuando reconstruyo la tabla.
+    toca nada (solo limpia una ``config_eventos_legacy`` huerfana). Devuelve
+    ``True`` solo cuando reconstruyo la tabla.
+
+    Crash-safe (gate F26-bd MEDIO-1): ``RENAME`` + ``CREATE`` + ``INSERT…SELECT``
+    + índice + ``DROP`` corren en UNA transaccion (``BEGIN IMMEDIATE``…``COMMIT``
+    con rollback en error), asi que un corte deja o la tabla vieja intacta o la
+    nueva completa y sin copia. La huerfana que hubiera dejado una corrida de la
+    version anterior se resuelve al entrar (volcado por id + ``DROP``), y la
+    ventana ``RENAME``→``CREATE`` se repara restaurando la copia.
     """
     fila = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_eventos'"
     ).fetchone()
-    if fila is None or not fila[0]:
+    ddl_actual = fila[0] if fila is not None else None
+    hay_legacy = _existe_tabla(conn, "config_eventos_legacy")
+
+    if ddl_actual is None and hay_legacy:
+        # Ventana RENAME->CREATE de la version sin transaccion: la tabla se
+        # quedo solo en la copia. Se restaura y se sigue con la reconstruccion.
+        with _transaccion_migracion(conn, "r8_restaura"):
+            conn.execute("ALTER TABLE config_eventos_legacy RENAME TO config_eventos")
+        LOG.warning(
+            "migracion R8: config_eventos ausente; se restaura desde la copia legacy"
+        )
+        fila = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'config_eventos'"
+        ).fetchone()
+        ddl_actual = fila[0] if fila is not None else None
+        hay_legacy = False
+
+    if ddl_actual is None:
         return False
-    if all(f"'{tipo}'" in fila[0] for tipo in EVENTOS_CONFIG):
+
+    if _enum_config_eventos_vigente(ddl_actual):
+        if hay_legacy:
+            _descartar_config_eventos_legacy(conn)
         return False
+
     LOG.info("migracion R8: se reconstruye config_eventos con el enum vigente")
-    conn.execute("ALTER TABLE config_eventos RENAME TO config_eventos_legacy")
-    conn.execute(_DDL_CONFIG_EVENTOS)
-    conn.execute(
-        "INSERT INTO config_eventos "
-        "(id, device_id, ts_ms, tipo, detalle, origen, recibido_en) "
-        "SELECT id, device_id, ts_ms, tipo, detalle, origen, recibido_en "
-        "FROM config_eventos_legacy"
-    )
-    conn.execute("DROP TABLE config_eventos_legacy")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms)"
-    )
+    columnas = ", ".join(_COLUMNAS_CONFIG_EVENTOS)
+    with _transaccion_migracion(conn, "r8_reconstruye"):
+        if hay_legacy:
+            # Copia sin resolver junto a una tabla con enum viejo (estado que la
+            # version anterior no produce): se vuelca lo que falte por id para
+            # poder renombrar sin colision; si choca con el CHECK viejo, el
+            # ROLLBACK deja ambas tablas como estaban y el error sube.
+            conn.execute(
+                f"INSERT OR IGNORE INTO config_eventos ({columnas}) "
+                f"SELECT {columnas} FROM config_eventos_legacy"
+            )
+            conn.execute("DROP TABLE config_eventos_legacy")
+        conn.execute("ALTER TABLE config_eventos RENAME TO config_eventos_legacy")
+        conn.execute(_DDL_CONFIG_EVENTOS)
+        conn.execute(
+            f"INSERT INTO config_eventos ({columnas}) "
+            f"SELECT {columnas} FROM config_eventos_legacy"
+        )
+        conn.execute("DROP TABLE config_eventos_legacy")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cfg_dev_ts ON config_eventos(device_id, ts_ms)"
+        )
     return True
 
 
@@ -848,6 +1130,141 @@ def migrar_esquema_f25(conn: sqlite3.Connection) -> dict[str, Any]:
         tabla_sesiones = TABLA_SESIONES_LOGIN
     conn.executescript(_DDL_SESIONES_LOGIN.format(tabla=tabla_sesiones))
     resumen["tabla_sesiones_login"] = tabla_sesiones
+
+    conn.commit()
+    return resumen
+
+
+# --- Migracion F26 (SPEC §16.5) --------------------------------------------
+#
+# Mismo patron que ``migrar_esquema_f25`` (esquema.py:783 historico): SOLO la
+# ingesta la aplica (writer unico), columnas via ``pragma table_info`` antes de
+# cada ``ALTER`` (SQLite no tiene ADD COLUMN IF NOT EXISTS) y tablas/indices via
+# ``IF NOT EXISTS``. Doble pasada = no-op. Verificacion posterior: SOLO-LECTURA
+# por python con URI ``file:...?mode=ro`` (regla 3; no existe CLI sqlite3).
+
+# Columnas Clef de ``imagenes`` (D-F26-7; lista completa de SPEC §16.5,
+# incluidas cubre/calidad/actividad que el dashboard muestra como badge
+# REVISIÓN_HUMANA cuando decision_cubre < 0.7 -- derivado, NO un estado nuevo).
+COLUMNAS_F26_IMAGENES: tuple[tuple[str, str], ...] = (
+    (
+        "decision_estado",
+        "decision_estado TEXT NOT NULL DEFAULT 'pendiente' "
+        "CHECK(decision_estado IN ('pendiente','procesando','hecho','error','omitido'))",
+    ),
+    ("decision_etiqueta", "decision_etiqueta TEXT"),
+    ("decision_confianza", "decision_confianza REAL"),
+    ("decision_modelo", "decision_modelo TEXT"),
+    ("decision_ts_ms", "decision_ts_ms INTEGER"),
+    ("decision_tokens", "decision_tokens INTEGER"),
+    ("decision_cubre", "decision_cubre REAL"),
+    ("decision_calidad", "decision_calidad REAL"),
+    ("decision_actividad", "decision_actividad TEXT"),
+)
+
+# Columnas de heap INTERNO en ``telemetria`` (D-F26-5; rellenas desde el retain
+# ``heap_interno`` cacheado por device o desde campos directos del resultado de
+# diagnosticos). Nulas en filas historicas: backwards-compat exigida.
+COLUMNAS_F26_TELEMETRIA: tuple[tuple[str, str], ...] = (
+    ("internal_free_kb", "internal_free_kb INTEGER"),
+    ("internal_largest_block_kb", "internal_largest_block_kb INTEGER"),
+)
+
+# Auditoria Clef GEMELA de ``vision_uso`` (esquema.py:662-669 patron): una fila
+# por decision, base de los topes moviles AULASENSE_CLEF_MAX_DIA/MAX_HORA (regla 16).
+_DDL_CLEF_USO = """
+CREATE TABLE IF NOT EXISTS clef_uso (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts_ms INTEGER NOT NULL,
+  device_id TEXT,
+  imagen_id INTEGER REFERENCES imagenes(id),
+  modelo TEXT NOT NULL,
+  tokens INTEGER,
+  coste_usd REAL,
+  exito INTEGER NOT NULL DEFAULT 1,
+  detalle TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_clef_uso_ts ON clef_uso(ts_ms);
+"""
+
+# Heartbeat de la ingesta (D-F26-8, writer unico = ingesta): FILA UNICA id=1
+# UPSERT cada ciclo del PollerDiagnosticos (~30 s) con is_connected(). El JSON
+# ``detalle`` lleva los ultimos retains {ota, imagen_estado, heap_interno} por
+# device para que /api/salud (F26-a2) lea el estado OTA sin tocar el broker.
+_DDL_ESTADO_SISTEMA = """
+CREATE TABLE IF NOT EXISTS estado_sistema (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  ts_ms INTEGER NOT NULL,
+  mqtt_conectado INTEGER NOT NULL DEFAULT 0,
+  ingesta_activa INTEGER NOT NULL DEFAULT 1,
+  detalle TEXT
+);
+"""
+
+
+def migrar_esquema_f26(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Aplica el esquema F26 de SPEC §16.5 (idempotente, doble pasada OK).
+
+    Devuelve resumen para logs/tests: columnas anadidas, tablas creadas en esta
+    pasada y si ``config_eventos`` requigio reconstruccion del enum (los eventos
+    nuevos F26 viven en esa tabla -- patron R8, SOLO-LECTURA para verificar).
+    """
+    resumen: dict[str, Any] = {
+        "columnas_nuevas": [],
+        "tablas_nuevas": [],
+        "config_eventos_reconstruida": False,
+    }
+
+    columnas = columnas_tabla(conn, "imagenes")
+    if columnas is not None:
+        for nombre, ddl in COLUMNAS_F26_IMAGENES:
+            if nombre in columnas:
+                continue
+            conn.execute(f"ALTER TABLE imagenes ADD COLUMN {ddl}")
+            resumen["columnas_nuevas"].append(nombre)
+    else:
+        LOG.warning("migracion F26: tabla imagenes inexistente; se omite")
+        columnas = set()
+
+    if columnas_tabla(conn, "imagenes") is not None:
+        # Cola de Clef: vision_estado='hecho' AND decision_estado='pendiente'
+        # (SPEC §16.6) -- el indice acompana al idx_img_vision_estado de F25.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_img_decision_estado "
+            "ON imagenes(decision_estado)"
+        )
+        # /api/salud 'decision_recientes' (app.py): WHERE decision_estado='hecho'
+        # ORDER BY decision_ts_ms DESC, id DESC LIMIT 8. Con el indice anterior
+        # SQLite usa temp B-tree sobre todas las 'hecho' (bench synth 5k: p50
+        # 4.0 ms / p95 11.5 ms por request, el unico query del set >1 ms a
+        # escala). El compuesto ordena gratis: las claves son
+        # (decision_estado, decision_ts_ms, rowid) -> backwards-scan O(log n + 8).
+        # NO se anade indice sobre hash_sha256: idx_img_hash_unico (F25,
+        # esquema.py:877) ya cubre el dedupe de Clef -- verificado con EXPLAIN
+        # en BD viva y a 5k (.tmp/gate_f26_rendimiento_aplicado.md). Additivo,
+        # idempotente.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_img_decision_ts "
+            "ON imagenes(decision_estado, decision_ts_ms)"
+        )
+
+    telem = columnas_tabla(conn, "telemetria")
+    if telem is None:
+        LOG.warning("migracion F26: tabla telemetria inexistente; se omite")
+    else:
+        for nombre, ddl in COLUMNAS_F26_TELEMETRIA:
+            if nombre in telem:
+                continue
+            conn.execute(f"ALTER TABLE telemetria ADD COLUMN {ddl}")
+            resumen["columnas_nuevas"].append(nombre)
+
+    for tabla, ddl in (("clef_uso", _DDL_CLEF_USO), ("estado_sistema", _DDL_ESTADO_SISTEMA)):
+        if columnas_tabla(conn, tabla) is None:
+            conn.executescript(ddl)
+            resumen["tablas_nuevas"].append(tabla)
+
+    # Enum de config_eventos: mismos tipos que F25 (fuente unica EVENTOS_CONFIG).
+    resumen["config_eventos_reconstruida"] = _migrar_config_eventos_enum(conn)
 
     conn.commit()
     return resumen

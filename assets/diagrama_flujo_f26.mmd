@@ -1,0 +1,72 @@
+---
+title: AulaSense F26 - flujos reales de OTA y de evidencia (SPEC 16.10 / 16.1 / 16.3 / 16.6)
+---
+flowchart TB
+  subgraph OUTB["REGLA DURA: la placa es 100 % OUTBOUND - todas las conexiones (MQTT y HTTP) las INICIA ella; el servidor jamas la alcanza (zero-asuncion-LAN D-F26-10)"]
+    direction TB
+
+    subgraph EVID["FLUJO DE EVIDENCIA: onset de motion hasta decision de aula en el panel"]
+      direction LR
+      E0["ESP32-S3 GOOUUU (sitio remoto, solo energizada)"]
+      E1["CSI Wi-Fi 2.4 GHz ~100 muestras/s + detector neuronal ESPectre EN-CHIP (MLP 529 param, decide cada 250 ms)"]
+      E2{"onset idle a MOTION (cooldown foto 15 s) + GATE heap INTERNO: free mayor o igual 120 KB y mayor bloque mayor o igual 64 KB"}
+      E3["foto QVGA 320x240 JPEG, base64 hasta 16 KB (tarea de baja prioridad, cola drop-oldest)"]
+      EG["GATE_OFF SIN LATCH: no hay foto, el EVENTO CSI sigue siendo la fuente de verdad (re-evalua cada onset, histeresis +20 KB; imagen_estado retain)"]
+      E4["WiFi del sitio: MQTT/TCP :14769 a broker.gilman.pro (VPS = SOLO broker + tuneles, Mosquitto; auth electiva)"]
+      E5["topic aulasense/v1/devices/id/image (QoS 0, retain=false: la foto NO persiste en el broker) + eventos .../motion"]
+      E6["Ingesta WSL debian-aulasense = WRITER UNICO SQLite ~/aulasense-datos/aulasense.db (fila canal=mqtt, vision_estado y decision_estado pendientes) + galeria"]
+      E7["Worker vision: DASHSCOPE sk-sp modo B agente-mediado (qwen3.8-flash, rate 120/dia 20/h, dedupe sha256, Paso 0 medido)"]
+      E8["Worker Clef (pasada SEPARADA post-descripcion, claim atomico): OpenRouter decisions API - cascada cloudflare/clef-flash sobre TEXTO; si confianza menor que 0.6 escala a cloudflare/clef con imagen QVGA inline; JPEG roto se marca IMAGEN_DEGRADADA LOCAL sin llamada"]
+      E9["Taxonomia 6 valores (SIN_PERSONAS_VISIBLES, PERSONAS_SENTADAS, CIRCULACION, PRESENTACION_AL_FRENTE, AGLOMERACION_OTRA, IMAGEN_DEGRADADA) + noul_cubre/calidad + score_actividad; cubre menor que 0.7 da badge REVISION_HUMANA"]
+      E10["Dashboard FastAPI :8100 (panel, galeria con busqueda, tarjeta decision de aula y /salud con semaforos)"]
+      E11["Tunel pub-aulasense-8100 (iniciado desde WSL, tramo distro a VPS CIFRADO SSH; VPS a cliente HTTP plano): http://167.114.169.134:10062 PUBLICO tras login"]
+      E0 --> E1 --> E2
+      E2 -- "SI" --> E3 --> E4 --> E5 --> E6 --> E7 -->|"descripcion + etiquetas (vision_estado hecho)"| E8 --> E9 --> E10 --> E11
+      E2 -- "NO" --> EG -.->|"evento igualmente publicado por .../motion"| E5
+    end
+
+    subgraph OTA["FLUJO OTA F26: comando por MQTT, descarga HTTP con SHA-256, rollback automatico"]
+      direction LR
+      O1["Operador/disparo: la ingesta PUBLICA comando en topic .../aulasense_ota (QoS 1, retain=false, envelope command_id + action check o apply) - viaja por el MISMO socket MQTT que la placa abrio contra :14769; NUNCA hay conexion servidor a placa"]
+      O2["Placa hace CHECK del manifiesto: GET http://167.114.169.134:10064/manifest.json (version, url, sha256, size) - saliente de la placa al estatico OTA :8101 via tunel pub-aulasense-ota; publica OTA_CHECK + retain ota"]
+      O3["APPLY - QUIESCE: captura y telemetria EN PAUSA (el agujero de datos es ESPERADO y documentado; /salud muestra OTA en curso sin falsa alarma)"]
+      O4["Descarga HTTP streaming del firmware-VER.bin (buffer en PSRAM; particiones dual-app ota_0/ota_1 de 0x1E0000 c/u INTACTAS; pps medido durante la bajada: contencion CSI honesta)"]
+      O5{"VERIFICACION estricta: SHA-256 (mbedtls) + size del bin ANTES de set_boot"}
+      O6["escritura en slot INACTIVO (esp_ota_begin/write/end) + esp_ota_set_boot_partition + OTA_OK + OTA_INICIO/... segun etapa"]
+      O7["reboot + SELF-CHECK 90 s (configurable 60-120 s): WiFi GOT_IP + MQTT conectado + CSI armado estables"]
+      O8["mark_app_valid_cancel_rollback: build nueva confirmada (evento FIRMWARE con version) + reanudar captura y telemetria"]
+      O9["FALLO: OTA_ERROR segun etapa; SI la build nueva no pasa el self-check, el BOOTLOADER REVIERTE automaticamente al slot bueno (CONFIG_APP_ROLLBACK_ENABLE=y) - recuperacion REMOTA sin UART"]
+      O1 --> O2 --> O3 --> O4 --> O5
+      O5 -- "OK" --> O6 --> O7 --> O8
+      O5 -- "sha o size NO coinciden" --> O9
+      O7 -- "no pasa en el plazo" --> O9
+    end
+
+    OTA -.->|"el retain ota + eventos config_eventos son leidos por /salud y la galeria"| EVID
+  end
+
+  subgraph LANBOX["ALTERNATIVOS LAN-ONLY (no aplican en operacion remota - marcados como tales)"]
+    direction LR
+    L1["Receptor HTTP :8001 upload (POST /internal/imagen, Bearer, hasta 64 KB) - ALTERNATIVO al topic image por MQTT"]
+    L2["Direct HTTP del nodo :62587 (config WiFi/MQTT via tools, Origin guard) - SOLO LAN confiable"]
+    L3["Portal de provision: AP AULASENSE-CFG (WPA2, pass canonica solo en .env + NOTES, jamas aqui) http://192.168.4.1/cfg SIN token (GET /cfg, GET /cfg/estado, POST /cfg/wifi; 403 Origin, 429 cooldown, nunca loguea pass) - SOLO IN SITU"]
+  end
+
+  classDef chip fill:#083f81,color:#ffffff,stroke:#083f81
+  classDef vps fill:#b45309,color:#ffffff,stroke:#b45309
+  classDef wsl fill:#4f46e5,color:#ffffff,stroke:#4f46e5
+  classDef ia fill:#6b7280,color:#ffffff,stroke:#6b7280
+  classDef ota fill:#7c3aed,color:#ffffff,stroke:#7c3aed
+  classDef fail fill:#dc2626,color:#ffffff,stroke:#dc2626
+  classDef lan fill:#f59e0b,color:#3b2a00,stroke-dasharray: 5 5
+  classDef tunnel fill:#0e7490,color:#ffffff,stroke:#0e7490
+  class E0,E1 chip
+  class E4,E5 vps
+  class E6,E10 wsl
+  class E7,E8,E9 ia
+  class E11 tunnel
+  class O1,O2,O3,O4,O6 vps
+  class O4,O7 ota
+  class O5,O9 fail
+  class O8 chip
+  class L1,L2,L3 lan

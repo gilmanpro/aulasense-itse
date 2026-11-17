@@ -15,7 +15,13 @@ menu "AulaSense Feedback"
             <topic_prefix>/<device_id>/aulasense_temp y viaja sobre el mismo cliente MQTT
             de Native: no abre otra conexion ni cambia el contrato nativo.
 
-            Ver firmware/parche_aulasense/README.md (spec) y SPEC.md 3.1.
+            F26 (SPEC 16.3): el mismo publisher periodico (30 s) emite ADEMAS el estado RETAIN
+            heap_interno {internal_free_kb, internal_largest_block_kb, ts_ms} medido con
+            heap_caps MALLOC_CAP_INTERNAL (NUNCA el free_memory_kb de diagnosticos, que es
+            PSRAM-inclusive). app_feedback_pausar() silencia la telemetria durante la descarga
+            OTA (el "agujero" es esperado y documentado; buzzer/LED siguen).
+
+            Ver firmware/parche_aulasense/README.md (spec) y SPEC.md 3.1 / 16.3.
 
     config AULASENSE_BUZZER_GPIO
         int "GPIO del buzzer piezo (LEDC PWM)"
@@ -70,20 +76,25 @@ menu "AulaSense Feedback"
 
 endmenu
 
-menu "AulaSense Imagen (F24-c)"
+menu "AulaSense Imagen (F24-c + F26)"
 
     config AULASENSE_IMAGEN
         bool "Evidencia de imagen en el onset de motion (OV3660 QVGA JPEG)"
         default y
         help
-            Activa el modulo app_imagen.c (parche F24-c): captura UN JPEG QVGA 320x240 de la
-            OV3660 en la transicion idle->motion y lo sube por HTTP al receptor local de la
-            ingesta (POST /internal/imagen, LAN :8001, Bearer token).
+            Activa el modulo app_imagen.c (parche F24-c, observabilidad F26): captura UN JPEG
+            QVGA 320x240 de la OV3660 en la transicion idle->motion y lo sube por MQTT (canal
+            primario F25-c) o HTTP al receptor local de la ingesta (POST /internal/imagen,
+            LAN :8001, Bearer token, alternativo).
 
             La imagen es EVIDENCIA del evento, no streaming: cooldown 15 s, tarea propia de
-            prioridad 3 (NUNCA el loop del detector), cola corta en PSRAM. Si el heap interno
-            cae por debajo del gate, la captura se auto-deshabilita y el CSI sigue detectando.
-            Imagenes SOLO a la LAN del proyecto: transporte primario MQTT (N1), fallback
+            prioridad 3 (NUNCA el loop del detector), cola corta en PSRAM con DROP-OLDEST.
+            Si el heap interno cae por debajo del gate, la captura se auto-deshabilita y el
+            CSI sigue detectando. F26: el gate se re-evalua en CADA onset (sin latch) y el
+            modulo publica IMAGEN_INIT/CAMARA_ERROR + el estado RETAIN imagen_estado en cada
+            conexion MQTT: la camara deja de ser muda en remoto (SPEC 16.3).
+
+            Imagenes SOLO al servidor del proyecto: transporte primario MQTT (N1), fallback
             HTTP :8001 (N2); NUNCA a la nube (D-F25-1, AGENTS regla 2/14).
 
             Este simbolo exige CONFIG_SPIRAM=y (framebuffers y buffers JPEG en PSRAM): si falta,
@@ -100,20 +111,33 @@ menu "AulaSense Imagen (F24-c)"
     config AULASENSE_IMAGEN_QUEUE
         int "Slots de la cola de onsets en PSRAM (x 8 KB de buffer JPEG)"
         range 1 8
-        default 2
+        default 4
         help
-            Longitud de la cola corta de onsets pendientes (SPEC 3.2: 2 slots x 8 KB = 16 KB en
-            PSRAM). Si la cola se llena se DESCARTA la imagen y se emite IMAGEN_DESCARTE: el
-            EVENTO motion sigue su curso por MQTT (el evento es la fuente de verdad).
+            Longitud de la cola corta de onsets pendientes. F26 sube el default de 2 a 4: la
+            evidencia COM6 (inv_com6_resultado.md) mostro "cola de onsets llena" conviviendo
+            con cooldown de 15 s — el sitio tiene rafagas de movimiento y 2 slots se saturaba
+            en segundos. Coste: 4 x 8 KB = 32 KB de PSRAM (la placa tiene 8 MB: holgado).
+
+            F26: si la cola se llena se aplica DROP-OLDEST (sale el onset MAS ANTIGUO, entra
+            el nuevo: la evidencia mas reciente gana) con IMAGEN_DESCARTE. El EVENTO motion
+            sigue su curso por MQTT en cualquier caso: el evento es la fuente de verdad.
 
     config AULASENSE_IMAGEN_HEAP_MIN_KB
         int "Gate de memoria: heap interno libre minimo (KB)"
         range 32 512
         default 120
         help
-            Antes de cada captura se comprueba xPortGetFreeHeapSize(). Si el heap interno libre
-            es menor que este valor, la captura se auto-deshabilita con ESP_LOGW y evento
-            IMAGEN_GATE_OFF. El sistema SIGUE detectando movimiento por CSI.
+            Antes de cada captura se comprueba el heap INTERNO LIBRE con
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL). Si es menor que este valor, la
+            captura se auto-deshabilita con ESP_LOGW y evento IMAGEN_GATE_OFF. El sistema
+            SIGUE detectando movimiento por CSI.
+
+            F26 (D-F26-5): la medicion ya NO usa xPortGetFreeHeapSize() (con SPIRAM_USE_MALLOC
+            incluye los ~8 MB de PSRAM y mezclaba magnitudes: raiz del "latch" que la
+            histeresis nunca recupero en el sitio). El gate se re-evalua en CADA onset; la
+            re-habilitacion exige umbral + 20 KB y es inmediata al cumplirla. Los umbrales
+            VIVOS de la build unica F26 son 95/24 KB (sdkconfig, mas bajos que el default);
+            su ajuste con datos de banco (c3) viaja por OTA, no por segunda reflasheada UART.
 
     config AULASENSE_IMAGEN_HEAP_BLOCK_MIN_KB
         int "Gate de memoria: mayor bloque libre interno minimo (KB)"
@@ -153,36 +177,39 @@ menu "AulaSense Imagen (F24-c)"
 
 endmenu
 
-menu "AulaSense Provisioning (F24-d)"
+menu "AulaSense Provisioning (F24-d; F26 FIJO)"
 
     config AULASENSE_PROVISION
-        bool "AP de emergencia + portal privado /cfg/<token>"
+        bool "AP de emergencia + portal fijo /cfg (F26: sin token)"
         default y
         help
-            Activa el modulo app_provision.c (parche F24-d): si la estacion WiFi falla
-            AULASENSE_PROVISION_RETRIES intentos propios DEL MODULO (el Native nunca falla de
-            forma permanente: re-intenta con back-off en bucle — ENMIENDA E2), o si no hay
-            credenciales en el arranque, levanta un SoftAP "AULASENSE-CFG-<4 hex>" (canal 1,
-            max 4 clientes) con un portal SOLO en la ruta privada
-            http://192.168.4.1/cfg/<token>.
+            Activa el modulo app_provision.c (parche F24-d, rediseñado F26 por D-F26-4): si la
+            estacion WiFi falla AULASENSE_PROVISION_RETRIES intentos propios DEL MODULO (el
+            Native nunca falla de forma permanente: re-intenta con back-off en bucle — ENMIENDA
+            E2), o si no hay credenciales en el arranque, levanta un SoftAP con SSID FIJO
+            (AULASENSE_PROVISION_AP_SSID, default "AULASENSE-CFG"; sin sufijo MAC: una sola
+            unidad en el proyecto, colision multi-placa = procedimiento "1 placa a la vez"),
+            canal 1, max 4 clientes.
 
-            El token de 8 hex se GENERA POR CODIGO con esp_fill_random (NUNCA hardcodeado ni
-            fijo) y se persiste en NVS namespace "aulasense_prov" (clave "cfg_token"). Se
-            IMPRIME por serial al activarse el AP (una vez por activacion; no sale por MQTT ni
-            en endpoints no autenticados). Ruta o token incorrectos devuelven 404 neutro con
-            comparacion en tiempo constante.
+            Portal SIN TOKEN en rutas EXPLICITAS (max_uri_handlers=4): GET /cfg (formulario),
+            GET /cfg/estado (JSON sin secretos), POST /cfg/wifi (guardar). Cualquier otra ruta
+            es 404 neutro. El mecanismo anterior (ruta privada /cfg/<token con token NVS
+            aleatorio) queda ELIMINADO del codigo: la accesibilidad del recovery in situ pesa
+            mas que la opacidad de la ruta, y el factor real es la pass WPA2 del AP (D-F26-4).
+
+            AP_ERROR se publica en TODAS las ramas de fallo del levantamiento del AP
+            (set_mode/set_config/wifi_start/httpd): el recovery jamas queda mudo (el fallo de
+            "itse" de 4 chars fue el CRITICO del informe A §1.1). Guardas heredadas intactas:
+            Origin/Referer 403, cooldown NVS 5 s 429, body <=255 B, nunca loguear SSID/pass.
 
             Credenciales del portal: el SSID/clave que se guardan por el POST van a NVS
             namespace "aulasense_wifi" (la pass NUNCA se loguea ni se renderiza; solo
             longitudes). El flujo de reconexion es AP OFF -> WIFI_MODE_STA PURO -> connect
             (radio unica del S3, ENMIENDA E3): NUNCA APSTA cross-canal.
 
-            El recovery nativo queda PRESERVADO: BOOT 3 s -> Improv Serial sigue funcionando;
-            este modulo es aditivo y no toca el detector CSI, el canal MQTT ni las imagenes.
-
-            Donde se consultan las claves: la URL del portal (con token) en el log serial de
-            la placa al arribar el AP; las credenciales WiFi viven en la NVS de la placa.
-            Ninguna clave se escribe en el repo.
+            El recovery nativo queda PRESERVADO: BOOT 3 s -> Improv Serial sigue funcionando.
+            La key NVS antigua del token (namespace "aulasense_prov") NO se borra en campo:
+            es inofensiva y ya no se lee ni se escribe.
 
     config AULASENSE_PROVISION_RETRIES
         int "Fallos STA del modulo antes de levantar el AP"
@@ -193,17 +220,28 @@ menu "AulaSense Provisioning (F24-d)"
             un GOT_IP intermedio suma; al cruzarlo sube el AP de emergencia. Con GOT_IP el
             contador se resetea.
 
+    config AULASENSE_PROVISION_AP_SSID
+        string "SSID FIJO del AP de emergencia (F26, sin sufijo MAC)"
+        default "AULASENSE-CFG"
+        help
+            SSID fijo del portal de emergencia (D-F26-4). Maximo 32 bytes (guarda en
+            compilacion). Es PUBLICO por diseño: quien se asocia (con la pass WPA2) llega al
+            portal; la guia docs/NOTES_operacion.md lo documenta. Una sola placa en el
+            proyecto: si hubiera dos simultaneas, apagar una antes de provisionar (S-F26-1).
+
     config AULASENSE_PROVISION_AP_PASS
         string "Clave WPA2 del AP de emergencia (vacio = AP ABIERTO con aviso)"
         default ""
         help
-            Vacio (default, decision D-F24-4): el AP es ABIERTO y la pagina + el log llevan el
-            aviso explícito; el segundo factor es la ruta privada con token (proximidad +
-            conocimiento del token).
+            Vacio (default de Kconfig): el AP es ABIERTO con aviso explicito en la pagina y el
+            log (rama de degradacion conservada). El valor CANONICO nunca va commiteado:
+            viaja .env (seccion PROVISION_AP) -> sdkconfig.defaults.local (gitignored) via
+            tools/gen_firmware_config.py extendida (F26-c2).
 
-            Con valor: el AP usa WPA2-PSK con esa clave. La clave se escribe EN EL SDKCONFIG
-            (gitignored): fijarla SOLO localmente o via menuconfig/gen, NUNCA commitearla ni
-            imprimirla. Maximo 63 bytes.
+            Con valor: WPA2-PSK con guarda de COMPILACION — app_provision.c falla el build si
+            la longitud es 1..7 caracteres (_Static_assert 8..63 salvo vacio): "itse" de 4
+            chars hacia fallar esp_wifi_set_config ANTES de publicar AP_FALLBACK y el recovery
+            quedaba mudo (CRITICO informe A §1.1). Maximo 63 bytes. NUNCA se loguea.
 
     config AULASENSE_PROVISION_AP_OFF_S
         int "Segundos de gracia antes de AP-off tras STA OK con AP arribado"
@@ -214,5 +252,108 @@ menu "AulaSense Provisioning (F24-d)"
             por Improv concurrente), el AP se apaga tras estos segundos y el nodo vuelve a
             WIFI_MODE_STA puro. En el flujo normal del portal (E3) el AP se apaga ANTES del
             intento STA, sin esperar este timer.
+
+endmenu
+
+menu "AulaSense OTA (F26)"
+
+    config AULASENSE_OTA
+        bool "Actualizacion OTA propia (esp_ota_ops + comando MQTT)"
+        default y
+        help
+            Activa app_ota.c (parche F26, D-F26-1/2/3): OTA REAL con modulo propio sobre
+            esp_ota_ops + esp_http_client + mbedtls SHA-256 (deps YA declaradas: cero coste).
+            NO usa esp_https_ota ni el canal OTA del vendor (URL hardcodeada a GitHub, https
+            obligatorio, overrides rechazados — informe A §2.2; parchear el vendor esta
+            PROHIBIDO).
+
+            Disparador: comando MQTT por el broker ya productivo en el topic propio
+            {topic_prefix}/{device_id}/aulasense_ota con envelope
+            {"command_id":"...","command":"aulasense_ota","action":"check"|"apply"};
+            suscripcion via API publica transport.subscribe() sobre la MISMA conexion
+            persistente (norma N1: cero conexiones extra).
+
+            Orden de escritura (antibrick): gate de heap INTERNO -> OTA_INICIO -> pausa
+            captura/telemetria -> streaming al slot inactivo (SHA acumulado en streaming) ->
+            esp_ota_end -> verify sha256+size -> SOLO entonces esp_ota_set_boot_partition ->
+            OTA_OK -> esp_restart. Cualquier fallo antes de set_boot deja el slot actual
+            INTACTO y publica OTA_ERROR.
+
+            ROLLBACK OBLIGATORIO (D-F26-3): requiere CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+            (anadido a sdkconfig.defaults del app F26). Tras arrancar una imagen nueva el
+            self-check (Wi-Fi GOT_IP + MQTT conectado + runtime armed, CONTINUOS
+            AULASENSE_OTA_SELFCHECK_S s) marca esp_ota_mark_app_valid_cancel_rollback(); si no
+            se cumple en ventana+120 s de gracia, esp_ota_mark_app_invalid_rollback_and_reboot()
+            revierte al slot bueno   
+            sin tocar UART. Particiones dual-app INTACTAS: el bin debe caber en 0x1E0000.
+
+            HTTP plano + SHA-256 (decision D3 del dueño): el bin es GPL-3 fuente publica y la
+            integridad la firma el sha256 del manifiesto; TLS queda post-entrega.
+
+    config AULASENSE_FW_VERSION
+        string "Version de firmware semantica propia (visible en BD/dashboard)"
+        default "f26.7"
+        help
+            Version nuestra (NO el semver del vendor): viaja en el evento FIRMWARE, en el
+            retain ota (version_actual), en imagen_estado.build y en la comparacion
+            hay_actualizacion del OTA_CHECK (manifiesto.version != esta -> hay). Cambiarla en
+            CADA build publicada por OTA; 1..31 caracteres (guarda en compilacion).
+
+    config AULASENSE_OTA_MANIFEST_URL
+        string "URL del manifiesto OTA {version,url,sha256,size} (vacio = modulo inerte)"
+        default ""
+        help
+            URL ABSOLUTA del manifiesto JSON servido por el estatico WSL publicado por tunel
+            (SPEC 16.9). El valor real es del dueño/entorno: viaja .env ->
+            sdkconfig.defaults.local (gitignored, generado por gen_firmware_config.py),
+            NUNCA commiteado. Vacio = app_ota responde OTA_ERROR "manifiesto no disponible"
+            (el resto del firmware funciona igual).
+
+    config AULASENSE_OTA_CHECK_MIN
+        int "Chequeo periodico del manifiesto en minutos (0 = desactivado)"
+        range 0 1440
+        default 0
+        help
+            Default 0 = DESACTIVADO (reproducibilidad del curso, informe A §2.4: una placa que
+            se auto-actualiza sin control cambia el dataset academico). Con >0, cada N minutos
+            se hace GET al manifiesto y se publica OTA_CHECK (local vs remota); JAMAS
+            auto-aplica: apply es SOLO por comando explicito con command_id auditable.
+
+    config AULASENSE_OTA_HEAP_MIN_KB
+        int "Gate OTA: heap interno libre minimo (KB)"
+        range 64 512
+        default 96
+        help
+            La OTA NO arranca si heap_caps_get_free_size(MALLOC_CAP_INTERNAL) esta por debajo
+            (OTA_ERROR etapa=gate_heap sin descargar; slot intacto).
+
+            F26-g1 MEDIDO EN BANCO (ajuste permitido por SPEC 16.1 "mide el heap real
+            disponible en la build - documenta"): el default original 120 se justifico con el
+            heap de ARRANQUE (166/124 KB antes de cargar WiFi/CSI/MQTT), pero el steady-state
+            real con todo el pipeline corriendo es free 101-106 KB / largest 56 KB (200/200
+            muestras; 0 con free>=120) → con 120 la primera OTA era IMPOSIBLE (huevo-gallina:
+            el gate vive en el firmware que quiere actualizarse). 96 deja ~9 KB de colchon
+            sobre el minimo medido y sigue por encima de lo que necesita esp_ota+http plano
+            (stack ya asignado, buffer de chunk en PSRAM, ~2-4 KB internos de cliente).
+
+    config AULASENSE_OTA_BLOCK_MIN_KB
+        int "Gate OTA: mayor bloque libre interno minimo (KB)"
+        range 32 256
+        default 48
+        help
+            Segundo umbral del gate OTA (heap_caps_get_largest_free_block interno). F26-g1:
+            medido estable en 56 KB en banco → 48 con colchon; el default original 64 era
+            inalcanzable en steady state (0/200 muestras >=64).
+
+    config AULASENSE_OTA_SELFCHECK_S
+        int "Self-check de rollback: segundos continuos exigidos (60..120)"
+        range 60 120
+        default 90
+        help
+            Tras arrancar una imagen OTA (PENDING_VERIFY), la condicion Wi-Fi GOT_IP + MQTT
+            conectado + runtime armed debe mantenerse CONTINUA este tiempo para marcar
+            esp_ota_mark_app_valid_cancel_rollback(). Si en ventana+120 s de gracia no se
+            cumple, esp_ota_mark_app_invalid_rollback_and_reboot() vuelve al slot bueno. Referencia de arranque real:
+            MQTT conectaba a los ~37 s con WiFi ok (f24c metricas) — 90 s es holgado.
 
 endmenu
