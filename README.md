@@ -1,5 +1,7 @@
 # AulaSense — Sensing de movimiento/ocupación por Wi-Fi CSI con IA en el ESP32-S3
 
+> 📋 **Entrega para el curso: [docs/ENTREGA_PROFESOR.md](docs/ENTREGA_PROFESOR.md)** — empiece ahí (recorrido guiado de 10 min). Este README es el índice técnico.
+
 > Proyecto IoT2/ITSE 2026. **$0 de hardware extra**: solo la placa GOOUUU ESP32-S3-CAM v1.5 (N16R8)
 > y el router Wi-Fi 2.4 GHz existente. Sin micrófono, sin radar. **F24** añadió la cámara OV3660 como
 > evidencia de evento (1 JPEG QVGA al onset de motion); **F25** la canaliza por MQTT al broker
