@@ -1138,3 +1138,502 @@ checklist v25 (quedan `[x]`/`[ ]` a verificación del orquestador, única mano q
   `iot2/.tmp/flag_ts_cierre.md` (dos relojes: `ts_ms` R3 + `recibido_en` — SPEC §6).
 - **F4 · sesiones:** S1 (F4S1B) PUBLICADA con GT pasivo corroborado (e3ba4b5). **S2/S3: MAÑANA**
   (autorizado; aportan tramos idle → FPR/precision dejan de ser recall-only/piso).
+
+---
+
+## 13. F26 — AMPLIACIÓN (orden explícita del dueño, 2026-11-17, 15 puntos) — OTA real + provisioning fijo + gate/heap + Clef + monitoreo + .env único + docs/paquete visual
+
+> Fuentes de esta sección (investigación YA hecha, NO se repite): `aulasense/.tmp/inv_ota_provision.md`
+> (informe A, VEREDICTO CUMPLE), `aulasense/.tmp/inv_servicios_clef.md` (informe B, VEREDICTO CUMPLE) y
+> `aulasense/.tmp/inv_com6_resultado.md` (captura serial COM6 del 2026-11-17, identidad+cámara+build).
+> Checklist ejecutable: `iot2/.tmp/checklist_v26.md` (NUEVO; la v25 sigue vigente hasta que el
+> orquestador la cierre y promueva la v26 — fase F26-0). Especificación técnica: SPEC.md §16.
+> **El dueño NO quiere preguntas: este plan decide con los datos disponibles y entrega.**
+
+### 13.1 Evidencia nueva que CORRIGE premisas (inv_com6_resultado.md — absorbida obligatoria)
+
+1. **Cámara: la hipótesis del informe A §3 (`esp_camera_init` fallando) queda REFUTADA para el estado
+   actual.** La OV3660 inicializa OK (PID 0x3660, prueba de captura 2129 B, `imagen listo: camera=ok`).
+   La captura está OFF por **gate de memoria**: `config_eventos` registra `IMAGEN_GATE_OFF · "heap
+   interno bajo: captura off"` (16-nov 22:57:45 y arranques previos), precedido de 2× `IMAGEN_DESCARTE ·
+   "cola de onsets llena"`. Los eventos de config viven en la tabla **`config_eventos`**, NO en
+   `eventos` (error de búsqueda previo). El diseño de estado retain (informe A §3.2) SIGUE siendo
+   necesario; el bug real es el gate (latch + histéresis que nunca recupera + umbrales vivos 95/24 KB).
+2. **Identidad RESUELTA: COM6 ES la unidad de producción `2e6f0c909e30673e`** (el dueño la trajo a esta
+   máquina; device único en BD + telemetría viva + arranque 22:57:05 ↔ config_eventos 22:57:30/36/45).
+   NO hay segunda placa → el banco E2E ES la placa de producción; se eliminan las fases que asumían
+   dos unidades. D4 se simplifica: build final flasheada AQUÍ, el dueño la lleva reconectada; a partir
+   de ahí TODO es OTA.
+3. **Build viva = F25-c** (espectre-native 3.2.0, compile 14-nov 19:05, IDF v5.5.6, flash 15-nov 14:03,
+   bin v2 `effa314f…`). TODOS los cambios F26 de firmware viajan en **UNA sola reflasheada UART de
+   banco** (regla 17: una sesión dueña de COM6+árbol); ajustes posteriores viajan por OTA.
+4. **Dato honesto a NO "arreglar":** 1 fila de `imagenes` con `ts_ms` absurdo (reloj sin sincronizar al
+   arranque). NO se edita el dataset (regla 10) → se documenta y se filtra en la fase de análisis.
+5. **Telemetría engañosa:** `free_memory_kb ≈ 8.2 MB` es PSRAM (`SPIRAM_USE_MALLOC`), NO heap interno
+   (SRAM S3 ≤512 KB). Fase nueva obligatoria de visibilidad de heap interno (§13.3 F26-a/c).
+
+### 13.2 Decisiones D-F26-1..12 (con evidencia archivo:linea / fuente)
+
+- **D-F26-1 · OTA = módulo propio `app_ota.c` con `esp_ota_ops`** (NO el canal del vendor): URL del
+  vendor hardcodeada a GitHub + overrides rechazados + https obligatorio (`ota_protocol.cpp:78-90,
+  103-107`, `ota_service_https.cpp:44,592`, `sdkconfig:1136,2562` — informe A §2.2). Deps coste 0:
+  `app_update`/`esp_http_client`/`mbedtls`/`nvs_flash` YA en REQUIRES (`parche/CMakeLists.txt:43-49`).
+  Manifiesto propio `{version, url, sha256, size}` (version semántica libre nuestra, p. ej. `f26.1`;
+  sha256 hex minúsculas; size bytes). Orden API: escribir slot inactivo → `esp_ota_end()` → verificar
+  SHA-256+size → `esp_ota_set_boot_partition()` → `OTA_OK` → `esp_restart()`. Fallo antes del set_boot
+  → sigue arrancando el slot actual (informe A §2.5). **HTTP plano + SHA-256 + rollback** (decisión D3
+  del dueño); TLS queda post-entrega. NO se toca `partitions.csv` (ampliar slots exige UART in situ;
+  el bin debe caber en 0x1E0000 = 1 966 080 B; hoy 1 407 872 B, margen ≈558 KB; `check_sizes.py` corre
+  en build → error de compilación, no de campo).
+- **D-F26-2 · Disparador OTA = comando MQTT propio por el broker, con desviación JUSTIFICADA del topic
+  literal:** el punto 1 del dueño pide el canal `commands/request` YA productivo
+  (`ingesta_mqtt.py:1428-1438`). Verificado en vendor: `parse_espectre_command` RECHAZA nombres de
+  comando desconocidos en ese topic (`native_mqtt_frontend.cpp:84-93`) y `dispatch_command_` es
+  privado, sin hook público (`native_frontend.h:84`) → un comando propio por `commands/request`
+  exigiría parchear el vendor (PROHIBIDO salvo outbox). **Decisión: topic sufijo propio
+  `{prefix}/{device_id}/aulasense_ota`**, suscrito por `app_ota` con la API PÚBLICA
+  `transport.subscribe(topic, callback)` (`mqtt_transport_esp_idf.h:41`) sobre la MISMA conexión MQTT
+  persistente (patrón N1: cero conexiones extra). La ingesta publica ahí el MISMO envelope de comando
+  probado `{command_id, command:"aulasense_ota", action:"check"|"apply"}` (command_id auditable). Se
+  honra el espíritu del punto 1 (comando MQTT servidor→placa, outbound-only, broker autenticado, canal
+  ya productivo) con evidencia de por qué el topic literal no es viable sin tocar vendor. Chequeo
+  periódico opcional `AULASENSE_OTA_CHECK_MIN` default **0 = desactivado** (reproducibilidad académica,
+  informe A §2.4). El comando `check` publica `OTA_CHECK` con versión local vs manifiesto; `apply`
+  ejecuta la descarga. `allowed_during_raw_collection` no aplica (no usamos GET /csi).
+- **D-F26-3 · Rollback OBLIGATORIO antes de la 1ª OTA:** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` +
+  `CONFIG_APP_ROLLBACK_ENABLE=y` (hoy n, `sdkconfig:424,2520`) vía el patrón de edición documentada de
+  sdkconfig del parche (apply script + README §F26; NO es secreto → debe reproducirse en el rebuild del
+  profesor, no va en `.local`). `esp_ota_mark_app_valid_cancel_rollback()` SOLO tras self-check:
+  Wi-Fi GOT_IP + MQTT conectado + CSI armado, estables 60–120 s (esp_timer one-shot). Si el self-check
+  falla → no marcar + `esp_restart()` → el bootloader revierte al slot bueno. **El soporte de rollback
+  vive en el BOOTLOADER** → la reflasheada UART de banco (F26-c2) incluye bootloader+otadata+app; la
+  placa que el dueño reinstala en el sitio YA lleva bootloader con rollback; desde ahí toda OTA queda
+  protegida. Sin rollback verificado en banco NO se despacha OTA (informe A §2.5, riesgo CRÍTICO).
+- **D-F26-4 · Provisioning FIJO (D1 del dueño):** SSID `CONFIG_AULASENSE_PROVISION_AP_SSID` default
+  `"AULASENSE-CFG"`; pass WPA2 canónica `"itse-aulasense"` (14 chars ≥8; `"itse"` a secas es inválida
+  WPA2 y producía fallo silencioso del AP — informe A §1.1 CRÍTICO). Valor real SOLO vía `.env`
+  (sección PROVISION_AP) → `sdkconfig.defaults.local` (gitignored) generado por
+  `tools/gen_firmware_config.py` extendido (que ADEMÁS sanea los nombres Kconfig inexistentes que hoy
+  emite, `gen_firmware_config.py:38-45,67-68`). `_Static_assert` longitud 8..63 salvo vacío (error de
+  build, no brick de operación). Portal SIN token: rutas explícitas `GET /cfg` (form), `GET /cfg/estado`
+  (JSON), `POST /cfg/wifi`; `max_uri_handlers` 2→4; handler explícito para `"/cfg"` (el wildcard
+  `"/cfg/*"` no casa sin barra — informe A §1.2.4). Token NVS eliminado del código; la key vieja
+  `aulasense_prov/cfg_token` NO se borra en campo (inofensiva). Se MANTIENEN Origin/Referer guard,
+  cooldown 5 s, tope body, cabeceras duras y "nunca loguear pass". **`AP_ERROR` en TODAS las ramas de
+  fallo de `ap_levantar()`** (hoy el fallo de `set_config` corta antes de publicar nada,
+  `app_provision.c:291-294` → recovery mudo). Espejo parche↔main diff cero + hash (regla 17).
+  **Trade-off documentado (orden explícita del dueño, punto 9):** el valor canónico se escribe en la
+  guía NOTES_operacion (repo público) por orden del dueño; es una **capacidad local** (exige asociación
+  física al AP WPA2; conocerla desde el repo no habilita nada remoto), NO una credencial WiFi/MQTT.
+  Kconfig default sigue `""` y el valor real nunca va commiteado en builds. Riesgo aceptado y anotado
+  (R-F26-12); mitigaciones: WPA2 + Origin guard + cooldown; cambio de pass = `.env` + rebuild + OTA.
+- **D-F26-5 · Gate de heap interno + visibilidad (fase nueva obligatoria, evidencia COM6):**
+  (a) telemetría gana `internal_free_kb` / `internal_largest_block_kb` medidos con
+  `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` / `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL, …)`
+  — NUNCA el `free_memory_kb` de diagnósticos (PSRAM). Fuente: sufijo retain nuevo `heap_interno`
+  (30 s, patrón del publisher periódico de `app_feedback`) + campos en `imagen_estado`; la ingesta
+  rellena las columnas nuevas de `telemetria` con el último valor cacheado por device.
+  (b) El gate de captura PIERDE el latch permanente: re-evaluación por onset + histéresis (+20 KB)
+  intacta; cola de onsets con **drop-oldest** (la evidencia más reciente gana; el EVENTO sigue siendo
+  la fuente de verdad, regla 2) y dimensionado documentado con los datos de ráfagas reales
+  ("cola de onsets llena" con cooldown 15 s ⇒ el sitio tiene ráfagas de movimiento).
+  (c) Umbrales: se conservan los vivos (95/24 KB) en la build única; el diagnóstico de por qué la
+  histéresis NUNCA recuperó (2 h de uptime, RSSI −20) se hace en banco con los logs de arranque +
+  telemetría interna nueva (gratis tras el flasheo). Si los datos exigen ajuste de umbrales/código,
+  viaja por **OTA** (no segunda reflasheada UART) — D-F26-1/3 lo hacen seguro.
+  (d) Init timing: cámara/cola se montan ANTES de estabilizar WiFi (`app_main.cpp:506` vs `:517`);
+  el estado retain `imagen_estado` se re-publica en CADA `connected()` → el fallo de arranque ya no
+  se pierde (informe A §3.2). Eventos `IMAGEN_INIT` (camera=ok|off, pid, prueba de captura, heap_int)
+  y `CAMARA_ERROR` (esp_err_to_name, sin datos personales) en TODAS las rutas mudas de
+  `app_imagen.c:516-521,915-961,937-955`.
+- **D-F26-6 · .env ÚNICO = `aulasense/.env` raíz** (recomendación del dueño adoptada): único archivo
+  editable por humanos, gitignored, secciones ordenadas BROKER / WIFI_NODO / PROVISION_AP /
+  UPLOAD_HTTP / ADMIN / IA / VISION / CLEF / MONITOREO / WSL / REMOTO (layout exacto en SPEC §16.8).
+  **`tools/consolidar_env.py` se EXTIENDE, no se reemplaza** (ya copia valores byte-a-byte sin
+  imprimirlos y tiene el inventario DESC; reescribir arriesgaría la garantía de no-impresión): modo
+  nuevo `--unificar` con DESTINO=.env raíz, política de colisiones "gana la primera fuente +
+  anotación", backup de las fuentes en `claves/*.bak-f26` antes de reescribir. Migración del contenido
+  de `claves/.env` + `claves/.env-wsl-nuevo` (valores copiados por CÓDIGO, el modelo nunca los ve).
+  Loaders unificados al único (se elimina la prioridad `claves/`): `cliente.py:359-368` (valor_env),
+  `auth.py:187,535`, ingesta, `app.py`, `gen_firmware_config.py`, `reset_admin.py` (escribe raíz).
+  systemd `EnvironmentFile` → `.env` raíz; **rsync a WSL con `--exclude '.env'`** (se elimina el
+  workaround `sed` de `README_wsl.md:74-79`) + `chmod 600`. `.env.example` regenerado con placeholders
+  vacíos. `OPENROUTER_API_KEY` (sk-or del dueño, YA existe, NO regenerar): el ejecutor la escribe al
+  .env ÚNICAMENTE (valor entregado por el orquestador por canal local; jamás en logs/reportes/chat).
+  La pass del VPS NO entra al .env (la gestiona wsl-port; rotación pendiente del dueño).
+- **D-F26-7 · Clef = etapa de decisión POST-descripción** (informe B §3-4): `tools/clef_decide.py` +
+  `server/vision/clef.py` consumen `vision_estado='hecho' AND decision_estado='pendiente'`. Cascada:
+  `cloudflare/clef-flash` (texto sobre `descripcion`+`etiquetas` YA almacenadas) → escalar a
+  `cloudflare/clef` (imagen QVGA inline, nivel superior) SOLO si `confidence < 0.6`. Taxonomía 6
+  etiquetas mutuamente excluyentes: SIN_PERSONAS_VISIBLES / PERSONAS_SENTADAS / CIRCULACION /
+  PRESENTACION_AL_FRENTE / AGLOMERACION_OTRA / IMAGEN_DEGRADADA (esta última LOCAL, sin llamada, para
+  JPEG no decodificables — patrón `jpeg_utilizable`, `cliente.py:820-866`; los 20 rotos históricos NO
+  reintentan). Preguntas acompañantes en la MISMA llamada: `noul_cubre` (<0.7 → badge REVISIÓN_HUMANA
+  en dashboard, derivado de `decision_cubre`), `noul_calidad`, `score_actividad`
+  [ninguna,baja,media,alta]. Columnas `decision_*` + tabla `clef_uso` gemela de `vision_uso`,
+  migración DENTRO de `esquema.py` (writer único). Rate limits `AULASENSE_CLEF_MAX_DIA=120` /
+  `MAX_HORA=20` + **Paso 0 de 1 decisión de prueba midiendo usage ANTES del lote** (regla 16) +
+  dedupe por `hash_sha256` + claim atómico propio (UNA pasada a la vez, lanzada y esperada dentro del
+  turno — regla 16 extendida a Clef). `refusal` ≠ "no" → fail-closed a revisión. API alpha: manejar
+  400/401/402/413/429/5xx con backoff. **NO se reutilizan `etiquetas`** (texto libre de Qwen que alimenta
+  la búsqueda F25-d3; mezclar la rompería). El dashboard muestra la decisión de aula como tarjeta
+  propia; búsqueda existente intacta.
+- **D-F26-8 · Monitoreo "salud del sistema"** (informe B §5): heartbeat `estado_sistema` escrito por
+  la PROPIA ingesta (writer único, `is_connected()` del poller cada ~30 s, cero proceso extra);
+  `GET /api/salud` tras login (D-F25-8) + panel `/salud` con semáforos. Checks: ingesta activa, MQTT
+  conectado, frescura telemetría ≤5 min (crítico >10 min), heap INTERNO placa (<120 KB WARN, umbral
+  regla 2; el gate actúa a los valores configurados), RSSI (<−80 dBm WARN), colas visión+decisión
+  (pendiente/error) + consumo día (`vision_uso`/`clef_uso`), disco ≥85 % WARN (`shutil.disk_usage`),
+  túnel `state=running` leyendo SOLO campos `state`/`remote` del JSON de `wsl-port --json status`
+  (NUNCA serializar el objeto completo — lección pass VPS, bitácora 2026-11-15). Eventos derivados
+  `SISTEMA_*` en BD (patrón NODO_ONLINE/OFFLINE, `ingesta_mqtt.py:1024-1031`). Verbo `salud` en
+  `tools/wsl_aulasense.ps1` (agrega /api/salud + túneles Windows → `datos/tuneles_estado.json` con
+  ts; el panel /salud lo lee con frescura; ausente/stale → gris "sin datos"). Timer systemd
+  `aulasense-salud` OPCIONAL default n. **Anti-falsa-alarma OTA:** si el retain `ota` dice
+  descargando, la frescura muestra "OTA en curso" (el agujero de telemetría es esperado, no caída).
+  Visibilidad de `config_eventos` en dashboard (tarjeta cámara/gate) — el error de buscar GATE_OFF en
+  `eventos` no se repite.
+- **D-F26-9 · Infra OTA = servidor estático WSL + SEGUNDO túnel wsl-port** (informe A §2.3 opción A;
+  NO ruta del dashboard — rompería el guard de login y mezclaría superficie de datos personales con
+  binarios): carpeta `/home/aulasense/aulasense-ota/` con `manifest.json` + `firmware-<ver>.bin`,
+  unit `aulasense-ota.service` (`python3 -m http.server 8101 --bind 0.0.0.0` VM-local, NAT). Túnel:
+  `wsl-port tunnels add --id pub-aulasense-ota --vps "vps1 de canada" --distro debian-aulasense
+  --local-port 8101 --remote-port <validado> --type ssh` + `tunnels update pub-aulasense-ota
+  --auto-start true`. CLI real: `C:\Users\Gilman\Desktop\APPplicaciones\05-WSL-Redes\wsl-port\wsl+ssh\wsl-port-unified\.venv\Scripts\wsl-port.exe`
+  (la ruta `iot2\.venv` del encargo original NO existe — informe A §5). Puerto público candidato
+  **10064** (precedente 10061-10063; la API "available" devuelve rangos aleatorios poco fiables —
+  informe B §2): validar libre en panel `https://puertos-disponibles.gilman.pro/` + `tunnels list`;
+  nunca tocar túneles ajenos. Tramo distro→VPS cifrado SSH; VPS→placa HTTP plano (riesgo formal
+  `README_wsl.md:245-259`, mitigado por SHA-256+rollback, D3 del dueño).
+- **D-F26-10 · Zero-asunción-LAN:** el servidor JAMÁS alcanza a la placa (no hay LAN común; Direct
+  HTTP :62587 y receptor :8001 son LAN-only). Toda gestión remota = MQTT iniciado por la placa.
+  `tools/config_mqtt.py` por Direct HTTP queda marcado LAN-only (aviso + doc). Correcciones de docs
+  que mienten: `AGENTS.md:78` y `docs/fuentes.md:19` "consola UART" → **USB-Serial-JTAG** (verificado
+  `sdkconfig:1460,1464,1465`, informe A §2.5; SPEC:86 ya era correcto); `SPEC.md:87` "reflasheo USB =
+  recovery de OTA" → OBSOLETO (recovery remoto = rollback OTA; BOOT/Improv solo sirve in situ).
+  ENTREGA_PROFESOR/guiones bajo la misma lente (placa SOLO energizada en sitio remoto).
+- **D-F26-11 · Arquitectura real a documentar tal cual (puntos 4-7 del dueño):** VPS = SOLO broker
+  MQTT (:14769 TCP, :14770 WS, :14771 TLS, :14772 mTLS — la placa NO puede usar mTLS/CA privada ni
+  WebSocket, `docs/fuentes.md:19`) + túneles wsl-port. WSL `debian-aulasense` = servidor que gestiona
+  TODO (:8100 dashboard, :8101 OTA estático, ingesta, workers visión/Clef, BD ext4). Publicación:
+  dashboard :8100→:10062 (vigente), OTA :8101→:1006x (nuevo). HTTP :8001 alternativo LAN-only.
+  Visión → DASHSCOPE (TP, modo B); Clef → OpenRouter Decisions API. Diagrama real con protocolos y
+  puertos (skill graphic-arq-software) reemplaza/complementa `assets/diagrama_tecnico.*`.
+- **D-F26-12 · Paquete documental/pedagógico:** PRESENTACION.pptx regenerada como **paso a paso desde
+  cero hasta proyecto terminado con ejemplos de código REAL del repo** (audiencia: profesor ITSE;
+  12 bloques: qué es CSI → arquitectura real → montaje → firmware → servidor WSL → broker →
+  publicación wsl-port → visión+Clef → dataset → análisis → operación/OTA/monitoreo → limitaciones
+  honestas). Vehículo: `tools/generar_informe.py` (generador re-ejecutable YA existente de
+  INFORME.docx+PRESENTACION.pptx; la ruta `tools/generadores/` de AGENTS.md está MUERTA — se corrige
+  en el /init). INFORME.docx regenerado tras el nuevo análisis. NOTES_operacion.md NUEVO (recuperación
+  /OTA + re-provisionamiento en sitio con pass canónica + energía/verificación remota post-reinstalación).
+  GUIA_VISUAL/PRESENTACION_VISUAL quedan como paquete visual previo (anotación de fecha en docs/README;
+  refresh opcional post-entrega, no bloquea).
+
+### 13.3 MAPA DE FASES F26 (agente → sub-despachos → herramientas → entregable → criterio → deps → background)
+
+> Reglas de despacho: TODAS las delegaciones `background: true` SIN EXCEPCIÓN (cortas, largas,
+> cadenas y gates); la dependencia explícita solo decide CUÁNDO se lanza la siguiente (al llegar el
+> reporte). Grupos `[PARALELO]` = un solo bloque de lanzamiento. Commits = manos propias del
+> ORQUESTADOR. Techos: ejecutor 500, dev 400, especialistas 300 → fases troceadas en hitos
+> reanudables desde el checklist. Rutas relativas a `iot2/` salvo prefijo `aulasense/`.
+> **Propiedad de archivos DISJUNTA entre fases paralelas** (tabla en §13.6) — ese es el criterio
+> de paralelismo, no la costumbre.
+
+- **F26-0 · APERTURA v26 — `@1-orquestador` (manos propias, NO delegación).** Cerrar y archivar la
+  v25 (copia byte-a-byte → `iot2/.tmp/checklist_pre_v26.md` + hash SHA256), promover
+  `checklist_v26.md` → `iot2/.tmp/checklist.md`, anotar bitácora. Commit del andamiaje del
+  planificador (PLAN §13, SPEC §16, anotaciones). Entregable: checklist v26 vigente + commit.
+  Criterio: `checklist_pre_v26.md` existe con hash; `checklist.md` = contenido v26; `git log -1`
+  muestra el commit. background: n/a (manos propias).
+
+- **[PARALELO G1] — 5 delegaciones independientes (archivos disjuntos, §13.6):**
+  - **F26-a1 · Server: esquema+ingesta F26 — `@2-ejecutor` (instancia server) → `@5-dev` dev-S1.**
+    Herramientas: edit/bash (pytest ×2 runtimes, WSL ro). Archivos: `server/ingesta/esquema.py`,
+    `server/ingesta/ingesta_mqtt.py`, `server/tests/test_esquema_f26.py`,
+    `server/tests/test_ingesta_f26.py`, loader ingesta→.env único. Contrato: SPEC §16.4/16.5.
+    Entregable: migración idempotente (sufijos retain `ota`/`imagen_estado`/`heap_interno`, eventos
+    OTA_CHECK/OTA_INICIO/OTA_OK/OTA_ERROR/FIRMWARE/IMAGEN_INIT/CAMARA_ERROR/AP_ERROR/SISTEMA_*,
+    columnas `decision_*`+`clef_uso`+`estado_sistema`+`telemetria.internal_*`), persistencia+heartbeat
+    `estado_sistema` (is_connected), eventos derivados SISTEMA_*, helper `publicar_comando_ota()`
+    (topic `aulasense_ota`, envelope command_id). Criterio: pytest verde ×2; smoke con payloads
+    simulados (sin placa): sufijo `ota` YA no rechazado, retain persistido, heartbeat visible.
+    deps: ninguna (contrato-first SPEC §16). background: SI. ≤400 steps.
+  - **F26-a2 · Server: salud+dashboard+Clef — `@2-ejecutor` (instancia server) → `@5-dev` dev-S2.**
+    Archivos: `server/dashboard/app.py`, `server/dashboard/static/*`, `server/vision/clef.py` (NUEVO),
+    `tools/clef_decide.py` (NUEVO), `server/tests/test_salud_f26.py`, `server/tests/test_clef_f26.py`,
+    loader app.py→.env único. NO toca `auth.py`/`cliente.py` (seams de F26-b). Entregable:
+    `GET /api/salud` tras login + panel `/salud` (semáforos, checks D-F26-8, anti-alarma OTA, tarjeta
+    cámara/gate desde `imagen_estado`+`config_eventos`, decisión de aula en galería, heap interno en
+    telemetría) + worker Clef completo (cascada, taxonomía, IMAGEN_DEGRADADA local, claim, rate
+    limits, dedupe, `--paso0`, `--stop`). Criterio: pytest verde ×2 (esquema contra contrato);
+    /api/salud 200 con sesión / 401 sin; clef --paso0 listo (ejecución real en F26-h, con key).
+    deps: ninguna (contrato-first). background: SI. ≤400 steps.
+  - **F26-b · .env único + tools + infra OTA — `@2-ejecutor` (instancia infra).** Herramientas:
+    edit/bash + webfetch (panel puertos) + wsl-port CLI + WSL. Archivos: `tools/consolidar_env.py`
+    (--unificar), `tools/gen_firmware_config.py`, `tools/config_mqtt.py` (LAN-only),
+    `tools/wsl_aulasense.ps1` (verbo salud), `tools/reset_admin.py`, `.env.example`, `.gitignore`
+    (`~$*`), `server/deploy/*` (EnvironmentFile, rsync --exclude .env, unit aulasense-ota.service,
+    README_wsl), seams `server/vision/cliente.py` (valor_env) y `server/dashboard/auth.py` (loader),
+    `.env` raíz (gitignored), `/home/aulasense/aulasense-ota/` + túnel. Entregable: .env ÚNICO
+    operativo (secciones SPEC §16.8, valores migrados byte-a-byte por código, OPENROUTER_API_KEY
+    escrita SOLO aquí), fuentes archivadas `claves/*.bak-f26`, loaders unificados, .env.example
+    regenerado, rsync ya no pisa .env, estático OTA :8101 + túnel `pub-aulasense-ota` running
+    auto_start=true con puerto público validado (candidato 10064). Criterio: evidencia SOLO nombres
+    de clave/conteos (jamás valores); grep prioridad claves/ = 0 en loaders; pytest verde ×2 tras
+    seams; `tunnels list` state=remote correctos; HTTP 200 externo al estático; `wsl_aulasense.ps1
+    salud` responde. deps: ninguna. background: SI. ≤300 steps.
+  - **F26-c1 · Firmware F26: CÓDIGO de la build única — `@2-ejecutor` (SESIÓN ÚNICA dueña de
+    COM6+árbol, regla 17; SIN devs paralelos sobre el árbol).** Herramientas: edit/bash (eim, diff,
+    hash). Archivos: `firmware/parche_aulasense/{app_provision.c/.h, app_imagen.c, app_ota.c/.h
+    (NUEVOS), app_feedback.c (publisher heap), Kconfig.projbuild, CMakeLists.txt, README.md §F26}` +
+    espejo vivo `main/*` + enganches documentados en `app_main.cpp` (subscribe OTA, timer self-check,
+    publisher heap) + edición documentada de sdkconfig (rollback=y, patrón apply script). Entregable:
+    TODO el código F26 (D-F26-1..5) con espejo diff cero + hash SHA256 por archivo; build de
+    compilación verde (pass AP vacía placeholder = AP abierto, solo compile-check). Criterio:
+    `eim run "idf.py build" v5.5.6` OK; `check_sizes` bin ≤0x1E0000; diff/hash parche↔main = 0;
+    grep token NVS en código = 0; _Static_assert presente; AP_ERROR en todas las ramas de fallo;
+    gate sin latch permanente; README §F26 documenta enganches+rollback+outbox intacto. deps:
+    ninguna (el código no necesita valores; el build FINAL sí → c2 deps b). background: SI. ≤350 steps.
+  - **F26-e1 · /init ligero + zero-LAN en docs — `@2-ejecutor` → `@4-documentos`.** Archivos:
+    `AGENTS.md` (fix :78 UART→USB-Serial-JTAG; menciones muertas `app_ia_imagen` :120/:210 y
+    `tools/generadores/` → `tools/generar_informe.py`; bullet provisioning :175-179 anotado
+    "reemplazado por F26, ver SPEC §16.2"), `docs/fuentes.md:19`, `README.md` (arquitectura real
+    D-F26-11), `docs/ENTREGA_PROFESOR.md`, `docs/guion_demo.md`, `docs/README.md` (auditoría
+    zero-LAN: nada insinúa alcanzabilidad servidor→placa). Entregable: docs corregidos en un solo
+    paso. Criterio: grep "consola UART" AGENTS/fuentes = 0; grep app_ia_imagen AGENTS = 0 (o nota
+    histórica explícita); grep tools/generadores = 0; arquitectura VPS=broker+túneles / WSL=todo
+    presente; reporte de diffs. deps: ninguna. background: SI. ≤150 steps.
+
+- **F26-a3 · INTEGRACIÓN server + despliegue WSL — `@2-ejecutor` (instancia server).**
+  deps: **a1+a2+b** (integración necesita las piezas y los loaders unificados; dependencia demostrable).
+  Entregable: suite completa pytest verde ×2 runtimes; despliegue a `debian-aulasense` (rsync
+  --exclude .env + systemctl restart ingesta/dashboard, UN writer vivo, sin split-brain);
+  /api/salud verde en runtime real; migración aplicada en BD canónica (idempotente, verificación ro
+  por venv URI mode=ro). Criterio: conteos de tablas nuevas/columnas verificados; heartbeat
+  estado_sistema fresco; systemctl is-active ×2; un solo writer. background: SI. ≤150 steps.
+
+- **[PARALELO G2] — al llegar los reportes de G1 (lanzar en un bloque):**
+  - **F26-c2 · Build FINAL + flasheada ÚNICA de banco — `@2-ejecutor` (misma sesión dueña COM6).**
+    deps: **c1+b** (sdkconfig.defaults.local con pass canónica + URL manifiesto desde .env único).
+    Secuencia: `gen_firmware_config.py` → precheck sdkconfig (SIN USB device stack; camera bajo
+    AULASENSE_IMAGEN=y; rollback=y; PSRAM octal; bin ≤0x1E0000) → `eim run "idf.py -p COM6 flash"
+    v5.5.6` (bootloader+otadata+app, SIN monitor) → **captura de arranque 25 s**:
+    `C:\Python315\python.exe tools\lee_serial.py COM6 --segundos 25 --out .tmp\f26_boot.log`
+    encadenado INMEDIATAMENTE al flash (reset natural del flasheo; fallback: power-cycle del dueño
+    con el listener ya abierto). Entregable: `.tmp/f26_boot.log` + bin sellado con hash + evidencia
+    de flash (regiones, Hash of data verified). Criterio: log muestra app_init versión F26 +
+    `imagen init ok` + decisión del gate CON heap interno numérico + MQTT conectado; bin hash
+    registrado; rollback=y verificado en sdkconfig. background: SI. ≤150 steps.
+  - **F26-d · Diagrama REAL de funcionamiento — `@2-ejecutor` → `@5-dev` (skills
+    graphic-arq-software + graphic-imagen).** deps: **b** (puerto OTA final conocido). Archivos:
+    `assets/diagrama_tecnico.dsl` (actualizado) + `.png/.svg` (regenerados, reemplazan),
+    subdiagramas contexto/componentes, `assets/diagrama_flujo_f26.mmd` + `.png` (flujo de decisiones
+    para la presentación). Contenido D-F26-11: ESP32→MQTT/TCP:14769→broker VPS→ingesta WSL;
+    dashboard :8100→túnel→:10062; OTA :8101→túnel nuevo→:1006x; HTTP :8001 alternativo LAN-only;
+    visión DASHSCOPE; Clef OpenRouter (cascada flash→clef); flujo OTA comando→descarga→SHA→rollback.
+    Criterio: renders existen y abren; puertos/protocolos coinciden con SPEC §16; sin secretos.
+    background: SI. ≤150 steps.
+
+- **F26-c3 · Verificación banco: provisioning + cámara/gate + observabilidad — `@2-ejecutor`
+  (misma sesión COM6).** deps: **c2+a3** (la BD/ingesta ya aceptan los sufijos/eventos nuevos).
+  Secuencia: (1) provisioning fijo: forzar fallback (credencial falsa o reboot sin WiFi) → AP
+  `AULASENSE-CFG` WPA2 (pass canónica) → `GET /cfg` 200 form SIN token → `/cfg/estado` JSON →
+  `POST /cfg/wifi` guarda+reconecta → 403 origen cruzado → 429 cooldown → grep logs CERO pass;
+  (2) cámara/gate: arranque con `imagen init ok` + IMAGEN_INIT en config_eventos + `imagen_estado`
+  retain legible + `heap_interno` en telemetría (internal_free_kb ≠ free_memory_kb) + sentencia
+  documentada de por qué la histéresis no recuperaba (datos nuevos); (3) estímulo de movimiento
+  (operador) → captura re-habilitada sin latch → fotos nuevas `canal=mqtt` en BD+galería;
+  (4) todos los eventos/sufijos nuevos visibles en BD. Entregable: `.tmp/f26_c3_evidencia.md` +
+  logs. Criterio: los 4 bloques con evidencia archivo:linea/BD; ≥3 fotos nuevas; si los datos de
+  heap exigen ajuste de umbrales → se anota para viajar por OTA en g1 (NO segunda UART).
+  background: SI. ≤200 steps.
+
+- **F26-g · E2E OTA + rollback en banco — `@2-ejecutor` (misma sesión COM6; UN solo dueño).**
+  deps: **c3+a3+b**. Hitos:
+  - g1 · OTA buena: publicar bin final (incluye ajuste de umbrales si c3 lo pidió) en
+    `/home/aulasense/aulasense-ota/` + `manifest.json` {version,url,sha256,size} (sha/size por
+    código) → HTTP 200 externo + sha verificado → comando MQTT `aulasense_ota` action=check →
+    OTA_CHECK → action=apply → OTA_INICIO → descarga (captura+telemetría en pausa; agujero
+    documentado; /salud muestra "OTA en curso", sin falsa alarma) → SHA-256 OK → OTA_OK → reboot →
+    evento FIRMWARE versión nueva → self-check 60–120 s → mark_app_valid (evidencia log/otadata).
+    Medir pps/duración de descarga (contención CSI, dato honesto).
+  - g2 · OTA mala DOBLE: (a) bin con SHA alterado → OTA_ERROR SIN reboot (gate de hash); (b) bin
+    "rollback-test" (flag temporal de build que crashea/reinicia antes de mark_valid; SHA válido) →
+    apply → arranca pending-verify → no marca → reboot → **bootloader revierte al slot bueno** →
+    FIRMWARE versión buena otra vez. El árbol vuelve al estado final (flag fuera); NO hace falta
+    re-flashear UART (el slot bueno intacto). Evidencia: boot logs + eventos + versiones BD.
+  - g3 · Revival cámara post-OTA: estímulo → fotos nuevas → BD+galería (≥3).
+  Criterio: OTA_OK+cambio de versión; rollback automático verificado (b); gate SHA verificado (a);
+  fotos nuevas; heap gates con MALLOC_CAP_INTERNAL medidos. background: SI. ≤300 steps.
+
+- **F26-j · Reinstalación en sitio (D4 simplificada) — HUMANO (dueño) + `@1-orquestador` coordena.**
+  deps: **g PASS**. La build final YA está flasheada (c2/g); el dueño lleva la placa al sitio y la
+  energiza. Si el WiFi del sitio ≠ el del banco → re-provisionamiento por portal fijo (guía
+  NOTES_operacion: AP AULASENSE-CFG, pass canónica, /cfg). El orquestador verifica revival remoto
+  (consultas ro): telemetría fresca ≤5 min, `imagen_estado` camera=ok, eventos fluyendo, túneles
+  running. Entregable: `.tmp/f26_revival_remoto.md`. **NO bloqueante:** si el dueño no reinstala
+  dentro del ciclo, el orquestador decide seguir con datos de banco (nota honesta en docs/análisis)
+  y la pasada incremental remota queda como seguimiento post-entrega documentado. background: SI
+  (la coordinación/verificación). Humano: energía+traslado.
+
+- **F26-h · Pasadas IA + análisis regenerado — `@2-ejecutor` (UNA sesión; pasadas lanzadas y
+  esperadas DENTRO del turno, regla 16; visión y Clef NUNCA solapadas).** deps: **g3+a3+b** (+j si
+  ocurrió; absorbe fotos remotas si las hay). Hitos:
+  - h1 · visión: `tools/vision_describe.py --once --limit 30` sobre fotos nuevas (rate limits/dedupe/
+    backoff del CLI; modo B key TP). Registrar consumo.
+  - h2 · Clef: **Paso 0** = 1 decisión de prueba → usage medido a `.tmp/f26_clef_paso0.json` (si
+    consumo anómalo → parar+reportar); luego lote `tools/clef_decide.py --once` (claim propio, una
+    pasada; IMAGEN_DEGRADADA local para los JPEG rotos, 0 llamadas). Registrar consumo real.
+  - h3 · análisis: `analysis/run_analisis.ps1` + `export_consolida.py` regenerados INCLUYENDO
+    `dataset/sesion_2b|3b` (YA en disco; **nota honesta GT fotográfico=0: análisis multi-día/
+    distribución, NO recall**) + fotos nuevas + distribución de decisiones Clef (taxonomía,
+    confianza, escalados, coste real de clef_uso). **Filtro documentado de la fila con ts_ms absurdo
+    (regla 10: NO se edita la BD; se excluye del análisis temporal con regla explícita y conteo).**
+    Entregable: `analysis/dataset/consolidado.csv` (100% real) + figuras/modelo actualizados +
+    `.tmp/f26_analisis.md` con métricas y costes. Criterio: vision_estado/decision_estado hechos en
+    filas nuevas; consolidado regenerado; outlier documentado+filtrado; costes MEDIDOS (cero
+    promesas). background: SI (el worker espera dentro del turno). ≤350 steps.
+
+- **F26-f · Docs finales + paquete regenerado — `@2-ejecutor` → `@4-documentos` (2 hitos).**
+  deps: **h+d+g** (+j si ocurrió).
+  - f1 · docs md: `README.md`, `SPEC.md` (reconciliar §3.3/§4/§12.1 con §16 — §16 YA escrito por el
+    planificador), `AGENTS.md` (reglas 5/7/14/15 afectadas + rutas de comandos + app_ota en regla 17
+    + referencia checklist v26), `docs/README.md` (índice), `docs/guion_demo.md`,
+    `docs/ENTREGA_PROFESOR.md`, `server/deploy/README_wsl.md` (rsync+OTA+túnel),
+    **`docs/NOTES_operacion.md` (NUEVO: recuperación/OTA — semántica rollback, agujero de telemetría,
+    cómo disparar OTA; re-provisionamiento en sitio con pass canónica; energía+verificación remota
+    post-reinstalación; a partir de ahí TODO es OTA)**, `firmware/parche_aulasense/README.md` §F26
+    (verificar). Criterio: coherencia total con SPEC §16 y el terreno; cero secretos; cero
+    afirmaciones LAN; índice completo. ≤250 steps.
+  - f2 · paquete: extender `tools/generar_informe.py` → regenerar `docs/entrega/INFORME.docx` +
+    `docs/entrega/PRESENTACION.pptx` **paso a paso desde cero con código REAL del repo** (12 bloques
+    D-F26-12, audiencia profesor ITSE, diagrama nuevo + figuras de análisis + métricas honestas +
+    costes Credits reales). Criterio: `verificar_salidas()` OK (≤10 MB); los 12 bloques presentes
+    con snippets de código real (verificable por grep); español; sin secretos; nota GT=0 y
+    limitaciones honestas. ≤250 steps. background: SI.
+
+- **GATE F26 · ESPECIALISTAS — `@1-orquestador` fan-out DIRECTO [PARALELO] (NO bajo ejecutor:
+  subagent_depth=3).** deps: **f1+f2+h+g**. Especialistas (auditan Y ejecutan fix en su frente,
+  PASS/FAIL con evidencia archivo:linea): `seguridad` (OTA HTTP+SHA256+rollback, portal sin token
+  WPA2+guards, .env único sin secretos en repo PÚBLICO, JSON túneles filtrado, pass canónica solo
+  donde el dueño ordenó), `arquitectura` (outbound-only, VPS=broker+túneles/WSL=todo, writer único,
+  espejo diff cero, sin dos stacks), `bd` (migraciones idempotentes, clef_uso/estado_sistema,
+  consultas ro por venv, sin sqlite3 CLI), `pruebas` (pytest ×2 runtimes, evidencias E2E
+  OTA+rollback+provision+gate), `rendimiento` (gates MALLOC_CAP_INTERNAL medidos, pps durante OTA,
+  duración descarga, frescura heartbeat), `documentacion` (coherencia docs↔terreno, zero-LAN,
+  NOTES completa, índice), `limpieza` (lockfile `~$PRESENTACION_VISUAL.pptx` borrado, `~$*`
+  gitignored, .env fuentes archivadas, sin residuos fuera de .tmp/). **`devops` OMITIDO** (sin
+  Docker/CI por restricción dura; units systemd+túneles los cubren arquitectura+seguridad, precedente
+  v25). **`auditor-externo` INCLUIDO** (cmdc disponible, precedente
+  `.tmp/validacion_cmdc_externo_*.txt`: doble ciego del paquete final; si cmdc no estuviera, cae a
+  validación interna anotada). background: SI (todos). ≤300 steps c/u.
+
+- **F26-Z · CIERRE — `@1-orquestador` (manos propias).** deps: **GATE PASS** (o PASS_PARCIAL con
+  residuos anotados). Verificar TODO en disco; **commit final SELECTIVO** (dataset/sesion_2b|3b +
+  docs/validacion_sesion2b/3b.csv + tools/consolidar_env.py + código/docs/regenerados F26; EXCLUIR
+  `~$*` (borrar), `.env*`, `sdkconfig.defaults.local`, bins, `.tmp/`); **push** a
+  github.com/gilmanpro/aulasense-itse; `.tmp/cierre_v26.md`; **REPORTE DE TODO al dueño**
+  (entregables, costes Credits reales visión+Clef, limitaciones honestas: HTTP+SHA256 sin TLS,
+  GT=0 en 2b/3b, motion≠presencia, pass AP = capacidad local publicada por orden del dueño,
+  rotación pass VPS pendiente del dueño). background: n/a (manos propias).
+
+### 13.4 Supuestos nuevos F26 (S-F26-1..10, numerados, visibles)
+
+1. **S-F26-1:** COM6 = unidad de producción `2e6f0c909e30673e` (verificado por correlación en
+   `inv_com6_resultado.md` §2; sin línea literal del id en régimen normal). Banco = producción.
+2. **S-F26-2:** pass canónica del AP = `"itse-aulasense"` (orden del dueño; ≥8 WPA2). Valor real solo
+   en `.env`/`sdkconfig.defaults.local` + guía NOTES (orden explícita punto 9, trade-off D-F26-4).
+3. **S-F26-3:** OTA = HTTP plano + SHA-256 + rollback (D3 del dueño); TLS post-entrega.
+4. **S-F26-4:** la pass del VPS NO entra al .env único (wsl-port la gestiona; rotación pendiente del
+   dueño, bitácora 2026-11-15).
+5. **S-F26-5:** `OPENROUTER_API_KEY` del dueño YA existe (no regenerar); el orquestador la entrega al
+   ejecutor por canal local y se escribe SOLO al .env; jamás impresa.
+6. **S-F26-6:** puerto público OTA candidato 10064 / local 8101 — se VALIDA libre en panel +
+   `tunnels list` antes de `tunnels add` (si ocupado, siguiente libre; nunca túneles ajenos).
+7. **S-F26-7:** `dataset/sesion_2b|3b` con GT fotográfico=0 → análisis multi-día/distribución, NO
+   recall (nota honesta obligatoria en docs/análisis/presentación).
+8. **S-F26-8:** la fila de `imagenes` con ts_ms absurdo NO se edita (regla 10); se documenta y filtra
+   en análisis con regla explícita.
+9. **S-F26-9:** si el dueño no reinstala la placa en el sitio dentro del ciclo, F26-h sigue con datos
+   de banco + 2b/3b (nota honesta) y la pasada incremental remota queda post-entrega (no bloquea).
+10. **S-F26-10:** el comando OTA viaja por el topic sufijo propio `aulasense_ota` (API pública
+    subscribe, misma conexión) porque el parser vendor rechaza comandos desconocidos en
+    `commands/request` y no hay hook público (D-F26-2, evidencia archivo:linea). El envelope y el
+    canal (broker autenticado, outbound, command_id) son los del punto 1 del dueño.
+
+### 13.5 Riesgos nuevos R-F26-1..14 → mitigación en el checklist
+
+| # | Sev | Riesgo | Mitigación (fase) |
+|---|---|---|---|
+| R-F26-1 | CRÍTICO | OTA sin rollback = boot-loop remoto sin serial | rollback=y + self-check 60–120 s + E2E banco con bin malo ANTES de cualquier OTA (c2, g2); bootloader con rollback flasheado por UART en banco |
+| R-F26-2 | CRÍTICO | pass AP <8 ⇒ AP no arranca y recovery MUDO | pass canónica 14 chars + _Static_assert 8..63 + AP_ERROR en TODAS las ramas de fallo (c1, c3) |
+| R-F26-3 | ALTO | heap interno permanentemente bajo ⇒ captura nunca recupera | gate sin latch + re-evaluación por onset + telemetría interna visible + diagnóstico en banco con datos; ajuste vía OTA si hace falta (c1, c3, g1); degradación honesta documentada si no coexiste (regla 2) |
+| R-F26-4 | ALTO | bin no cabe en slot 0x1E0000 | check_sizes en build (error de compilación); NO tocar partitions.csv (c1, c2) |
+| R-F26-5 | ALTO | HTTP plano en túnel OTA (bin manipulado) | SHA-256 verificado en placa + rollback + bin no confidencial; TLS post-entrega (D3 dueño) (g1, g2a) |
+| R-F26-6 | MEDIO | contención CSI durante descarga OTA | pausa captura+telemetría; medir pps/duración en g1; comando explícito (auto-check default 0); agujero documentado en NOTES+salud |
+| R-F26-7 | MEDIO | consolidación .env pierde/ duplica claves | copia byte-a-byte por código + backup .bak-f26 + verificación por nombres/conteos + política colisiones documentada (b) |
+| R-F26-8 | MEDIO | rsync pisa el .env de WSL | --exclude '.env' + prueba + eliminar workaround sed (b, a3) |
+| R-F26-9 | MEDIO | Clef API alpha cambia shape / refusal | manejo 400/401/402/413/429/5xx + backoff + Paso 0 + fail-closed a revisión (a2, h2) |
+| R-F26-10 | MEDIO | dos pasadas visión/Clef solapadas (incidente 2.972 tok) | regla 16: una pasada lanzada-y-esperada por turno; claim atómico propio Clef (h1, h2) |
+| R-F26-11 | MEDIO | portal fijo sin token: quien se asocia al AP reconfigura | WPA2 pass ≥8 = único factor + Origin/Referer + cooldown 5 s + nunca loguear pass (c1, c3; gate seguridad) |
+| R-F26-12 | MEDIO | pass canónica en guía pública (repo público) | trade-off D-F26-4 por orden explícita del dueño: capacidad local (proximidad física), no credencial de red; anotado en NOTES+gate seguridad; cambio = .env+OTA |
+| R-F26-13 | MENOR | puerto público OTA ocupado / túneles ajenos | validar panel + tunnels list antes de add; candidato 10064; jamás tocar ajenos (b) |
+| R-F26-14 | MENOR | confusión eventos vs config_eventos en observabilidad | dashboard/salud leen retain imagen_estado + config_eventos explícitamente; sufijos nuevos dados de alta ANTES del flash (a1, a2, c3) |
+
+### 13.6 Propiedad de archivos DISJUNTA (criterio de paralelismo G1/G2)
+
+| Fase | Archivos que TOCA (exclusivos mientras corre) |
+|---|---|
+| a1 (dev-S1) | server/ingesta/esquema.py, ingesta_mqtt.py, tests/test_esquema_f26.py, tests/test_ingesta_f26.py |
+| a2 (dev-S2) | server/dashboard/app.py, static/*, server/vision/clef.py (nuevo), tools/clef_decide.py (nuevo), tests/test_salud_f26.py, tests/test_clef_f26.py |
+| b (infra) | tools/consolidar_env.py, gen_firmware_config.py, config_mqtt.py, wsl_aulasense.ps1, reset_admin.py, .env.example, .gitignore, server/deploy/*, seams cliente.py (valor_env) + auth.py (loader), .env (gitignored), WSL estático+túnel |
+| c1 (firmware) | firmware/parche_aulasense/* + espejo main/* + app_main.cpp (enganches) + sdkconfig (edición documentada) |
+| e1 (docs) | AGENTS.md, docs/fuentes.md, README.md, docs/ENTREGA_PROFESOR.md, docs/guion_demo.md, docs/README.md |
+
+Conflictos conocidos y resolución: `auth.py`/`cliente.py` los toca SOLO b (a2 crea clef.py nuevo e
+importa helpers de cliente.py sin editarlo); los tests se reparten por archivo; pytest concurrente
+puede ver estados transitorios ajenos → la suite COMPLETA de integración corre en **a3** (deps
+a1+a2+b), no antes. c1 no necesita valores de .env (compile-check con pass vacía); el build FINAL
+(c2) sí → deps b. Ningún otro solapamiento: G1 puede lanzarse completo en un bloque.
+
+### 13.7 Trazabilidad orden del dueño (15 puntos) → fases
+
+| Punto | Fases que lo cubren |
+|---|---|
+| 1 OTA real (app_ota, rollback, túnel, manifiesto, disparador, esquema, gates, particiones, agujero) | c1, c2, b, a1, g1, g2, f1 (NOTES) |
+| 2 Provisioning fijo (D1, pass, /cfg sin token, AP_ERROR, espejo) | c1, b (gen_config+.env), c3, f1 |
+| 3 Zero-asunción-LAN + docs que mienten | e1, b (config_mqtt LAN-only), f1 |
+| 4-5 Arquitectura VPS=broker / WSL=todo en docs | e1, d, f1 |
+| 6-7 Páginas del dueño (broker/wsl-port) como fuente doc | e1, f1 (citan inv_servicios_clef §1-2) |
+| 8 .env único + consolidar + loaders + rsync + OPENROUTER | b, a3 |
+| 9 Todas las docs/entregables actualizados + NOTES nuevo | e1, f1, f2 |
+| 10 Presentación paso a paso con código real | f2 |
+| 11 Diagrama real con protocolos | d |
+| 12 Monitoreo (estado_sistema, /api/salud, /salud, checks, SISTEMA_*, verbo salud) | a1, a2, b, a3 |
+| 13 Este plan (asignación por frente, paralelismo, GATE) | §13.3 + checklist_v26 + GATE |
+| 14 Pruebas E2E banco COM6 (provision→cámara→OTA→rollback→fotos→visión→Clef→análisis→regenerados) | c2, c3, g, j, h, f2 |
+| 15 Clef decisión de aula (etapa separada, cascada, taxonomía, límites, Paso 0, claim, dashboard) | a1 (columnas), a2 (worker+panel), h2 |
+| Pendientes absorbibles: /init ligero + correcciones docs punto 3 | e1 (un solo paso) |
+| Pendiente: decisión consolidar_env.py | D-F26-6 (EXTENDER), ejecuta b |
+| Pendiente: commit selectivo + push dataset 2b/3b + regenerados | F26-Z |
+
+### 13.8 Qué necesita F26 del orquestador (orden de despacho con paralelismo máximo)
+
+1. **F26-0 (manos propias):** archivar v25 + promover v26 + commit del andamiaje.
+2. **LANZAR [PARALELO G1] completo (5 delegaciones, background SI):** a1, a2, b, c1, e1. Entregar al
+   ejecutor de b la `OPENROUTER_API_KEY` por canal local (jamás en chat/log); recordarle que la pass
+   del VPS NO entra al .env.
+3. **Al llegar reportes de G1:** verificar en disco, marcar checklist, lanzar [G2]: a3 (deps a1+a2+b)
+   ∥ c2 (deps c1+b) ∥ d (deps b). c2 y c3 y g son la MISMA sesión dueña de COM6 (regla 17) — el
+   orquestador los encadena al mismo ejecutor de firmware, nunca a dos sesiones.
+4. **c3 → g → j:** cadena placa serializada por COM6. j es humano (dueño traslada+energiza); si no
+   ocurre en el ciclo, decidir seguir con datos de banco (S-F26-9) y anotarlo.
+5. **h (una sesión, pasadas esperadas dentro del turno):** visión → Paso 0 Clef → lote Clef →
+   análisis. NUNCA solapar pasadas (regla 16). Costes medidos a .tmp/.
+6. **f1+f2 (docs+paquete)** tras h/d/g; **GATE ×7 + auditor-externo fan-out DIRECTO** (devops
+   omitido anotado); **F26-Z (manos propias):** commit selectivo + push + cierre_v26.md + REPORTE DE
+   TODO al dueño con costes reales y limitaciones honestas.
+7. **Credenciales:** el modelo NUNCA asigna contraseñas; admin/upload se generan por código
+   (reset_admin/gen_firmware_config) al .env único; la pass canónica del AP la fijó el dueño
+   ("itse-aulasense") y vive en .env + NOTES por su orden explícita.

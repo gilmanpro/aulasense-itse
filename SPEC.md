@@ -84,7 +84,7 @@ intenta usar 4–18. Fuente: analista viabilidad §1 + dashcam-ia `app_audio.c:1
   - **IA principal (D-F24-5):** este detector neuronal CSI **YA ES la "IA interna" del proyecto** (edge-first C1, 100 % en el chip). La capa de visión F24 (§3.4) es OPCIONAL y adicional, no la reemplaza.
 - **CSI:** capture HT20 2.4 GHz, ~100 muestras/s, decisión cada 250 ms. Tráfico por defecto = ping al gateway; modos `ping|dns|dns_tcp|wifi_raw|external` (swaps si el aula bloquea ICMP, S7).
 - **Consola:** USB-Serial-JTAG en S3 (COM6; `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`, UART0 43/44 callado — D-005). TinyUSB CDC solo S2 → **sin riesgo E5 de USB device stack**. `ESPECTRE_EMULATOR_CSI_REPLAY` activo por defecto en S3 pero solo arranca con marcador de MAC de emulador (inocuo en chip real).
-- **Recuperación:** BOOT 3 s (GPIO0) borra WiFi → Improv Serial. **PRESERVADO en F24** (el provisioning AP §3.3 es aditivo, no reemplaza la recuperación nativa). Reflasheo USB full factory image = recovery de OTA.
+- **Recuperación:** BOOT 3 s (GPIO0) borra WiFi → Improv Serial. **PRESERVADO en F24** (el provisioning AP §3.3 es aditivo, no reemplaza la recuperación nativa). ~~Reflasheo USB full factory image = recovery de OTA.~~ **F26 (OBSOLETO, orden del dueño 2026-11-17): el recovery REMOTO de OTA = rollback automático del bootloader (§16.1); el reflasheo USB/BOOT solo sirve IN SITIO (la placa opera remota, solo energizada). Ver §16.**
 - **Provisioning nativo (verificado en disco, tag 3.2.0):** Native = **Improv Serial** (USB) + BOOT 3 s + Direct HTTP WiFi reconfig (scan/BSSID/erase vía portal first-party espectre.dev). **NO trae AP/SoftAP ni captive portal**: `runtime/esp_idf/standalone_wifi_service.cpp:176` y `wifi_lifecycle.cpp:378` usan `WIFI_MODE_STA` único; el captive portal "ESPectre Fallback" es del frontend **ESPHome** (`frontend/esphome/README.md:14`), NO Native. → F24-d añade módulo propio `app_provision.c` (§3.3). Decisión D-F24-4.
 - **Cámara (F24):** Native NO inicializa la cámara por defecto. F24-c la habilita bajo `AULASENSE_IMAGEN=y` con SPIRAM octal. Verificar sdkconfig pre-flash: camera driver presente SOLO si `AULASENSE_IMAGEN=y`, SPIRAM=y, sin USB device.
 
@@ -152,6 +152,10 @@ Módulo NUEVO añadido al app Native (disjunto de app_feedback; comparte Kconfig
   movimiento — re-chequeo `.tmp/f25f_qc_ronda2.sh`).
 
 ### 3.3 Parche `app_provision.c` (AP fallback + ruta privada, D-F24-4 — fase F24-d)
+> **F26: este diseño (SSID con sufijo MAC + token NVS en ruta) queda REEMPLAZADO por provisioning
+> FIJO sin token — orden del dueño 2026-11-17 (D1). Contrato vigente: §16.2. El texto F24-d se
+> conserva como historia; las guardas Origin/Referer, cooldown, cabeceras y "nunca loguear pass"
+> SIGEN vigentes y se heredan en §16.2.**
 Módulo NUEVO, calco del patrón endurecido DriveGuard (`archive/dashcam-ia/firmware/main/app_portal.c`, lectura para inspiración, no copia ciega). **Nativo primero (verificado §3): Native NO trae AP → módulo propio aditivo.**
 - **Disparo (contador PROPIO del módulo, NO estado del vendor — ENMIENDA E2, `.tmp/f24a_spec_implementable.md` §1/§6):** el Native **NO expone un estado "fallos agotados"**: su pila reintentan con `max_retry=8` y back-off de 30 s en bucle infinito (`standalone_wifi_service.cpp:698-705` fija `reconnect_deadline_us_`; `:831-838` al vencer reinicia `wifi_retry_count_=0` y reconecta → **nunca falla de forma permanente**). Por eso `app_provision.c` lleva **SU contador propio** de ciclos de fallo, observando `IP_EVENT_STA_GOT_IP`/`WIFI_EVENT_STA_DISCONNECTED` (handler registrado por el parche, patrón del vendor `:202-220`, o sondeando `get_info().connected`); **`AULASENSE_PROVISION_RETRIES` (3) es un umbral DEL MÓDULO, NO de `config_.max_retry` del vendor.** Al cruzarlo, o sin credenciales NVS, levanta **SoftAP** `AULASENSE-CFG-<4 hex>` (2 últimos bytes del MAC; **adaptación INTENCIONAL** del parche frente a los 3 bytes / `<6 hex>` del archive `app_portal.c:53-54` — no es bug del calco, ENMIENDA E4), canal 1 (2.4 GHz), `max_connection=4`. **NO se apoya en APSTA como flujo de reconexión (ENMIENDA E3):** el S3 tiene **UNA sola radio** y un AP fijado a canal 1 **no coexiste** con un intento de STA en otro canal (nuestra red real = canal 11, `f1c_diagnostics.json:35`). El arranque del AP usa `esp_wifi_stop()` + `esp_wifi_set_mode(WIFI_MODE_APSTA)`/`WIFI_MODE_AP` a canal 1 (patrón archive `app_portal.c:372-389,394`), y se coordina que el `maybe_retry_connect_` del vendor **no** dispare `esp_wifi_connect()` contra un driver en AP (silencios en log).
 - **Auth AP:** abierto CON aviso en página+log (patrón DriveGuard D6, `app_portal.c:118-120,387`) por default (`AULASENSE_PROVISION_AP_PASS=""`); si el Kconfig tiene pass → WPA2-PSK (nunca logueada). **Decisión D-F24-4:** abierto + ruta privada token = dos factores (proximidad física al AP + conocimiento del token); WPA2 opcional para quien lo quiera.
@@ -829,3 +833,360 @@ Windows 11 (host)                          WSL2 VM (NAT, compartida por 8 distro
 - **Criterios de aceptación (b1/b2):** curl desde Windows a la URL del dashboard → 200 (login page
   tras F25-e); paho WSL→broker rc=0 con mensaje real; pytest verde en WSL venv; conteos DB
   idénticos post-copia; systemctl is-active ×3; un solo writer; fallback probado (arranque/parada).
+
+---
+
+## 16. F26 — OTA real + provisioning fijo + gate/heap interno + Clef + monitoreo + .env único (orden del dueño 2026-11-17; PLAN §13, informes A/B + inv_com6_resultado en `aulasense/.tmp/`)
+
+> Contrato técnico de la fase F26. Las fases F26-a1/a2/c1 codean CONTRA esta sección (contract-first).
+> Todo lo aditivo convive con el contrato nativo/F24/F25; lo que queda obsoleto está anotado en §3
+> (recovery USB) y §3.3 (provisioning con token). Decisiones y evidencia: PLAN §13.2 (D-F26-1..12).
+
+### 16.1 `app_ota.c` (módulo NUEVO del parche, D-F26-1/2/3 — fase F26-c1)
+
+- **API:** `esp_ota_ops` + `esp_http_client` + mbedtls SHA-256 (deps YA en `parche/CMakeLists.txt:43-49`,
+  coste 0). NO `esp_https_ota`, NO el canal OTA del vendor (URL hardcodeada/https obligatorio,
+  informe A §2.2). El vendor OTA service NUNCA se invoca (no se usan `check_ota`/`start_ota`).
+- **Manifiesto** (JSON, servido por el estático WSL §16.9):
+  ```json
+  {"version": "f26.1", "url": "http://167.114.169.134:<puerto>/firmware-f26.1.bin",
+   "sha256": "<64 hex minúsculas>", "size": 1407872}
+  ```
+  `version` = semántica libre nuestra (string no vacío; NO semver vendor). URL absoluta HTTP (D3 del
+  dueño: HTTP+SHA256+rollback; TLS post-entrega). `sha256` del binario exacto; `size` en bytes.
+- **Config (Kconfig.projbuild):** `AULASENSE_OTA` (bool, default y; sin URL de manifiesto = módulo
+  inerte), `AULASENSE_OTA_MANIFEST_URL` (string, default ""; valor real vía `.env` →
+  `sdkconfig.defaults.local`, NO commiteado), `AULASENSE_OTA_CHECK_MIN` (int, default **0 = chequeo
+  periódico desactivado**; >0 = GET manifiesto cada N min, solo publica OTA_CHECK, nunca auto-apply).
+- **Disparador (D-F26-2, desviación justificada del topic literal):** la ingesta publica en
+  `{topic_prefix}/{device_id}/aulasense_ota` (topic SUFJO propio, QoS 1, retain=false) el envelope:
+  ```json
+  {"command_id": "<1-64 ASCII>", "command": "aulasense_ota", "action": "check" | "apply"}
+  ```
+  `app_ota` se suscribe con la API pública `transport.subscribe(topic, callback)`
+  (`mqtt_transport_esp_idf.h:41`) sobre la MISMA conexión MQTT persistente (patrón N1: prohibida otra
+  conexión). Justificación: el parser vendor rechaza comandos desconocidos en `commands/request`
+  (`native_mqtt_frontend.cpp:84-93`) y `dispatch_command_` es privado sin hook público
+  (`native_frontend.h:84`); parchear el vendor está prohibido (salvo outbox documentado). Helper de
+  ingesta: `publicar_comando_ota(device_id, action)` (mismo patrón que
+  `ingesta_mqtt.py:1428-1438`, command_id auditable, respuesta/estado por el retain `ota`).
+- **Secuencia `apply`:** gate de heap (§16.3) → `OTA_INICIO` {version_objetivo, size} → pausa de
+  captura (`app_imagen_pausar()`, API nueva exportada) y de publicación de telemetría → GET bin por
+  `esp_http_client` (streaming, buffer en PSRAM) → escritura en slot inactivo (`esp_ota_begin/write`)
+  → `esp_ota_end()` (valida cabecera) → **verificar SHA-256 (mbedtls) y size** → SOLO entonces
+  `esp_ota_set_boot_partition()` → `OTA_OK` {version, sha256_ok:true} → reanudar lo pausado si abortó,
+  o `esp_restart()` si OK. Cualquier fallo antes del set_boot → `OTA_ERROR` {etapa, esp_err/detail} +
+  reanudar captura/telemetría + seguir en el slot actual. **El "agujero" de telemetría durante la
+  descarga es ESPERADO y se documenta** (NOTES_operacion + /salud muestra "OTA en curso" desde
+  OTA_INICIO, sin falsa alarma de frescura).
+- **Gates de inicio (heap INTERNO, nunca el free_memory_kb de diagnósticos que es PSRAM):**
+  `heap_caps_get_free_size(MALLOC_CAP_INTERNAL) ≥ AULASENSE_OTA_HEAP_MIN_KB` (default 120) AND
+  `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL, …) ≥ AULASENSE_OTA_BLOCK_MIN_KB` (default 64).
+  Si no pasa → `OTA_ERROR` {etapa:"gate_heap", internal_free_kb, internal_largest_block_kb} sin
+  descargar. Tarea OTA prioridad ≤4 (NUNCA loop=5), stack medido (patrón ENMIENDA E7).
+- **Rollback (D-F26-3, OBLIGATORIO antes de la 1ª OTA):** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` +
+  `CONFIG_APP_ROLLBACK_ENABLE=y` (edición documentada de sdkconfig vía apply script del parche,
+  README §F26; no es secreto → reproducible en rebuild del profesor). Tras boot de imagen nueva:
+  self-check = Wi-Fi GOT_IP + MQTT conectado + CSI armado, estables **60–120 s** (esp_timer one-shot,
+  `AULASENSE_OTA_SELFCHECK_S` default 90) → `esp_ota_mark_app_valid_cancel_rollback()` + log. Si el
+  self-check no pasa en el plazo → NO marcar + `esp_restart()` → el bootloader revierte al slot bueno.
+  **El soporte de rollback vive en el bootloader** → la flasheada UART de banco (c2) incluye
+  bootloader+otadata+app; la placa reinstalada en el sitio ya lo lleva; desde ahí toda OTA protegida.
+- **Evento `FIRMWARE`** al arrancar (retain, sufjo `aulasense_config` kind config): {version,
+  compile_time, idf, build_sha256_prefix} — versión visible en BD/dashboard sin serial.
+- **Particiones INTOCABLES:** `partitions.csv` dual-app actual (ota_0/ota_1 @0x20000/0x200000,
+  0x1E0000 c/u). El bin DEBE caber (check_sizes en build; hoy 1 407 872 B, margen ≈558 KB). Ampliar
+  slots exigiría UART in situ → NO se hace (informe A §2.1).
+- **Espejo regla 17:** `app_ota.c/.h` se añaden a la lista de espejo parche↔main (diff cero + hash);
+  enganches en `app_main.cpp` (subscribe OTA, timer self-check, inyección de publisher) DOCUMENTADOS
+  en README del parche §F26 (app_main.cpp sin espejo por convención).
+
+### 16.2 Provisioning FIJO (reemplaza §3.3, D-F26-4 — fase F26-c1)
+
+- **SSID fijo:** `CONFIG_AULASENSE_PROVISION_AP_SSID` (string, default `"AULASENSE-CFG"`), sin sufijo
+  MAC. Canal 1, max_connection=4 intactos. Una sola unidad en el proyecto (S-F26-1) → colisión
+  multi-placa documentada como procedimiento "1 placa a la vez" (NOTES).
+- **Pass WPA2 canónica:** `"itse-aulasense"` (14 chars; orden del dueño). `CONFIG_AULASENSE_PROVISION_AP_PASS`
+  default `""` en Kconfig (vacío = AP abierto con aviso, rama de degradación); valor real SOLO en
+  `.env` sección PROVISION_AP → `sdkconfig.defaults.local` (gitignored) vía `gen_firmware_config.py`
+  extendido. **`_Static_assert(sizeof(pass) >= 9 && sizeof(pass) <= 64)` salvo vacío** (error de
+  build; "itse" de 4 chars era inválida WPA2 y producía recovery mudo, informe A §1.1).
+- **Portal SIN token, rutas explícitas** (handler propio por ruta; el wildcard `"/cfg/*"` no casa
+  `"/cfg"` sin barra): `GET /cfg` → formulario HTML text-only (action `/cfg/wifi`, href estado
+  `/cfg/estado`); `GET /cfg/estado` → JSON (wifi_sta, ap_activa, heap interno/psram, SIN secretos);
+  `POST /cfg/wifi` → guardado NVS + AP OFF → STA puro → connect (ENMIENDA E3 intacta).
+  `max_uri_handlers` **2→4**. Cualquier otra ruta → 404 neutro. Token NVS eliminado del código
+  (`token_asegurar`, `ruta_token_ok`, `s_token`, logs de URL con token); la key vieja
+  `aulasense_prov/cfg_token` NO se borra en campo (inofensiva).
+- **Guardas HEREDADAS intactas:** Origin/Referer (`host_es_propio` anti-sufijo) → 403; cooldown NVS
+  5 s → 429; body ≤255 B; escritura solo si cambia; **NUNCA loguear SSID/pass** (solo longitudes);
+  cabeceras nosniff/DENY/no-referrer/no-store/CSP text-only; httpd prio 3–4 stack 8192.
+- **`AP_ERROR` en TODAS las ramas de fallo de `ap_levantar()`** (set_config, esp_wifi_start,
+  httpd_arrancar, etc.): evento por `aulasense_config` {etapa, esp_err} — hoy el fallo de set_config
+  corta antes de publicar nada (`app_provision.c:291-294`) y el recovery queda mudo (CRÍTICO informe
+  A §1.1). `AP_FALLBACK`/`CFG_GUARDADA`/`STA_RECONECTADO` intactos.
+- **BOOT 3 s → Improv nativo PRESERVADO** (recovery in situ; el remoto es rollback OTA §16.1).
+- **Flujo de reinstalación en sitio (D4 simplificada):** build final flasheada en banco → dueño
+  traslada+energiza → si WiFi del sitio ≠ banco, la placa falla 3 ciclos → AP `AULASENSE-CFG` (WPA2,
+  pass canónica) → asociarse → `http://192.168.4.1/cfg` → SSID/pass del sitio → STA → eventos
+  CFG_GUARDADA/STA_RECONECTADO confirman en dashboard. Guía paso a paso en `docs/NOTES_operacion.md`.
+
+### 16.3 Observabilidad de cámara + gate de heap interno (D-F26-5 — fases F26-c1/a1/a2)
+
+> Causa raíz CORREGIDA por `inv_com6_resultado.md`: la OV3660 inicializa OK; la captura está OFF por
+> gate de memoria con latch que la histéresis nunca recuperó (umbrales vivos 95/24 KB). La hipótesis
+> `esp_camera_init` fallando del informe A §3 queda REFUTADA para el estado actual.
+
+- **Eventos nuevos en `app_imagen.c`** (por el publisher `aulasense_config` ya inyectado):
+  `IMAGEN_INIT` {camera:"ok"|"off", pid:"0x3660", prueba_captura_bytes, heap_int_kb, imagen_habilitado}
+  al terminar el init (cubre las rutas mudas `:915-961`); `CAMARA_ERROR` {etapa, esp_err_to_name,
+  codigo} en fallo de `esp_camera_init` (`:516-521`), prueba de captura NULL (`:947-955`) y reserva
+  de cola/pool/tarea. Sin datos personales.
+- **Estado retain `imagen_estado`** (sufjo NUEVO, retain=true, re-publicado en CADA `connected()` —
+  el fallo de arranque ya no se pierde porque MQTT aún no estaba conectado, informe A §3.2):
+  ```json
+  {"camara_ok": true, "camara_pid": "0x3660", "camara_err": "", "pipeline_ok": true,
+   "captura_habilitada": true, "gate_off": false, "descartes": 0, "imagenes_ok": 57,
+   "internal_free_kb": 118, "internal_largest_block_kb": 60, "build": "f26.1",
+   "imagen_habilitado": true, "ts_ms": 1763400000000}
+  ```
+- **Sufjo retain `heap_interno`** (30 s, publisher periódico del parche — patrón `app_feedback`
+  aulasense_temp): `{internal_free_kb, internal_largest_block_kb, ts_ms}` medidos con
+  `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` / `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL,…)`.
+  La ingesta cachea el último por device y rellena las columnas nuevas de `telemetria` (§16.5).
+  **NUNCA confundir con `free_memory_kb` de read_diagnostics (PSRAM, ≈8.2 MB).**
+- **Gate de captura SIN latch permanente:** re-evaluación en CADA onset (si heap interno ≥ umbral →
+  captura aunque antes hubiera GATE_OFF); histéresis +20 KB intacta para el re-enable;
+  `IMAGEN_GATE_OFF` se publica al deshabilitar (y su recuperación queda visible en `imagen_estado`).
+  **Cola de onsets con drop-oldest** (la evidencia más reciente gana; el EVENTO sigue siendo la
+  fuente de verdad, regla 2) y tamaño dimensionado con datos de ráfagas reales (el "cola de onsets
+  llena" con cooldown 15 s documenta ráfagas de movimiento en el sitio). Umbrales vivos (95/24 KB)
+  se conservan en la build única; el diagnóstico de la histéresis se hace en banco con los datos
+  nuevos (c3); cualquier ajuste posterior viaja por OTA (no segunda UART).
+- **Init timing documentado:** cámara/cola se montan antes de estabilizar WiFi
+  (`app_main.cpp:506` vs `:517`); el retain re-publicado en connected() mitiga la pérdida de eventos
+  de arranque. Reordenar el init NO es requisito F26 (riesgo de regresión CSI; se evalúa con datos).
+
+### 16.4 Extensiones F26 al contrato MQTT (aditivas; `esquema.py` las da de alta ANTES del flash)
+
+- **Sufjos nuevos en `SUFFIX_VALIDOS` (`esquema.py:33-45`):**
+  - `ota` (retain=true; HOY RECHAZADO por validar `:448-456`): estado OTA del módulo propio
+    `{estado:"idle"|"checking"|"downloading"|"verifying"|"rebooting"|"error", version_actual,
+    version_objetivo, sha256_ok, detalle, ts_ms}`. (El vendor también publica un topic retain `ota`
+    pero su servicio NUNCA se invoca → sin colisión.)
+  - `imagen_estado` (retain=true, §16.3).
+  - `heap_interno` (retain=true, §16.3).
+  - `aulasense_ota` = topic de COMANDO servidor→placa (§16.1); la ingesta PUBLICA, no suscribe.
+- **Eventos nuevos en `EVENTOS_CONFIG` (`esquema.py:76-83`):** `OTA_CHECK`, `OTA_INICIO`, `OTA_OK`,
+  `OTA_ERROR`, `FIRMWARE`, `IMAGEN_INIT`, `CAMARA_ERROR`, `AP_ERROR` + derivados de monitoreo
+  `SISTEMA_MQTT_CAIDO`, `SISTEMA_MQTT_RECUPERADO`, `SISTEMA_TELEMETRIA_STALE`, `SISTEMA_DISCO_WARN`,
+  `SISTEMA_TUNEL_CAIDO` (patrón NODO_ONLINE/OFFLINE `ingesta_mqtt.py:1024-1031`, insertados por la
+  ingesta en el borde de cambio, no por la placa). Persistencia en `config_eventos` (la tabla donde
+  VIVEN los eventos de config — no buscarlos en `eventos`).
+- **Telemetría:** columnas nuevas `internal_free_kb` / `internal_largest_block_kb` en `telemetria`
+  (§16.5), rellenas desde el retain `heap_interno`. `free_memory_kb` existente se documenta como
+  PSRAM-inclusive en docs/dashboard (no se renombra: contrato nativo).
+- **Comando OTA:** envelope §16.1; `command_id` 1–64 ASCII auditable; sin respuesta síncrona (el
+  estado llega por el retain `ota` + eventos).
+
+### 16.5 Esquema SQLite F26 (migración idempotente DENTRO de `esquema.py`, writer único — fase F26-a1)
+
+> Patrón `migrar_esquema_f25` (`esquema.py:783`) / `COLUMNAS_F25_IMAGENES:613-625`. Solo la ingesta
+> migra. Consultas de verificación SIEMPRE ro por venv URI `file:…?mode=ro` (regla 3, sin sqlite3 CLI).
+
+- **`imagenes` gana (columnas Clef, D-F26-7):**
+  ```sql
+  decision_estado   TEXT NOT NULL DEFAULT 'pendiente'
+                    CHECK(decision_estado IN ('pendiente','procesando','hecho','error','omitido')),
+  decision_etiqueta TEXT,          -- taxonomía §16.6 (6 valores) o NULL
+  decision_confianza REAL,         -- confidence de la choice (0..1)
+  decision_modelo   TEXT,          -- cloudflare/clef-flash | cloudflare/clef
+  decision_ts_ms    INTEGER,       -- claim/heartbeat de la pasada (stale igual que visión)
+  decision_tokens   INTEGER,       -- usage.tokens de la llamada
+  decision_cubre    REAL,          -- noul_cubre (P de que alguna categoría cubre el encuadre)
+  decision_calidad  REAL,          -- noul_calidad
+  decision_actividad TEXT          -- score_actividad: ninguna|baja|media|alta
+  ```
+  `decision_cubre < 0.7` → badge **REVISIÓN_HUMANA** en dashboard (derivado, NO un estado nuevo).
+  Dedupe por `hash_sha256` (el índice único `idx_img_hash_unico:730-732` ya lo garantiza entre canales).
+- **Tabla `clef_uso`** gemela de `vision_uso` (`esquema.py:662-669`): auditoría por llamada
+  (ts_ms, device_id, imagen_id, modelo, tokens, coste_usd, exito, detalle) → topes día/hora móviles
+  `AULASENSE_CLEF_MAX_DIA/MAX_HORA` (regla 16).
+- **Tabla `estado_sistema`** (heartbeat, writer único = ingesta): fila única
+  `(id=1, ts_ms, mqtt_conectado INTEGER, ingesta_activa INTEGER, detalle TEXT)` — INSERT/UPDATE corto
+  cada ciclo del poller (~30 s) usando `is_connected()` (`ingesta_mqtt.py:1417`), cero proceso extra.
+- **`telemetria` gana:** `internal_free_kb INTEGER`, `internal_largest_block_kb INTEGER` (§16.4).
+- **`config_eventos`:** sin cambio de estructura; los eventos nuevos §16.4 se persisten ahí. El
+  dashboard los expone (tarjeta cámara/gate) — visibilidad explícita de GATE_OFF/DESCARTE/INIT.
+
+### 16.6 Clef — decisión de aula (D-F26-7 — fases F26-a2/h2; informe B §3-4)
+
+- **Etapa SEPARADA post-descripción:** `server/vision/clef.py` + `tools/clef_decide.py`
+  (`--once/--loop/--paso0/--stop`, patrón de `vision_describe.py`). Cola:
+  `vision_estado='hecho' AND decision_estado='pendiente'`. Claim atómico propio
+  (`pendiente→procesando` con `decision_ts_ms`, stale-liberación igual que visión
+  `cliente.py:727-753`); **UNA pasada a la vez por BD, lanzada y esperada dentro del turno** (regla 16
+  extendida). Clef puede fallar sin invalidar la descripción.
+- **Cascada:** (1) `cloudflare/clef-flash` con `state` = JSON texto `{descripcion, etiquetas}` YA
+  almacenados (NO re-enviar la imagen; NO reutilizar `etiquetas` como salida — alimentan la búsqueda
+  F25-d3 intacta). (2) SOLO si `confidence < AULASENSE_CLEF_UMBRAL_ESCALADO` (0.6) → `cloudflare/clef`
+  con la imagen QVGA inline en el nivel superior del state (JPEG ~3–12 KB ≪ 300 KB; `clef-flash` NO
+  afirma entrada de imagen — informe B §3). API: `POST https://openrouter.ai/api/alpha/decisions`,
+  `Authorization: Bearer <OPENROUTER_API_KEY>` (del .env único vía `valor_env()`, NUNCA impresa).
+- **Preguntas (misma llamada, ≤64):** `choice` de taxonomía (6 opciones, SIN "other" — se usa noul
+  compañero), `noul_cubre` ("¿alguna categoría describe el encuadre?"), `noul_calidad` ("¿la imagen
+  es legible?"), `score_actividad` niveles [ninguna, baja, media, alta] como situaciones.
+- **Taxonomía (choice, mutuamente excluyentes):** `SIN_PERSONAS_VISIBLES` (≠ "sala vacía probada",
+  regla 11), `PERSONAS_SENTADAS`, `CIRCULACION`, `PRESENTACION_AL_FRENTE`, `AGLOMERACION_OTRA`,
+  `IMAGEN_DEGRADADA`.
+- **`IMAGEN_DEGRADADA` LOCAL sin llamada** para JPEG no decodificables (patrón `jpeg_utilizable`
+  `cliente.py:820-866`): los 20 rotos históricos van directos, 0 coste, `decision_estado='hecho'`,
+  `decision_modelo='local'`.
+- **Límites (regla 16):** `AULASENSE_CLEF_MAX_DIA=120`, `AULASENSE_CLEF_MAX_HORA=20` (contadores
+  persistentes desde `clef_uso`), backoff exponencial 429/5xx (Retry-After), interruptible
+  (`--stop`/SIGTERM), **Paso 0 OBLIGATORIO: 1 decisión de prueba midiendo `usage` real →
+  `.tmp/f26_clef_paso0.json` ANTES del lote** (coste anómalo → parar+reportar; cero promesas sin
+  medir). `refusal` ≠ "no" → fail-closed: `decision_estado='error'` + revisión. API alpha: manejar
+  400/401/402/413/429/5xx; state de texto truncado a ~2.000 tokens por Workers AI (descripciones
+  QVGA caben de sobra; documentado).
+- **Dashboard:** tarjeta "decisión de aula" por imagen (etiqueta+confianza+actividad+badge
+  REVISIÓN_HUMANA si cubre<0.7) y agregado por sesión; **búsqueda por texto existente INTACTA**.
+
+### 16.7 Monitoreo "salud del sistema" (D-F26-8 — fases F26-a1/a2/b; informe B §5)
+
+- **`GET /api/salud`** (tras login D-F25-8, lector; SIN secretos en ninguna respuesta) agrega:
+  | Check | Fuente | Verde | Warn | Crítico |
+  |---|---|---|---|---|
+  | ingesta activa | `estado_sistema.ts_ms` fresco ≤90 s | ≤90 s | >90 s | >5 min |
+  | MQTT conectado | `estado_sistema.mqtt_conectado` (is_connected) | 1 | — | 0 (+SISTEMA_MQTT_CAIDO) |
+  | frescura telemetría | MAX(ts_ms) de `telemetria` | ≤5 min | 5–10 min | >10 min (+SISTEMA_TELEMETRIA_STALE) |
+  | heap placa INTERNO | última `telemetria.internal_free_kb` | ≥120 KB | <120 KB (umbral regla 2; el gate actúa a los configurados) | <64 KB |
+  | RSSI | `wifi_rssi_dbm` | ≥−80 | <−80 dBm | — |
+  | colas visión+decisión | pendiente/error de `imagenes` | pendiente=0 | pendiente>0 | error>20% del lote |
+  | consumo día | `vision_uso`/`clef_uso` ventana móvil | <topes | ≥80% tope | tope alcanzado |
+  | disco | `shutil.disk_usage(AULASENSE_DATOS_DIR)` | <85% | ≥85% (+SISTEMA_DISCO_WARN) | ≥95% |
+  | túneles | `datos/tuneles_estado.json` (verbo salud Windows) | state=running | stale>10 min | state≠running (+SISTEMA_TUNEL_CAIDO) |
+  | OTA en curso | retain `ota`.estado=downloading | informativo | — | — (SUPRIME la alarma de frescura: el agujero es esperado) |
+- **Panel `/salud`** (estático bajo sesión, mismo origin guard): semáforo por check +
+  `ultima_actividad_ms` + tarjeta cámara/gate (`imagen_estado` retain + `config_eventos` recientes:
+  GATE_OFF/DESCARTE/INIT/CAMARA_ERROR) + decisión de aula agregada. `esc()` en todo dato dinámico.
+- **Verbo `salud` de `tools/wsl_aulasense.ps1`:** consulta /api/salud (con sesión) + `wsl-port.exe
+  --json status` filtrando **SOLO campos `state`/`remote`** de `pub-aulasense-8100` y
+  `pub-aulasense-ota` (NUNCA serializar el objeto completo — lección pass VPS) → escribe
+  `datos/tuneles_estado.json` {id, state, remote, ts_ms} que el panel lee con frescura.
+- **Eventos derivados `SISTEMA_*`** en el borde de cambio (patrón NODO_OFFLINE), persistidos en
+  `config_eventos`. Timer systemd `aulasense-salud` OPCIONAL (default n; el heartbeat del poller ya
+  cubre el caso base).
+
+### 16.8 .env ÚNICO (D-F26-6 — fase F26-b)
+
+- **Archivo único editable por humanos: `aulasense/.env` raíz** (gitignored). Secciones ORDENADAS
+  con comentarios (los valores reales NUNCA en repo/docs/informes; aquí solo NOMBRES):
+  ```
+  # BROKER        MQTT_HOST/PORT/SCHEME/USER/PASS/INGESTA_USER/TOPIC_PREFIX
+  # WIFI_NODO     WIFI_SSID/WIFI_PASS/ESPECTRE_WIFI_PASSWORD/DEVICE_LABEL
+  # PROVISION_AP  AULASENSE_PROVISION_AP_SSID=AULASENSE-CFG
+  #               AULASENSE_PROVISION_AP_PASS=   (canónica fijada por el dueño; ≥8; solo aquí+NVS/local)
+  # UPLOAD_HTTP   AULASENSE_UPLOAD_HOST/PORT/TOKEN, AULASENSE_IMG_RETENCION_DIAS
+  # ADMIN         AULASENSE_ADMIN_USER/AULASENSE_ADMIN_PASSWORD (genera SOLO código: reset_admin.py)
+  # IA            DASHSCOPE_API_KEY (sk-sp TP, modo B), OPENROUTER_API_KEY (sk-or del dueño, YA existe,
+  #               NO regenerar; se escribe SOLO aquí, jamás impresa)
+  # VISION        AULASENSE_VISION_MAX_DIA/MAX_HORA/MODELO/MODO/ORDEN/STALE_MIN
+  # CLEF          AULASENSE_CLEF_MAX_DIA=120/MAX_HORA=20/MODELO_FLASH=cloudflare/clef-flash/
+  #               MODELO=cloudflare/clef/UMBRAL_ESCALADO=0.6/NOUL_CUBRE_MIN=0.7
+  # MONITOREO     AULASENSE_SALUD_TELEMETRIA_MAX_MIN=5/STALE_CRIT_MIN=10/DISCO_WARN_PCT=85/
+  #               RSSI_WARN_DBM=-80/HEAP_WARN_KB=120 · OPENMETEO_LAT/LON (fuente clima C6, gratis)
+  # WSL           AULASENSE_DB/DATOS_DIR/HOST/PORT/ORIGINS_EXTRA/INTERNAL_HOSTS/COOKIE_SECURE/
+  #               AUTH_HASH · seams opcionales (AULASENSE_CLAVES_ENV/ENV_RAIZ/… vacío=defectos)
+  # REMOTO        DASHBOARD_URL_PUBLIC=http://167.114.169.134:10062 ·
+  #               AULASENSE_OTA_MANIFEST_URL=http://167.114.169.134:<puerto>/manifest.json ·
+  #               AULASENSE_OTA_CHECK_MIN=0 · PROVISION_PORTAL=http://192.168.4.1/cfg ·
+  #               VPS_SSH_HOST/PORT/USER (SIN password: la gestiona wsl-port, rotación pendiente) ·
+  #               NODO_DIRECT_HTTP (LAN-only, referencia) · REMOTE_WIFI_SSID/PASS (opcional)
+  ```
+- **Migración:** `tools/consolidar_env.py --unificar` (EXTENDIDO, no reemplazado): lee `.env` raíz
+  actual + `claves/.env` + `claves/.env-wsl-nuevo` → escribe el .env raíz con las secciones de arriba;
+  valores copiados BYTE-A-BYTE por el código (el modelo nunca los ve ni imprime); colisiones: gana la
+  primera fuente + anotación; backup de fuentes → `claves/*.bak-f26` (gitignored) ANTES de reescribir;
+  verificación por NOMBRES/conteos. `OPENROUTER_API_KEY`: si no está en las fuentes, el ejecutor la
+  recibe del orquestador por canal local y la escribe SOLO aquí.
+- **Loaders unificados (se elimina la prioridad `claves/`):** `cliente.py:359-368` (valor_env),
+  `auth.py:187,535`, ingesta (`ingesta_mqtt.py:273-294`), `app.py:82-83`, `gen_firmware_config.py`,
+  `reset_admin.py` (escribe raíz), `config_mqtt.py`. systemd `EnvironmentFile` → `.env` raíz
+  (recordar: EnvironmentFile pisa Environment=). **rsync a WSL con `--exclude '.env'`** + `chmod 600`
+  (se elimina el workaround sed de README_wsl.md:74-79). `.env.example` regenerado con este layout y
+  placeholders VACÍOS. `claves/.env.example` queda como referencia histórica (anotado).
+- **Política de generación intacta (regla 15):** admin/upload/WSL pass se generan SOLO por código
+  (`secrets.token_hex(16)`); DASHSCOPE/OPENROUTER son del dueño/proveedor → se referencian, NO se
+  regeneran; la pass del VPS NO entra (wsl-port). El modelo NUNCA asigna contraseñas.
+
+### 16.9 Infraestructura OTA en WSL + túnel (D-F26-9 — fase F26-b)
+
+- **Servidor estático:** `/home/aulasense/aulasense-ota/` con `manifest.json` +
+  `firmware-<ver>.bin` (bins gitignored; el manifiesto lo genera el ejecutor por código con sha256/size
+  reales). Unit `aulasense-ota.service`: `python3 -m http.server 8101 --bind 0.0.0.0 --directory
+  /home/aulasense/aulasense-ota` (0.0.0.0 = VM-local NAT, misma reinterpretación de bind que el
+  dashboard §15; la superficie pública es SOLO el túnel). Restart=on-failure, usuario aulasense.
+- **Túnel (CLI real verificada):**
+  ```
+  wsl-port tunnels add --id pub-aulasense-ota --vps "vps1 de canada" --distro debian-aulasense \
+      --local-port 8101 --remote-port <validado libre> --type ssh
+  wsl-port tunnels update pub-aulasense-ota --auto-start true
+  ```
+  CLI: `C:\Users\Gilman\Desktop\APPplicaciones\05-WSL-Redes\wsl-port\wsl+ssh\wsl-port-unified\.venv\Scripts\wsl-port.exe`.
+  Puerto candidato **10064** (validar en panel `puertos-disponibles.gilman.pro` + `tunnels list`;
+  la API "available" es poco fiable para puerto específico — informe B §2). `--auto-start`/`--enabled`
+  solo existen en `tunnels update`. NUNCA tocar túneles ajenos. Verificación: HTTP 200 externo al
+  manifiesto + `tunnels list` state=running remote=0.0.0.0:<puerto>.
+- **NO ruta del dashboard** (rompería guard de login + mezclaría superficie de datos personales con
+  binarios — informe A §2.3B). Tramo distro→VPS cifrado SSH; VPS→placa HTTP plano (D3 dueño:
+  SHA-256+rollback mitigan; TLS nginx+LE post-entrega).
+
+### 16.10 Arquitectura REAL (D-F26-11 — fuente del diagrama F26-d y de los docs)
+
+```
+ESP32-S3 (sitio remoto, SOLO energizada; outbound-only)
+  │ MQTT/TCP :14769 (auth electiva; imágenes b64 QoS0 retain=false; comandos←aulasense_ota)
+  │ HTTP GET bin OTA (saliente, al puerto público del túnel OTA)
+  ▼
+VPS 167.114.169.134 = SOLO broker Mosquitto (:14769 TCP/:14770 WS/:14771 TLS/:14772 mTLS*)
+  + túneles SSH wsl-port (reverse forward TCP genérico)
+  │   *la placa NO puede mTLS/CA privada ni WebSocket (native, docs/fuentes.md:19)
+  ▼
+WSL debian-aulasense = servidor que gestiona TODO (NAT, systemd, venv linux, sin Docker)
+  ├─ ingesta MQTT (writer único SQLite ext4 ~/aulasense-datos/aulasense.db; heartbeat estado_sistema)
+  ├─ dashboard :8100 ──túnel pub-aulasense-8100──► VPS :10062 (público, login)
+  ├─ estático OTA :8101 ──túnel pub-aulasense-ota──► VPS :1006x (público, solo bins+manifiesto)
+  ├─ receptor HTTP :8001 (ALTERNATIVO LAN-only, Bearer; MQTT es primario)
+  ├─ worker visión → DASHSCOPE (TP allowlist, modo B agente-mediado, rate limits)
+  └─ worker Clef → OpenRouter Decisions API (cascada clef-flash texto → clef imagen si conf<0.6)
+Windows host = fallback (py3.15) + CLI wsl-port + tools (gen_config, lee_serial, wsl_aulasense salud)
+```
+- **Zero-asunción-LAN (D-F26-10):** el servidor JAMÁS alcanza a la placa (Direct HTTP :62587 y
+  :8001 son LAN-only; `config_mqtt.py` por Direct HTTP marcado LAN-only). Toda gestión remota = MQTT
+  iniciado por la placa. Recovery remoto = rollback OTA (§16.1); UART/BOOT solo in situ.
+- **Diagrama:** `assets/diagrama_tecnico.dsl` (C4 Structurizr) actualizado + PNG/SVG regenerados +
+  `assets/diagrama_flujo_f26.mmd`/`.png` (flujo de decisiones para la presentación) — skill
+  graphic-arq-software, fase F26-d.
+
+### 16.11 Criterios de aceptación F26 (verificables por un tercero)
+
+1. **OTA E2E banco:** comando MQTT → OTA_INICIO/OK → reboot → evento FIRMWARE versión nueva →
+   mark_app_valid tras self-check (evidencia log/otadata). SHA alterado → OTA_ERROR sin reboot.
+   Bin válido-pero-roto → rollback automático al slot bueno (boot log + FIRMWARE versión buena).
+2. **Provisioning fijo:** AP `AULASENSE-CFG` WPA2 (pass canónica) → `/cfg` 200 sin token → POST
+   guarda+reconecta → 403/429 verificados → grep logs CERO pass → AP_ERROR visible si se fuerza fallo.
+3. **Cámara/gate:** IMAGEN_INIT + imagen_estado retain + heap_interno en BD (internal ≠ PSRAM);
+   captura re-habilitada sin latch tras GATE_OFF; ≥3 fotos nuevas canal=mqtt post-revival.
+4. **Clef:** Paso 0 con usage medido en .tmp/ ANTES del lote; decisión de aula visible en dashboard;
+   IMAGEN_DEGRADADA local sin llamada; topes/dedupe/claim verificados; búsqueda F25 intacta.
+5. **Salud:** /api/salud 200 con sesión/401 sin; panel /salud semáforos; verbo salud responde;
+   heartbeat fresco; túneles solo state/remote; SISTEMA_* en borde; sin falsa alarma durante OTA.
+6. **.env único:** un solo archivo raíz con las secciones §16.8; loaders sin prioridad claves/;
+   rsync no pisa .env; .env.example regenerado; evidencia SOLO nombres (jamás valores).
+7. **Docs/paquete:** cero "consola UART"/menciones muertas; zero-LAN; NOTES_operacion completo;
+   INFORME.docx+PRESENTACION.pptx regenerados (paso a paso, código real, 12 bloques, ≤10 MB);
+   diagrama real con protocolos/puertos; espejo parche↔main diff cero + hash (app_ota incluido).
+8. **Honestidad:** GT fotográfico=0 en sesion_2b/3b → distribución, NO recall; fila ts_ms absurdo
+   documentada+filtrada SIN editar BD; costes Credits MEDIDOS; motion≠presencia; HTTP+SHA256 sin TLS
+   declarado; pass AP = capacidad local publicada por orden explícita del dueño (trade-off anotado).
